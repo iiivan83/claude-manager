@@ -1,0 +1,16 @@
+[project]
+name = "claude-manager"
+version = "0.1.0"
+description = "Claude Manager"
+requires-python = ">=3.9"
+dependencies = ["anthropic>=0.86.0"]
+
+[project.scripts]
+claude-manager = "claude_manager.main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+where = ["src"]
