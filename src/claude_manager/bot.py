@@ -462,7 +462,24 @@ async def send_watcher_message(
 
 
 async def post_init(application: Application) -> None:
-    """Устанавливает меню подсказок команд в Telegram после запуска бота."""
+    """Инициализация после запуска: очистка файлов, восстановление состояния, меню команд."""
+    await _clean_old_received_files()
+
+    # Восстанавливаем привязки сессий после перезапуска
+    try:
+        await session_manager.load_bindings()
+    except Exception:
+        logger.warning(
+            "Ошибка при восстановлении состояния — начинаю с чистого",
+            exc_info=True,
+        )
+
+    bindings = session_manager.get_all_bindings()
+    if bindings:
+        logger.info("Восстановлено %d привязок к сессиям", len(bindings))
+    else:
+        logger.info("Привязок нет — бот в режиме /all (мониторинг)")
+
     try:
         commands = [
             BotCommand(command, description)
@@ -472,6 +489,27 @@ async def post_init(application: Application) -> None:
         logger.info("Меню команд установлено")
     except Exception:
         logger.warning("Не удалось установить меню команд", exc_info=True)
+
+    # Запускаем фоновый мониторинг сессий из терминала
+    asyncio.create_task(
+        session_watcher.start(_watcher_callback, _get_current_session_async)
+    )
+
+
+async def _watcher_callback(
+    chat_id: int,
+    session_id: str,
+    day_number: int,
+    text: str,
+    is_current: bool,
+) -> None:
+    """Callback для session_watcher — пересылает ответ Claude из мониторинга."""
+    await send_watcher_message(chat_id, text, session_id, day_number)
+
+
+async def _get_current_session_async(chat_id: int) -> str | None:
+    """Возвращает привязанную сессию для watcher (async-обёртка)."""
+    return session_manager.get_bound_session(chat_id)
 
 
 async def handle_new(
@@ -487,8 +525,6 @@ async def handle_new(
         new_result = await session_manager.create_new_session(chat_id)
         session_id = new_result.session_id
         day_number = new_result.day_number
-
-        await process_manager.create_process(session_id)
 
         await _send_telegram_message(
             chat_id,
@@ -719,7 +755,7 @@ def _register_handlers(application: Application) -> None:
     )
 
 
-async def setup_bot() -> Application:
+def setup_bot() -> Application:
     """Создаёт и настраивает экземпляр Telegram-бота."""
     global _application
 
@@ -731,6 +767,5 @@ async def setup_bot() -> Application:
     )
     _application = application
     _register_handlers(application)
-    await _clean_old_received_files()
 
     return application

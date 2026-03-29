@@ -261,26 +261,22 @@ class TestHandleNew:
     """Тесты команды /new."""
 
     @pytest.mark.asyncio()
-    @patch.object(process_manager, "create_process", new_callable=AsyncMock)
     @patch.object(session_manager, "create_new_session", new_callable=AsyncMock)
     async def test_handle_new_creates_session(
         self,
         mock_create_session: AsyncMock,
-        mock_create_process: AsyncMock,
         _setup_application: MagicMock,
     ) -> None:
         """Команда /new создаёт сессию и отправляет подтверждение."""
         mock_create_session.return_value = NewSessionResult(
             session_id="_new_0001", day_number=1
         )
-        mock_create_process.return_value = "_new_0001"
 
         update = _make_update(text="/new")
         context = _make_context()
         await handle_new(update, context)
 
         mock_create_session.assert_called_once_with(TEST_CHAT_ID)
-        mock_create_process.assert_called_once_with("_new_0001")
 
         sent = _setup_application.bot.send_message
         sent.assert_called()
@@ -911,13 +907,10 @@ class TestCleanOldReceivedFiles:
 class TestSetupBot:
     """Тесты настройки бота."""
 
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot._clean_old_received_files", new_callable=AsyncMock)
     @patch("claude_manager.bot.ApplicationBuilder")
-    async def test_setup_bot_registers_handlers(
+    def test_setup_bot_registers_handlers(
         self,
         mock_builder_class: MagicMock,
-        mock_clean: AsyncMock,
     ) -> None:
         """setup_bot регистрирует все обработчики."""
         # Настраиваем цепочку builder
@@ -929,7 +922,7 @@ class TestSetupBot:
         mock_builder.build.return_value = mock_app
         mock_builder_class.return_value = mock_builder
 
-        result = await setup_bot()
+        result = setup_bot()
 
         assert result is mock_app
         # Должно быть минимум 8 обработчиков
@@ -941,11 +934,17 @@ class TestSetupBot:
 
 
 class TestPostInit:
-    """Тесты установки меню команд."""
+    """Тесты инициализации бота (очистка файлов, восстановление состояния, меню)."""
 
     @pytest.mark.asyncio()
-    async def test_post_init_sets_commands(self) -> None:
+    @patch("claude_manager.bot._clean_old_received_files", new_callable=AsyncMock)
+    @patch("claude_manager.bot.session_manager")
+    async def test_post_init_sets_commands(
+        self, mock_session_mgr: MagicMock, mock_clean: AsyncMock,
+    ) -> None:
         """post_init устанавливает меню команд."""
+        mock_session_mgr.load_bindings = AsyncMock()
+        mock_session_mgr.get_all_bindings.return_value = {}
         mock_app = MagicMock()
         mock_app.bot = MagicMock()
         mock_app.bot.set_my_commands = AsyncMock()
@@ -955,6 +954,41 @@ class TestPostInit:
         mock_app.bot.set_my_commands.assert_called_once()
         commands = mock_app.bot.set_my_commands.call_args[0][0]
         assert len(commands) == len(BOT_COMMANDS)
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._clean_old_received_files", new_callable=AsyncMock)
+    @patch("claude_manager.bot.session_manager")
+    async def test_post_init_restores_bindings(
+        self, mock_session_mgr: MagicMock, mock_clean: AsyncMock,
+    ) -> None:
+        """post_init восстанавливает привязки сессий."""
+        mock_session_mgr.load_bindings = AsyncMock()
+        mock_session_mgr.get_all_bindings.return_value = {12345: "session-abc"}
+        mock_app = MagicMock()
+        mock_app.bot = MagicMock()
+        mock_app.bot.set_my_commands = AsyncMock()
+
+        await post_init(mock_app)
+
+        mock_session_mgr.load_bindings.assert_called_once()
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._clean_old_received_files", new_callable=AsyncMock)
+    @patch("claude_manager.bot.session_manager")
+    async def test_post_init_continues_on_restore_error(
+        self, mock_session_mgr: MagicMock, mock_clean: AsyncMock,
+    ) -> None:
+        """post_init не падает при ошибке восстановления состояния."""
+        mock_session_mgr.load_bindings = AsyncMock(
+            side_effect=OSError("disk error")
+        )
+        mock_session_mgr.get_all_bindings.return_value = {}
+        mock_app = MagicMock()
+        mock_app.bot = MagicMock()
+        mock_app.bot.set_my_commands = AsyncMock()
+
+        # Не должно выбросить исключение
+        await post_init(mock_app)
 
 
 # --- Тесты _find_session_by_number ---
