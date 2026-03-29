@@ -15,41 +15,52 @@ Telegram-бот, который служит пультом управления
 
 ## Техническая документация
 
-Два основных документа описывают проект:
 - `development/docs/brd-user-journeys.md` — BRD: все пользовательские сценарии (что бот должен делать)
+- `development/docs/deployment-guide.md` — пошаговая инструкция по развёртыванию бота
+- `development/docs/docs-index.md` — полный индекс всех документов проекта
 
 ## Технологии
 
 - **Язык:** Python 3.13
-- **Telegram:** python-telegram-bot 21.10
-- **Конфигурация:** python-dotenv 1.1.0
+- **Telegram:** python-telegram-bot >=21.10
+- **Конфигурация:** python-dotenv >=1.1.0
 - **Протокол с Claude Code:** stream-json (потоковый JSON через stdin/stdout)
 - **ОС:** macOS (fcntl для файловой блокировки)
+- **Тесты:** pytest >=8.0, pytest-asyncio >=0.24, pytest-mock >=3.14
+- **E2E тесты:** telethon >=1.37 (подключение к Telegram как пользователь)
 
 ## Структура проекта
 
 ```
 claude_manager/
 ├── watch_and_restart.sh      # Наблюдатель: перезапускает бота при изменении .py файлов
-├── src/claude_manager/       # Весь продакшен-код (бот пишется с нуля здесь)
-│   ├── main.py               # Точка входа
-│   ├── bot.py                # Обработчики Telegram-команд
-│   ├── config.py             # Загрузка настроек из .env
-│   ├── claude_runner.py      # Обёртка для запуска Claude
-│   ├── process_manager.py    # Управление процессами Claude
-│   ├── session_manager.py    # Связка chat_id ↔ session_id
-│   ├── session_reader.py     # Чтение файлов сессий с диска
-│   ├── session_watcher.py    # Мониторинг сессий в реальном времени
-│   ├── message_splitter.py   # Разбивка длинных сообщений
-│   └── daily_session_registry.py  # Дневная нумерация сессий
-├── tests/                    # Тесты
-├── development/              # Документация разработки, скрипты, спеки
-│   ├── specs/                # Технические спецификации
-│   ├── docs/                 # Документы проекта
+├── src/claude_manager/       # Весь продакшен-код
+│   ├── __init__.py           # Маркер пакета
+│   ├── __main__.py           # Запуск через python -m claude_manager
+│   ├── main.py               # Точка входа: настройка логов, блокировка, запуск polling
+│   ├── bot.py                # Транспортный слой: обработчики Telegram-команд и сообщений
+│   ├── config.py             # Загрузка и валидация настроек из .env
+│   ├── claude_runner.py      # Обёртка для запуска Claude Code CLI (subprocess + stream-json)
+│   ├── process_manager.py    # Жизненный цикл процессов Claude (ретраи, /stop, прогресс)
+│   ├── session_manager.py    # Привязка chat_id ↔ session_id, переключение сессий
+│   ├── session_reader.py     # Чтение JSONL-файлов сессий Claude Code с диска
+│   ├── session_watcher.py    # Мониторинг сессий в реальном времени (polling каждые 2 сек)
+│   ├── message_splitter.py   # Markdown→HTML конвертация и разбивка на части до 4096 символов
+│   └── daily_session_registry.py  # Дневная нумерация сессий (#1, #2, #3...)
+├── tests/                    # Тесты (384 теста)
+│   ├── test_*.py             # Юнит-тесты (по одному на каждый модуль src/)
+│   ├── conftest.py           # Общие фикстуры для тестов
+│   ├── integration/          # Интеграционные тесты (жизненный цикл сессий, конкуренция)
+│   └── e2e/                  # E2E тесты через Telethon (реальный Telegram)
+├── development/              # Документация разработки
+│   ├── docs/                 # Документы проекта (BRD, гайды, отчёты)
+│   ├── specs/                # Технические спецификации модулей
 │   ├── scripts/              # Вспомогательные скрипты
-│   └── script-specs/         # ТЗ на скрипты
-├── pyproject.toml
-├── requirements.txt
+│   ├── script-specs/         # ТЗ на скрипты
+│   └── temp-docs/            # Временные рабочие файлы
+├── pyproject.toml            # Конфигурация проекта, зависимости, точка входа
+├── requirements.txt          # Основные зависимости (для pip install -r)
+├── .env.example              # Шаблон файла .env с описанием переменных
 └── .env                      # Секреты (не в git)
 ```
 
@@ -62,7 +73,8 @@ claude_manager/
 - **Транспортный слой** (bot.py) — приём сообщений из Telegram, отправка ответов. Знает о Telegram API, не знает как работает Claude.
 - **Слой бизнес-логики** (session_manager, daily_session_registry) — управление сессиями, нумерация. Не знает ни про Telegram, ни про процессы.
 - **Слой инфраструктуры** (process_manager, claude_runner) — запуск процессов, чтение stdout, протокол stream-json. Не знает про Telegram.
-- **Утилиты** (message_splitter, session_reader, session_watcher) — вспомогательные функции без состояния или с минимальным состоянием.
+- **Утилиты** (message_splitter, session_reader) — вспомогательные функции без состояния.
+- **Мониторинг** (session_watcher) — фоновый цикл опроса файлов сессий, координация с обработчиком через pause/resume.
 
 **Правило зависимостей:** верхний слой может вызывать нижний, но не наоборот. Инфраструктура не импортирует бизнес-логику.
 
@@ -72,7 +84,7 @@ claude_manager/
 
 ### Состояние в памяти
 
-Состояние хранится в словарях на уровне модуля bot.py (chat_id → значение). Персистентность — через JSON-файлы (sessions.json, daily_sessions.json). При потере состояния в памяти — автовосстановление из файлов или перезапуск.
+Состояние хранится в словарях на уровне модулей: session_manager (привязки chat_id → session_id), daily_session_registry (дневные номера), process_manager (процессы, флаги занятости), session_watcher (счётчики обработанных сообщений). Персистентность — через JSON-файлы (sessions.json, daily_sessions.json). При потере состояния в памяти — автовосстановление из файлов при перезапуске.
 
 ## Правила разработки
 
@@ -100,10 +112,12 @@ claude_manager/
 
 ### Тестирование
 
-- Тесты в папке `tests/`, структура зеркалит `src/`
-- Запуск: `python -m pytest tests/`
-- Моки для внешних зависимостей (Telegram API, subprocess)
-- Юнит-тесты для утилит (message_splitter, session_reader)
+- Тесты в папке `tests/`, юнит-тесты зеркалят структуру `src/`
+- Запуск: `python -m pytest tests/ -v`
+- **Юнит-тесты** (`tests/test_*.py`) — по одному файлу на каждый модуль, моки для внешних зависимостей
+- **Интеграционные тесты** (`tests/integration/`) — жизненный цикл сессий, путь сообщения, файлы, конкурентный доступ, координация watcher/handler
+- **E2E тесты** (`tests/e2e/`) — через Telethon, реальные сообщения в Telegram
+- asyncio_mode = "auto" (не нужен декоратор `@pytest.mark.asyncio` на каждом тесте)
 
 ## Команды разработки
 
@@ -111,8 +125,11 @@ claude_manager/
 # Активация виртуального окружения
 source .venv/bin/activate
 
-# Установка зависимостей
+# Установка зависимостей (основные)
 pip install -r requirements.txt
+
+# Установка всех зависимостей включая тесты и E2E
+pip install -e ".[dev]"
 
 # Запуск тестов
 python -m pytest tests/ -v
@@ -127,6 +144,6 @@ python -m claude_manager
 ## Важные детали для разработки
 
 - Telegram ограничивает сообщения до 4096 символов — длинные ответы разбиваются с починкой HTML-тегов
-- Watcher и handle_message координируются через механизм паузы (счётчик active_requests), чтобы не дублировать ответы
+- Watcher и handle_message координируются через механизм паузы (pause_session/resume_session в session_watcher), чтобы не дублировать ответы
 - Session_id может измениться в любом событии от Claude — нужно обновлять ключи во всех словарях
 - Файловая блокировка через fcntl.flock() — защита от запуска двух копий бота
