@@ -8,12 +8,31 @@ dependencies = [
     "python-dotenv>=1.1.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-mock>=3.14",
+]
+e2e = [
+    "telethon>=1.37",
+]
+dev = [
+    "claude-manager[test,e2e]",
+]
+
 [project.scripts]
 claude-manager = "claude_manager.main:main"
 
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

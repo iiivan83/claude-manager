@@ -1,7 +1,7 @@
 {
   "project": "claude-manager",
   "brd_path": "development/docs/brd-user-journeys.md",
-  "current_phase": 0,
+  "current_phase": 1,
   "modules": [],
   "layers": {},
   "phases": {
@@ -13,7 +13,11 @@
       "issues_found": 26,
       "issues_resolved": 26
     },
-    "1": {"name": "Фундамент", "status": "pending"},
+    "1": {
+      "name": "Фундамент",
+      "status": "completed",
+      "completed_at": "2026-03-29T23:58:00"
+    },
     "2": {"name": "Спецификации", "status": "pending"},
     "3": {"name": "Реализация", "status": "pending"},
     "4": {"name": "Интеграционные тесты", "status": "pending"},
