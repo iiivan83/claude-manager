@@ -148,6 +148,12 @@ def _generate_file_name(original_name: str | None, extension: str) -> str:
     return f"file_{timestamp}_{suffix}.{extension}"
 
 
+def _is_file_expired(file_path: Path, max_age_seconds: float) -> bool:
+    """Проверяет, превысил ли файл максимальный возраст."""
+    file_age = time.time() - os.path.getmtime(file_path)
+    return file_age > max_age_seconds
+
+
 async def _clean_old_received_files() -> None:
     """Удаляет файлы старше 7 дней из папки received_files/."""
     files_dir = Path(config.WORKING_DIR) / RECEIVED_FILES_DIR
@@ -155,30 +161,71 @@ async def _clean_old_received_files() -> None:
         return
 
     max_age_seconds = RECEIVED_FILES_MAX_AGE_DAYS * SECONDS_PER_DAY
-    current_time = time.time()
-    deleted_count = 0
-
     try:
         entries = list(files_dir.iterdir())
     except OSError as error:
         logger.warning("Ошибка чтения папки %s: %s", files_dir, error)
         return
 
+    deleted_count = 0
     for entry in entries:
         if not entry.is_file():
             continue
         try:
-            file_age = current_time - os.path.getmtime(entry)
-            if file_age > max_age_seconds:
+            if _is_file_expired(entry, max_age_seconds):
                 os.remove(entry)
                 deleted_count += 1
         except OSError as error:
-            logger.warning(
-                "Ошибка удаления файла %s: %s", entry, error
-            )
+            logger.warning("Ошибка удаления файла %s: %s", entry, error)
 
     if deleted_count > 0:
         logger.info("Удалено %d старых файлов из %s", deleted_count, files_dir)
+
+
+async def _send_raw(chat_id: int, text: str, parse_mode: str | None, reply_markup) -> None:
+    """Вызывает Telegram API для отправки одного сообщения."""
+    await _application.bot.send_message(
+        chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup,
+    )
+
+
+async def _fallback_to_plain_text(
+    chat_id: int, text: str, parse_mode: str | None, reply_markup,
+) -> bool:
+    """Пробует отправить как plain text при HTML-ошибке. Возвращает True при успехе."""
+    if parse_mode != ParseMode.HTML:
+        return False
+    plain_text = message_splitter.strip_html_tags(text)
+    await _send_raw(chat_id, plain_text, parse_mode=None, reply_markup=reply_markup)
+    return True
+
+
+async def _handle_retry_after(
+    chat_id: int, text: str, parse_mode: str | None, reply_markup,
+    retry_after_seconds: int,
+) -> None:
+    """Обрабатывает RetryAfter: ждёт указанное Telegram время и повторяет."""
+    logger.warning("RetryAfter от Telegram: ждём %d секунд", retry_after_seconds)
+    await asyncio.sleep(retry_after_seconds)
+    try:
+        await _send_raw(chat_id, text, parse_mode, reply_markup)
+    except Exception:
+        logger.warning("Повторная отправка после RetryAfter не удалась", exc_info=True)
+
+
+def _handle_network_error(attempt: int, chat_id: int) -> bool:
+    """Обрабатывает сетевую ошибку. Возвращает True, если нужно повторить."""
+    if attempt < SEND_RETRY_COUNT - 1:
+        logger.warning(
+            "Сетевая ошибка Telegram (попытка %d/%d), повтор через %d с",
+            attempt + 1, SEND_RETRY_COUNT, SEND_RETRY_DELAY_SECONDS,
+        )
+        return True
+    logger.error(
+        "Все %d попыток отправки в Telegram исчерпаны (chat_id=%d)",
+        SEND_RETRY_COUNT, chat_id,
+    )
+    return False
 
 
 async def _send_telegram_message(
@@ -190,60 +237,35 @@ async def _send_telegram_message(
     """Отправляет одно сообщение в Telegram с обработкой ошибок."""
     for attempt in range(SEND_RETRY_COUNT):
         try:
-            await _application.bot.send_message(
-                chat_id,
-                text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup,
-            )
+            await _send_raw(chat_id, text, parse_mode, reply_markup)
             return
         except BadRequest:
-            if parse_mode == ParseMode.HTML:
-                # HTML не удался — fallback на plain text без форматирования
-                plain_text = message_splitter.strip_html_tags(text)
-                await _application.bot.send_message(
-                    chat_id,
-                    plain_text,
-                    parse_mode=None,
-                    reply_markup=reply_markup,
-                )
+            if await _fallback_to_plain_text(chat_id, text, parse_mode, reply_markup):
                 return
             raise
         except RetryAfter as error:
-            retry_after_seconds = error.retry_after
-            logger.warning(
-                "RetryAfter от Telegram: ждём %d секунд", retry_after_seconds
+            await _handle_retry_after(
+                chat_id, text, parse_mode, reply_markup, error.retry_after,
             )
-            await asyncio.sleep(retry_after_seconds)
-            # После ожидания — повторяем (не считаем за попытку)
-            try:
-                await _application.bot.send_message(
-                    chat_id,
-                    text,
-                    parse_mode=parse_mode,
-                    reply_markup=reply_markup,
-                )
-                return
-            except Exception:
-                logger.warning(
-                    "Повторная отправка после RetryAfter не удалась",
-                    exc_info=True,
-                )
+            return
         except (TimedOut, NetworkError):
-            if attempt < SEND_RETRY_COUNT - 1:
-                logger.warning(
-                    "Сетевая ошибка Telegram (попытка %d/%d), повтор через %d с",
-                    attempt + 1,
-                    SEND_RETRY_COUNT,
-                    SEND_RETRY_DELAY_SECONDS,
-                )
+            if _handle_network_error(attempt, chat_id):
                 await asyncio.sleep(SEND_RETRY_DELAY_SECONDS)
-            else:
-                logger.error(
-                    "Все %d попыток отправки в Telegram исчерпаны (chat_id=%d)",
-                    SEND_RETRY_COUNT,
-                    chat_id,
-                )
+
+
+def _extract_file_info(update: Update) -> tuple[str, str, str | None]:
+    """Извлекает file_id, расширение и оригинальное имя из сообщения Telegram."""
+    if update.message.photo:
+        photo_size = update.message.photo[-1]
+        return photo_size.file_id, "jpg", None
+
+    document = update.message.document
+    original_name = document.file_name
+    if original_name and "." in original_name:
+        extension = original_name.rsplit(".", maxsplit=1)[-1].lower()
+    else:
+        extension = "bin"
+    return document.file_id, extension, original_name
 
 
 async def _download_and_save_file(update: Update) -> str:
@@ -251,22 +273,7 @@ async def _download_and_save_file(update: Update) -> str:
     files_dir = Path(config.WORKING_DIR) / RECEIVED_FILES_DIR
     files_dir.mkdir(exist_ok=True)
 
-    if update.message.photo:
-        # Фото — берём последний элемент (максимальное разрешение)
-        photo_size = update.message.photo[-1]
-        file_id = photo_size.file_id
-        extension = "jpg"
-        original_name = None
-    else:
-        # Документ
-        document = update.message.document
-        file_id = document.file_id
-        original_name = document.file_name
-        if original_name and "." in original_name:
-            extension = original_name.rsplit(".", maxsplit=1)[-1].lower()
-        else:
-            extension = "bin"
-
+    file_id, extension, original_name = _extract_file_info(update)
     file_name = _generate_file_name(original_name, extension)
     save_path = files_dir / file_name
 
@@ -319,6 +326,46 @@ async def _on_retry(session_id: str, attempt: int, max_attempts: int) -> None:
             break
 
 
+async def _ensure_process_running(chat_id: int, session_id: str) -> bool:
+    """Создаёт процесс Claude, если он не запущен. Возвращает True при успехе."""
+    if process_manager.has_process(session_id):
+        return True
+    try:
+        await process_manager.create_process(session_id)
+        return True
+    except process_manager.ProcessManagerError as error:
+        logger.error("Не удалось создать процесс: %s", error)
+        await _send_telegram_message(
+            chat_id, "Не удалось запустить Claude. Попробуйте ещё раз",
+            parse_mode=None,
+        )
+        return False
+
+
+async def _handle_claude_result(
+    chat_id: int, session_id: str, result: process_manager.SendResult,
+) -> str:
+    """Обрабатывает результат от Claude: обновляет ID, отправляет ответ."""
+    if result.session_id != session_id:
+        old_id = session_id
+        new_id = result.session_id
+        await session_manager.update_session_id(chat_id, old_id, new_id)
+        session_watcher.update_session_id(old_id, new_id)
+        session_id = new_id
+
+    day_number = await daily_session_registry.register_session(session_id)
+
+    if result.is_error:
+        error_text = result.text if result.text else "Неизвестная ошибка Claude"
+        await _send_telegram_message(
+            chat_id, f"Ошибка Claude: {error_text}", parse_mode=None,
+        )
+    else:
+        await send_response(chat_id, result.text, day_number, is_final=True)
+
+    return session_id
+
+
 async def _send_to_claude_and_respond(chat_id: int, text: str) -> None:
     """Отправляет сообщение в Claude и обрабатывает ответ."""
     session_id = session_manager.get_bound_session(chat_id)
@@ -328,58 +375,22 @@ async def _send_to_claude_and_respond(chat_id: int, text: str) -> None:
         )
         return
 
-    # Если процесс не запущен — создаём
-    if not process_manager.has_process(session_id):
-        try:
-            await process_manager.create_process(session_id)
-        except process_manager.ProcessManagerError as error:
-            logger.error("Не удалось создать процесс: %s", error)
-            await _send_telegram_message(
-                chat_id,
-                "Не удалось запустить Claude. Попробуйте ещё раз",
-                parse_mode=None,
-            )
-            return
+    if not await _ensure_process_running(chat_id, session_id):
+        return
 
-    # Приостанавливаем watcher, чтобы ответ не пришёл дважды
     session_watcher.pause_session(session_id)
 
     try:
         result = await process_manager.send_message(
-            session_id,
-            text,
-            progress_callback=_on_progress,
-            retry_callback=_on_retry,
+            session_id, text,
+            progress_callback=_on_progress, retry_callback=_on_retry,
         )
-
-        # Если session_id обновился (был временный, стал реальный)
-        if result.session_id != session_id:
-            old_id = session_id
-            new_id = result.session_id
-            await session_manager.update_session_id(chat_id, old_id, new_id)
-            session_watcher.update_session_id(old_id, new_id)
-            session_id = new_id
-
-        day_number = await daily_session_registry.register_session(session_id)
-
-        if result.is_error:
-            error_text = result.text if result.text else "Неизвестная ошибка Claude"
-            await _send_telegram_message(
-                chat_id,
-                f"Ошибка Claude: {error_text}",
-                parse_mode=None,
-            )
-        else:
-            await send_response(
-                chat_id, result.text, day_number, is_final=True
-            )
-
+        session_id = await _handle_claude_result(chat_id, session_id, result)
     except process_manager.ProcessStoppedError:
         logger.info("Запрос прерван командой /stop: session_id=%s", session_id)
     except process_manager.ProcessNotFoundError:
         await _send_telegram_message(
-            chat_id,
-            "Процесс Claude не найден. Попробуйте /new",
+            chat_id, "Процесс Claude не найден. Попробуйте /new",
             parse_mode=None,
         )
     except Exception:
@@ -388,8 +399,7 @@ async def _send_to_claude_and_respond(chat_id: int, text: str) -> None:
             exc_info=True,
         )
         await _send_telegram_message(
-            chat_id,
-            "Произошла ошибка. Попробуйте ещё раз",
+            chat_id, "Произошла ошибка. Попробуйте ещё раз",
             parse_mode=None,
         )
     finally:
@@ -691,6 +701,24 @@ async def handle_document(
 # --- Настройка бота ---
 
 
+def _register_handlers(application: Application) -> None:
+    """Регистрирует все обработчики команд и сообщений."""
+    application.add_handler(CommandHandler("new", handle_new))
+    application.add_handler(CommandHandler("sessions", handle_sessions))
+    application.add_handler(CommandHandler("stop", handle_stop))
+    application.add_handler(CommandHandler("all", handle_all))
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^/\d+$"), handle_switch_session)
+    )
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(
+        MessageHandler(filters.Document.ALL, handle_document)
+    )
+
+
 async def setup_bot() -> Application:
     """Создаёт и настраивает экземпляр Telegram-бота."""
     global _application
@@ -702,36 +730,7 @@ async def setup_bot() -> Application:
         .build()
     )
     _application = application
-
-    # Регистрация обработчиков команд
-    application.add_handler(CommandHandler("new", handle_new))
-    application.add_handler(CommandHandler("sessions", handle_sessions))
-    application.add_handler(CommandHandler("stop", handle_stop))
-    application.add_handler(CommandHandler("all", handle_all))
-
-    # Переключение по номеру (например, /3)
-    application.add_handler(
-        MessageHandler(filters.Regex(r"^/\d+$"), handle_switch_session)
-    )
-
-    # Текстовые сообщения (не команды)
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND, handle_message
-        )
-    )
-
-    # Фотографии
-    application.add_handler(
-        MessageHandler(filters.PHOTO, handle_photo)
-    )
-
-    # Документы (файлы)
-    application.add_handler(
-        MessageHandler(filters.Document.ALL, handle_document)
-    )
-
-    # Автоочистка старых файлов
+    _register_handlers(application)
     await _clean_old_received_files()
 
     return application

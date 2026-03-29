@@ -1,30 +1,58 @@
 {
   "project": "claude-manager",
   "brd_path": "development/docs/brd-user-journeys.md",
-  "current_phase": 1,
-  "modules": [],
-  "layers": {},
+  "current_phase": 6,
+  "modules": ["config", "message_splitter", "claude_runner", "session_reader", "daily_session_registry", "session_manager", "process_manager", "session_watcher", "bot", "main"],
+  "layers": {
+    "0": ["config", "message_splitter"],
+    "1": ["claude_runner", "session_reader", "daily_session_registry"],
+    "2": ["session_manager", "process_manager"],
+    "3": ["session_watcher"],
+    "4": ["bot"],
+    "5": ["main"]
+  },
   "phases": {
     "0": {
       "name": "Валидация BRD",
       "status": "completed",
-      "completed_at": "2026-03-29T23:47:00",
-      "report": "development/docs/brd-validation-report_29-03-23-47.md",
-      "issues_found": 26,
-      "issues_resolved": 26
+      "completed_at": "2026-03-29T23:47:00"
     },
     "1": {
       "name": "Фундамент",
       "status": "completed",
       "completed_at": "2026-03-29T23:58:00"
     },
-    "2": {"name": "Спецификации", "status": "pending"},
-    "3": {"name": "Реализация", "status": "pending"},
-    "4": {"name": "Интеграционные тесты", "status": "pending"},
-    "5": {"name": "E2E тесты", "status": "pending"},
+    "2": {
+      "name": "Спецификации",
+      "status": "completed",
+      "completed_at": "2026-03-30T00:45:00"
+    },
+    "3": {
+      "name": "Реализация",
+      "status": "completed",
+      "completed_at": "2026-03-30T01:45:00"
+    },
+    "4": {
+      "name": "Интеграционные тесты",
+      "status": "completed",
+      "completed_at": "2026-03-30T02:15:00"
+    },
+    "5": {
+      "name": "E2E тесты",
+      "status": "skipped",
+      "reason": "Отсутствуют Telethon-ключи для живого тестирования"
+    },
     "6": {"name": "Ревью", "status": "pending"},
     "7": {"name": "Документация", "status": "pending"},
-    "8": {"name": "Сценарии пользовательского тестирования", "status": "pending"},
-    "9": {"name": "Прогон пользовательского тестирования", "status": "pending"}
+    "8": {
+      "name": "Сценарии пользовательского тестирования",
+      "status": "skipped",
+      "reason": "Зависит от E2E тестирования (фаза 5)"
+    },
+    "9": {
+      "name": "Прогон пользовательского тестирования",
+      "status": "skipped",
+      "reason": "Зависит от E2E тестирования (фаза 5)"
+    }
   }
 }

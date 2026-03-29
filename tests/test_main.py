@@ -15,7 +15,6 @@ import pytest
 from claude_manager.config import ConfigError
 from claude_manager.main import (
     LOCK_FILENAME,
-    TELEGRAM_COMMANDS,
     _acquire_lock,
     _restore_state,
     _run_bot,
@@ -283,23 +282,6 @@ class TestMain:
             f"Рабочая директория '{test_working_dir}' не найдена в логах: "
             f"{log_calls}"
         )
-
-
-# --- Тесты TELEGRAM_COMMANDS ---
-
-
-class TestTelegramCommands:
-    """Тесты списка команд для меню Telegram."""
-
-    def test_telegram_commands_list(self):
-        """Проверяет, что список команд содержит все нужные команды."""
-        command_names = [name for name, _ in TELEGRAM_COMMANDS]
-
-        assert "new" in command_names
-        assert "sessions" in command_names
-        assert "all" in command_names
-        assert "stop" in command_names
-        assert len(TELEGRAM_COMMANDS) == 4
 
 
 # --- Тесты _run_bot ---

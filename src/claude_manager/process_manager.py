@@ -155,6 +155,27 @@ def _should_send_progress(last_progress_time: float) -> bool:
     return elapsed >= PROGRESS_THROTTLE_SECONDS
 
 
+def _check_stop_requested(session_id: str) -> None:
+    """Проверяет, запросил ли пользователь отмену. Бросает ProcessStoppedError."""
+    stop_event = _stop_events.get(session_id)
+    if stop_event is not None and stop_event.is_set():
+        raise ProcessStoppedError("Запрос прерван командой /stop")
+
+
+async def _handle_progress_event(
+    event: dict,
+    session_id: str,
+    progress_callback: ProgressCallback | None,
+    last_progress_time: float,
+) -> float:
+    """Обрабатывает промежуточное обновление. Возвращает обновлённое время."""
+    progress_text = _extract_progress_text(event)
+    if progress_text and progress_callback and _should_send_progress(last_progress_time):
+        await progress_callback(session_id, progress_text)
+        return time.monotonic()
+    return last_progress_time
+
+
 async def _process_events(
     claude_process: ClaudeProcess,
     session_id: str,
@@ -168,46 +189,75 @@ async def _process_events(
     got_result = False
 
     async for event in claude_process.read_events():
-        # Проверяем, не запросил ли пользователь отмену
-        stop_event = _stop_events.get(session_id)
-        if stop_event is not None and stop_event.is_set():
-            raise ProcessStoppedError("Запрос прерван командой /stop")
+        _check_stop_requested(session_id)
 
-        # Обновляем session_id из события
         event_session_id = event.get("session_id")
         if event_session_id is not None and event_session_id != final_session_id:
             final_session_id = event_session_id
 
-        # Обрабатываем промежуточные обновления (рассуждения Claude)
-        progress_text = _extract_progress_text(event)
-        if progress_text and progress_callback and _should_send_progress(last_progress_time):
-            await progress_callback(session_id, progress_text)
-            last_progress_time = time.monotonic()
+        last_progress_time = await _handle_progress_event(
+            event, session_id, progress_callback, last_progress_time,
+        )
 
-        # Обрабатываем финальный результат
         if event.get("type") == EVENT_TYPE_RESULT:
             result_text = _extract_result_text(event)
             is_error = _is_error_result(event)
             got_result = True
 
     if not got_result:
-        # Процесс завершился без события result — считаем ошибкой
         logger.warning(
             "Процесс Claude завершился без события result: session_id=%s",
             session_id,
         )
-        return SendResult(
-            text="",
-            session_id=final_session_id,
-            is_error=True,
-            retries_used=0,
-        )
 
     return SendResult(
-        text=result_text,
+        text=result_text if got_result else "",
         session_id=final_session_id,
-        is_error=is_error,
+        is_error=is_error or not got_result,
         retries_used=0,
+    )
+
+
+async def _execute_single_retry(
+    session_id: str,
+    text: str,
+    attempt: int,
+    progress_callback: ProgressCallback | None,
+) -> SendResult | None:
+    """Выполняет одну попытку ретрая. Возвращает результат или None при ошибке."""
+    old_process = _processes.get(session_id)
+    if old_process is not None and old_process.is_running():
+        await old_process.terminate()
+    claude_process = await _restart_process(session_id)
+
+    try:
+        await claude_process.send_message(text)
+        return await _process_events(claude_process, session_id, progress_callback)
+    except ProcessStoppedError:
+        raise
+    except Exception:
+        logger.warning(
+            "Ошибка при повторной попытке %d для сессии %s",
+            attempt, session_id, exc_info=True,
+        )
+        return None
+
+
+def _build_exhausted_result(
+    last_result: SendResult | None, session_id: str,
+) -> SendResult:
+    """Формирует результат после исчерпания всех ретраев."""
+    logger.error(
+        "Все %d ретраев исчерпаны для сессии %s", MAX_RETRIES, session_id,
+    )
+    if last_result is not None:
+        return SendResult(
+            text=last_result.text, session_id=last_result.session_id,
+            is_error=True, retries_used=MAX_RETRIES,
+        )
+    return SendResult(
+        text="", session_id=session_id,
+        is_error=True, retries_used=MAX_RETRIES,
     )
 
 
@@ -221,73 +271,31 @@ async def _retry_loop(
     last_result: SendResult | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
-        # Проверяем флаг отмены перед каждой попыткой
-        stop_event = _stop_events.get(session_id)
-        if stop_event is not None and stop_event.is_set():
-            raise ProcessStoppedError("Ретрай прерван командой /stop")
+        _check_stop_requested(session_id)
 
-        # Уведомляем об очередной попытке
         if retry_callback is not None:
             await retry_callback(session_id, attempt, MAX_RETRIES)
-
         logger.warning(
             "Повторная попытка %d/%d для сессии %s",
             attempt, MAX_RETRIES, session_id,
         )
 
-        # Ждём интервал, но проверяем отмену каждую секунду
         await _wait_with_stop_check(session_id, RETRY_INTERVAL_SECONDS)
 
-        # Завершаем старый процесс и запускаем новый (resume)
-        old_process = _processes.get(session_id)
-        if old_process is not None and old_process.is_running():
-            await old_process.terminate()
-        claude_process = await _restart_process(session_id)
-
-        # Отправляем сообщение и читаем ответ
-        try:
-            await claude_process.send_message(text)
-            result = await _process_events(claude_process, session_id, progress_callback)
-        except ProcessStoppedError:
-            raise
-        except Exception:
-            logger.warning(
-                "Ошибка при повторной попытке %d для сессии %s",
-                attempt, session_id, exc_info=True,
-            )
+        result = await _execute_single_retry(
+            session_id, text, attempt, progress_callback,
+        )
+        if result is None:
             continue
 
-        # Если ответ успешный — возвращаем с количеством использованных ретраев
         if not result.is_error:
             return SendResult(
-                text=result.text,
-                session_id=result.session_id,
-                is_error=False,
-                retries_used=attempt,
+                text=result.text, session_id=result.session_id,
+                is_error=False, retries_used=attempt,
             )
-
         last_result = result
 
-    # Все ретраи исчерпаны
-    logger.error(
-        "Все %d ретраев исчерпаны для сессии %s", MAX_RETRIES, session_id,
-    )
-
-    if last_result is not None:
-        return SendResult(
-            text=last_result.text,
-            session_id=last_result.session_id,
-            is_error=True,
-            retries_used=MAX_RETRIES,
-        )
-
-    # Не должно произойти, но на случай — возвращаем пустой результат с ошибкой
-    return SendResult(
-        text="",
-        session_id=session_id,
-        is_error=True,
-        retries_used=MAX_RETRIES,
-    )
+    return _build_exhausted_result(last_result, session_id)
 
 
 async def _wait_with_stop_check(session_id: str, duration_seconds: float) -> None:
@@ -355,6 +363,29 @@ async def create_process(session_id: str | None = None) -> str:
     return effective_session_id
 
 
+def _validate_process_ready(session_id: str) -> ClaudeProcess:
+    """Проверяет, что процесс существует и не занят. Возвращает процесс."""
+    claude_process = _processes.get(session_id)
+    if claude_process is None:
+        raise ProcessNotFoundError(
+            f"Нет запущенного процесса для сессии '{session_id}'"
+        )
+    if _busy_flags.get(session_id, False):
+        logger.warning("Процесс для сессии %s уже обрабатывает запрос", session_id)
+        raise ProcessManagerError(
+            f"Процесс для сессии '{session_id}' уже занят другим запросом"
+        )
+    return claude_process
+
+
+def _prepare_for_send(session_id: str) -> None:
+    """Устанавливает флаг занятости и сбрасывает флаг отмены."""
+    _busy_flags[session_id] = True
+    stop_event = _stop_events.get(session_id)
+    if stop_event is not None:
+        stop_event.clear()
+
+
 async def send_message(
     session_id: str,
     text: str,
@@ -362,42 +393,18 @@ async def send_message(
     retry_callback: RetryCallback | None = None,
 ) -> SendResult:
     """Отправляет сообщение в процесс Claude и ожидает ответ."""
-    # Проверяем наличие процесса
-    claude_process = _processes.get(session_id)
-    if claude_process is None:
-        raise ProcessNotFoundError(
-            f"Нет запущенного процесса для сессии '{session_id}'"
-        )
-
-    # Проверяем, что процесс не занят другим запросом
-    if _busy_flags.get(session_id, False):
-        logger.warning(
-            "Процесс для сессии %s уже обрабатывает запрос", session_id,
-        )
-        raise ProcessManagerError(
-            f"Процесс для сессии '{session_id}' уже занят другим запросом"
-        )
-
-    # Устанавливаем флаг занятости и сбрасываем флаг отмены
-    _busy_flags[session_id] = True
-    stop_event = _stop_events.get(session_id)
-    if stop_event is not None:
-        stop_event.clear()
+    claude_process = _validate_process_ready(session_id)
+    _prepare_for_send(session_id)
 
     try:
         result = await _execute_send(
             session_id, text, claude_process, progress_callback, retry_callback,
         )
-        # Обновляем session_id, если Claude вернул новый
         if result.session_id != session_id:
             await update_session_id(session_id, result.session_id)
             session_id = result.session_id
-
         return result
-
     finally:
-        # Снимаем флаг занятости в любом случае
-        # session_id мог измениться, поэтому используем актуальный
         _busy_flags[session_id] = False
 
 

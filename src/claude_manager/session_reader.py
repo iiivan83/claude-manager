@@ -201,46 +201,48 @@ def _sort_files_by_mtime(file_paths: list[str]) -> list[str]:
     return sorted(file_paths, key=os.path.getmtime, reverse=True)
 
 
-async def get_recent_sessions(project_dir: str) -> list[SessionInfo]:
-    """Возвращает список последних сессий проекта, новые первые."""
-    sessions_path = _build_sessions_path(project_dir)
-
+async def _list_sorted_session_files(sessions_path: str) -> list[str] | None:
+    """Возвращает отсортированные JSONL-файлы или None при ошибке."""
     path_exists = await asyncio.to_thread(os.path.exists, sessions_path)
     if not path_exists:
         logger.warning("Папка сессий не найдена: %s", sessions_path)
-        return []
+        return None
 
     is_directory = await asyncio.to_thread(os.path.isdir, sessions_path)
     if not is_directory:
         logger.warning("Папка сессий не найдена: %s", sessions_path)
-        return []
+        return None
 
     try:
         jsonl_files = await asyncio.to_thread(_list_jsonl_files, sessions_path)
     except OSError as error:
         logger.error("Ошибка чтения папки сессий %s: %s", sessions_path, error)
-        return []
+        return None
 
     if not jsonl_files:
         logger.info("Файлы сессий не найдены в %s", sessions_path)
-        return []
+        return None
 
     try:
-        sorted_files = await asyncio.to_thread(_sort_files_by_mtime, jsonl_files)
+        return await asyncio.to_thread(_sort_files_by_mtime, jsonl_files)
     except OSError as error:
         logger.error("Ошибка сортировки файлов сессий: %s", error)
+        return None
+
+
+async def get_recent_sessions(project_dir: str) -> list[SessionInfo]:
+    """Возвращает список последних сессий проекта, новые первые."""
+    sessions_path = _build_sessions_path(project_dir)
+    sorted_files = await _list_sorted_session_files(sessions_path)
+    if sorted_files is None:
         return []
 
-    # Берём только первые MAX_RECENT_SESSIONS файлов
     limited_files = sorted_files[:MAX_RECENT_SESSIONS]
-
-    # Читаем файлы последовательно, чтобы не нагружать диск
     sessions: list[SessionInfo] = []
     for file_path in limited_files:
         session_info = await _read_session_file(file_path)
         if session_info is not None:
             sessions.append(session_info)
-
     return sessions
 
 
