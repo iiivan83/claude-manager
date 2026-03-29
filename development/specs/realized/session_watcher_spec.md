@@ -21,7 +21,7 @@
 Запускает бесконечный цикл мониторинга сессий. Каждые 2 секунды проверяет файлы сессий на диске и вызывает callback при обнаружении новых сообщений Claude.
 
 **Аргументы:**
-- `callback` (MessageCallback) — async-функция, которую watcher вызывает при обнаружении нового сообщения Claude. Сигнатура: `async def callback(chat_id: int, session_id: str, day_number: int, message_text: str, is_current_session: bool) -> None`. Реализуется в bot.py — она форматирует сообщение (добавляет номер сессии, конвертирует markdown в HTML) и отправляет в Telegram
+- `callback` (MessageCallback) — async-функция, которую watcher вызывает при обнаружении нового сообщения Claude. Сигнатура: `async def callback(chat_id: int, session_id: str, day_number: int, message_text: str, is_current_session: bool, is_final: bool) -> None`. Реализуется в bot.py — она форматирует сообщение (добавляет номер сессии, конвертирует markdown в HTML) и отправляет в Telegram. Параметр `is_final` указывает, является ли сообщение финальным (последним) в текущей пачке — True для последнего сообщения, False для промежуточных
 - `get_current_session` (CurrentSessionGetter) — async-функция, которая возвращает session_id текущей сессии пользователя (или None, если пользователь в режиме /all). Сигнатура: `async def get_current_session(chat_id: int) -> str | None`. Нужна для определения, является ли сессия текущей (чтобы решить, делать ли номер кликабельной ссылкой)
 
 **Возвращает:** ничего. Функция работает бесконечно (до отмены задачи через `asyncio.Task.cancel()`).
@@ -62,7 +62,7 @@
 ### Типы-алиасы
 
 ```python
-MessageCallback = Callable[[int, str, int, str, bool], Awaitable[None]]
+MessageCallback = Callable[[int, str, int, str, bool, bool], Awaitable[None]]
 CurrentSessionGetter = Callable[[int], Awaitable[str | None]]
 ```
 
@@ -152,7 +152,8 @@ CurrentSessionGetter = Callable[[int], Awaitable[str | None]]
    - Получить дневной номер сессии через `daily_session_registry.register_session(session_id)` (если сессия ещё не зарегистрирована — будет зарегистрирована)
    - Получить chat_id через `session_manager.get_chat_ids()` (все chat_id, подписанные на обновления)
    - Для каждого chat_id определить, является ли сессия текущей, через вызов `get_current_session(chat_id)`
-   - Вызвать `callback(chat_id, session_id, day_number, message_text, is_current_session)`
+   - Определить тип сообщения: все сообщения кроме последнего в текущей пачке — промежуточные (`is_final=False`), последнее сообщение — финальное (`is_final=True`)
+   - Вызвать `callback(chat_id, session_id, day_number, message_text, is_current_session, is_final)`
 
 ### pause_session
 

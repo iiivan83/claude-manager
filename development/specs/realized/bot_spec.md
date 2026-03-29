@@ -160,7 +160,7 @@ Callback, вызываемый после запуска бота (через `A
 
 ---
 
-### `async send_watcher_message(chat_id: int, text: str, session_id: str, session_number: int) -> None`
+### `async send_watcher_message(chat_id: int, text: str, session_id: str, session_number: int, is_final: bool) -> None`
 
 Отправляет сообщение от watcher (ответ из другой сессии). Формат: номер сессии как кликабельная ссылка (если это не текущая сессия чата). Вызывается из session_watcher.
 
@@ -169,6 +169,7 @@ Callback, вызываемый после запуска бота (через `A
 - `text` (str) — текст ответа Claude в формате Markdown
 - `session_id` (str) — идентификатор сессии, из которой пришёл ответ
 - `session_number` (int) — дневной номер сессии
+- `is_final` (bool) — True для финального ответа (галочка), False для промежуточного (песочные часы)
 
 **Возвращает:** ничего
 
@@ -435,8 +436,8 @@ Callback, вызываемый после запуска бота (через `A
 
 1. Определить, является ли сессия текущей для этого чата: `_is_current_session(chat_id, session_id)`
 2. Конвертировать текст (Markdown -> HTML) и разбить: `message_splitter.prepare_message(text)`
-3. Если текущая сессия — сформировать заголовок без ссылки: `_format_session_header(session_number, is_final=True)`
-4. Если не текущая — сформировать заголовок с кликабельной ссылкой: `_format_clickable_session_number(session_number)` + " ✅ "
+3. Если текущая сессия — сформировать заголовок без ссылки: `_format_session_header(session_number, is_final)`
+4. Если не текущая — сформировать заголовок с кликабельной ссылкой: `_format_clickable_session_number(session_number)` + иконка статуса (✅ если is_final=True, ⏳ если is_final=False)
 5. Добавить заголовок в начало первой части
 6. Для каждой части вызвать `_send_telegram_message(chat_id, part)`
 
@@ -731,13 +732,18 @@ Callback, вызываемый после запуска бота (через `A
   - Тип: edge case
 
 - **test_send_watcher_message_current_session** — watcher-сообщение из текущей сессии
-  - Вход: session_id совпадает с текущей сессией чата
-  - Ожидаемый результат: номер сессии без кликабельной ссылки
+  - Вход: session_id совпадает с текущей сессией чата, is_final=True
+  - Ожидаемый результат: номер сессии без кликабельной ссылки, иконка ✅
   - Тип: edge case
 
 - **test_send_watcher_message_other_session** — watcher-сообщение из другой сессии
-  - Вход: session_id не совпадает с текущей сессией чата
-  - Ожидаемый результат: номер сессии как кликабельная ссылка
+  - Вход: session_id не совпадает с текущей сессией чата, is_final=True
+  - Ожидаемый результат: номер сессии как кликабельная ссылка, иконка ✅
+  - Тип: edge case
+
+- **test_send_watcher_message_intermediate** — промежуточное watcher-сообщение (не финальное)
+  - Вход: is_final=False
+  - Ожидаемый результат: иконка ⏳ вместо ✅
   - Тип: edge case
 
 - **test_handle_photo_in_all_mode** — отправка фото в режиме /all

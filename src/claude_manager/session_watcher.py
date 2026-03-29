@@ -26,8 +26,8 @@ ERROR_RETRY_DELAY_SECONDS = 10
 NO_RESPONSE_MARKERS = frozenset({"No response requested."})
 
 # Типы-алиасы для callback-функций
-# callback(chat_id, session_id, day_number, message_text, is_current_session)
-MessageCallback = Callable[[int, str, int, str, bool], Awaitable[None]]
+# callback(chat_id, session_id, day_number, message_text, is_current_session, is_final)
+MessageCallback = Callable[[int, str, int, str, bool, bool], Awaitable[None]]
 # get_current_session(chat_id) -> session_id или None
 CurrentSessionGetter = Callable[[int], Awaitable[str | None]]
 
@@ -137,9 +137,15 @@ async def _check_session(session_id: str) -> None:
     # Обновляем счётчик до актуального значения
     _seen_message_counts[session_id] = current_count
 
-    for text in new_texts:
+    last_index = len(new_texts) - 1
+    for index, text in enumerate(new_texts):
         if _is_empty_response(text):
             continue
+
+        # Все сообщения кроме последнего — точно промежуточные.
+        # Последнее — помечаем финальным (если Claude ещё думает,
+        # следующий цикл через 2 сек найдёт новое сообщение)
+        is_final = (index == last_index)
 
         try:
             day_number = await daily_session_registry.register_session(
@@ -160,7 +166,8 @@ async def _check_session(session_id: str) -> None:
 
             try:
                 await _callback(
-                    chat_id, session_id, day_number, text, is_current
+                    chat_id, session_id, day_number, text,
+                    is_current, is_final,
                 )
             except Exception:
                 logger.error(

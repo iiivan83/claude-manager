@@ -373,6 +373,7 @@ class TestDetectNewMessages:
             1,
             "Файл main.py содержит точку входа",
             True,
+            True,
         )
 
     @pytest.mark.asyncio
