@@ -1,0 +1,26 @@
+{
+  "project": "claude-manager",
+  "brd_path": "development/docs/brd-user-journeys.md",
+  "current_phase": 0,
+  "modules": [],
+  "layers": {},
+  "phases": {
+    "0": {
+      "name": "Валидация BRD",
+      "status": "completed",
+      "completed_at": "2026-03-29T23:47:00",
+      "report": "development/docs/brd-validation-report_29-03-23-47.md",
+      "issues_found": 26,
+      "issues_resolved": 26
+    },
+    "1": {"name": "Фундамент", "status": "pending"},
+    "2": {"name": "Спецификации", "status": "pending"},
+    "3": {"name": "Реализация", "status": "pending"},
+    "4": {"name": "Интеграционные тесты", "status": "pending"},
+    "5": {"name": "E2E тесты", "status": "pending"},
+    "6": {"name": "Ревью", "status": "pending"},
+    "7": {"name": "Документация", "status": "pending"},
+    "8": {"name": "Сценарии пользовательского тестирования", "status": "pending"},
+    "9": {"name": "Прогон пользовательского тестирования", "status": "pending"}
+  }
+}
