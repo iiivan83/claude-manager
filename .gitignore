@@ -17,3 +17,13 @@ build/
 # Переменные окружения (секреты, пароли — нельзя в git)
 .env
 .env.local
+
+# Файлы, создаваемые при работе бота
+bot.pid
+bot.log
+received_files/
+sessions.json
+daily_sessions.json
+
+# Сессии Telethon (для E2E тестов — содержат токен авторизации)
+*.session

@@ -277,6 +277,10 @@ cd <корень_проекта> && pip install -e ".[test]"
   "brd_path": "development/docs/brd-user-journeys.md",
   "current_phase": 1,
   "phases": {
+    "0": {
+      "name": "Валидация BRD",
+      "status": "pending"
+    },
     "1": {
       "name": "Фундамент",
       "status": "completed",
