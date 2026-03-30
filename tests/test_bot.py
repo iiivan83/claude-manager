@@ -730,7 +730,7 @@ class TestSendWatcherMessage:
         mock_get_bound.return_value = TEST_SESSION_ID
 
         await send_watcher_message(
-            TEST_CHAT_ID, "Ответ", TEST_SESSION_ID, 1, is_final=True
+            TEST_CHAT_ID, "Ответ", TEST_SESSION_ID, 1
         )
 
         sent = _setup_application.bot.send_message
@@ -750,45 +750,13 @@ class TestSendWatcherMessage:
         mock_get_bound.return_value = TEST_SESSION_ID_2
 
         await send_watcher_message(
-            TEST_CHAT_ID, "Ответ", TEST_SESSION_ID, 1, is_final=True
+            TEST_CHAT_ID, "Ответ", TEST_SESSION_ID, 1
         )
 
         sent = _setup_application.bot.send_message
         sent.assert_called()
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
         assert "tg://msg" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "get_bound_session")
-    async def test_send_watcher_message_uses_correct_icon(
-        self,
-        mock_get_bound: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Финальное сообщение с иконкой завершения, промежуточное — с песочными часами и курсивом."""
-        mock_get_bound.return_value = TEST_SESSION_ID
-
-        # Проверка 1: is_final=True — иконка завершения, без песочных часов
-        await send_watcher_message(
-            TEST_CHAT_ID, "Готово", TEST_SESSION_ID, 1, is_final=True
-        )
-        sent = _setup_application.bot.send_message
-        final_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "\u2705" in final_text
-        assert "\u23f3" not in final_text
-
-        sent.reset_mock()
-
-        # Проверка 2: is_final=False — песочные часы, без иконки завершения
-        await send_watcher_message(
-            TEST_CHAT_ID, "Думаю...", TEST_SESSION_ID, 1, is_final=False
-        )
-        intermediate_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "\u23f3" in intermediate_text
-        assert "\u2705" not in intermediate_text
-
-        # Проверка 3: промежуточное сообщение обёрнуто в курсив
-        assert "<i>" in intermediate_text
 
 
 # --- Тесты _send_telegram_message ---

@@ -442,21 +442,15 @@ async def send_watcher_message(
     text: str,
     session_id: str,
     session_number: int,
-    is_final: bool,
 ) -> None:
     """Отправляет сообщение от watcher (ответ из другой сессии)."""
     parts = message_splitter.prepare_message(text)
 
-    # Промежуточные обновления отображаем курсивом, как в send_response
-    if not is_final:
-        parts = [f"<i>{part}</i>" for part in parts]
-
     if _is_current_session(chat_id, session_id):
-        header = _format_session_header(session_number, is_final)
+        header = _format_session_header(session_number, is_final=True)
     else:
         clickable = _format_clickable_session_number(session_number)
-        status_icon = "\u2705" if is_final else "\u23f3"
-        header = f"{clickable} {status_icon} "
+        header = f"{clickable} \u2705 "
 
     parts[0] = header + parts[0]
 
@@ -508,10 +502,9 @@ async def _watcher_callback(
     day_number: int,
     text: str,
     is_current: bool,
-    is_final: bool,
 ) -> None:
     """Callback для session_watcher — пересылает ответ Claude из мониторинга."""
-    await send_watcher_message(chat_id, text, session_id, day_number, is_final)
+    await send_watcher_message(chat_id, text, session_id, day_number)
 
 
 async def _get_current_session_async(chat_id: int) -> str | None:
