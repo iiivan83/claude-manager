@@ -109,8 +109,8 @@ def _format_session_header(session_number: int, is_final: bool) -> str:
 
 
 def _format_clickable_session_number(session_number: int) -> str:
-    """Форматирует номер сессии как кликабельную ссылку для Telegram."""
-    return f'<b><a href="tg://msg?text=/{session_number}">#{session_number}</a></b>'
+    """Форматирует номер сессии как кликабельную команду для Telegram."""
+    return f"<b>/{session_number}</b>"
 
 
 def _is_current_session(chat_id: int, session_id: str) -> bool:

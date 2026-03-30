@@ -165,11 +165,9 @@ class TestFormatClickableSessionNumber:
     """Тесты формата кликабельных номеров сессий."""
 
     def test_format_clickable_session_number(self) -> None:
-        """Кликабельный номер содержит HTML-ссылку."""
+        """Кликабельный номер содержит команду в жирном формате."""
         result = _format_clickable_session_number(3)
-        assert "<a href=" in result
-        assert "/3" in result
-        assert "#3" in result
+        assert result == "<b>/3</b>"
 
 
 # --- Тесты задания для Claude ---
@@ -746,7 +744,7 @@ class TestSendWatcherMessage:
         mock_get_bound: MagicMock,
         _setup_application: MagicMock,
     ) -> None:
-        """Сообщение из другой сессии — с кликабельной ссылкой."""
+        """Сообщение из другой сессии — с кликабельной командой."""
         mock_get_bound.return_value = TEST_SESSION_ID_2
 
         await send_watcher_message(
@@ -756,7 +754,7 @@ class TestSendWatcherMessage:
         sent = _setup_application.bot.send_message
         sent.assert_called()
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "tg://msg" in sent_text
+        assert "<b>/1</b>" in sent_text
 
     @pytest.mark.asyncio()
     @patch.object(session_manager, "get_bound_session")
