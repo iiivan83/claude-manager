@@ -781,6 +781,7 @@ def setup_bot() -> Application:
         ApplicationBuilder()
         .token(config.BOT_TOKEN)
         .post_init(post_init)
+        .concurrent_updates(256)
         .build()
     )
     _application = application
