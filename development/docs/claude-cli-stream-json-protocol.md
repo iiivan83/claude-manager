@@ -1,0 +1,272 @@
+# Протокол stream-json для Claude Code CLI
+
+**Дата:** 30-03-2026
+**Статус:** Собрано из официальных SDK, GitHub issues и сторонних реализаций
+**Важно:** Официальная документация Anthropic по этому протоколу минимальна (issue #24594 закрыт как NOT_PLANNED). Этот документ — единственный полный справочник для проекта.
+
+## Общие принципы
+
+Claude Code CLI поддерживает программный режим работы через флаги:
+- `--input-format stream-json` — принимает JSON-сообщения на stdin
+- `--output-format stream-json` — выдаёт JSON-события на stdout
+- `-p` — print-режим (неинтерактивный, программный)
+
+Обмен данными — **NDJSON** (Newline Delimited JSON): один JSON-объект на строку, разделитель `\n`.
+
+---
+
+## Входящие сообщения (stdin → Claude CLI)
+
+### Пользовательское текстовое сообщение
+
+```json
+{"type": "user", "message": {"role": "user", "content": "Текст сообщения"}}
+```
+
+**Поля:**
+- **type** — всегда `"user"`
+- **message.role** — всегда `"user"`
+- **message.content** — строка (простой текст) или массив content blocks
+
+**КРИТИЧЕСКИ ВАЖНО:** Старый формат `{"type": "user_message", "content": "..."}` — НЕВАЛИДНЫЙ. Claude CLI молча игнорирует его и зависает в ожидании правильного сообщения. Никакой ошибки не выдаётся.
+
+### Пользовательское сообщение с изображением
+
+```json
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "Описание"},
+      {
+        "type": "image",
+        "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": "base64_данные_изображения"
+        }
+      }
+    ]
+  }
+}
+```
+
+### Необязательные поля
+
+- **session_id** — идентификатор сессии (используется в Agent SDK)
+- **parent_tool_use_id** — `null` для обычных сообщений, ID tool_use для ответов субагентов
+
+---
+
+## Исходящие события (Claude CLI → stdout)
+
+### system — инициализация сессии
+
+Первое событие после запуска процесса. Содержит метаданные сессии.
+
+```json
+{
+  "type": "system",
+  "subtype": "init",
+  "session_id": "uuid-сессии",
+  "tools": ["Bash", "Read", "Edit", "Write", "..."],
+  "model": "claude-opus-4-6[1m]",
+  "claude_code_version": "2.1.81",
+  "permissionMode": "default"
+}
+```
+
+### assistant — ответ Claude
+
+Содержит текст ответа, вызовы инструментов или блоки размышлений.
+
+```json
+{
+  "type": "assistant",
+  "message": {
+    "role": "assistant",
+    "content": [
+      {"type": "text", "text": "Ответ Claude"},
+      {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {"command": "ls"}},
+      {"type": "thinking", "thinking": "Размышления Claude", "signature": "..."}
+    ]
+  },
+  "session_id": "uuid-сессии"
+}
+```
+
+**Content blocks бывают:**
+- `text` — текстовый блок ответа
+- `tool_use` — вызов инструмента (Bash, Read, Edit и др.)
+- `thinking` — блок размышлений (extended thinking)
+
+### user (tool_result) — результат выполнения инструмента
+
+```json
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": [
+      {
+        "tool_use_id": "tool-1",
+        "type": "tool_result",
+        "content": "результат выполнения инструмента"
+      }
+    ]
+  },
+  "session_id": "uuid-сессии"
+}
+```
+
+### result — финальный результат запроса
+
+Последнее событие для текущего запроса. После него Claude ждёт следующее сообщение.
+
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "Финальный текстовый ответ",
+  "duration_ms": 5000,
+  "duration_api_ms": 4500,
+  "num_turns": 3,
+  "session_id": "uuid-сессии",
+  "total_cost_usd": 0.00123,
+  "usage": {
+    "input_tokens": 150,
+    "output_tokens": 75,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}
+```
+
+**Важные поля:**
+- **subtype** — `"success"` или `"error_during_execution"`
+- **is_error** — `true` если Claude вернул ошибку
+- **result** — финальный текст (может быть пустым — известный баг #8126)
+- **session_id** — может измениться по сравнению с начальным! Нужно обновлять
+
+### rate_limit_event — информация о лимитах
+
+```json
+{
+  "type": "rate_limit_event",
+  "rate_limit_info": {
+    "status": "allowed_warning",
+    "resetsAt": 1774839600,
+    "rateLimitType": "five_hour",
+    "utilization": 0.9
+  },
+  "session_id": "uuid-сессии"
+}
+```
+
+### system (api_retry) — автоматический ретрай API
+
+```json
+{
+  "type": "system",
+  "subtype": "api_retry",
+  "attempt": 1,
+  "max_retries": 5,
+  "retry_delay_ms": 1000,
+  "error_status": 429,
+  "error": "rate_limit"
+}
+```
+
+---
+
+## Control Protocol (управляющие сообщения)
+
+Доступен при `--input-format stream-json`. Позволяет управлять процессом Claude CLI поверх того же stdin/stdout канала.
+
+### Запрос (stdin → Claude CLI)
+
+```json
+{
+  "type": "control_request",
+  "request_id": "req_1_abc123",
+  "request": {"subtype": "initialize", "hooks": {}}
+}
+```
+
+### Ответ (Claude CLI → stdout)
+
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "req_1_abc123",
+    "response": {"supported_commands": ["..."]}
+  }
+}
+```
+
+### Доступные команды (subtypes)
+
+- **initialize** — регистрация хуков, MCP серверов, агентов
+- **interrupt** — прервать текущую задачу
+- **set_model** — сменить модель
+- **set_permission_mode** — сменить режим пермиссий
+- **stop_task** — остановить фоновую задачу
+- **mcp_status** / **mcp_toggle** / **mcp_reconnect** — управление MCP серверами
+- **get_account_info** / **get_models** / **get_commands** — получение информации
+
+### Запрос разрешения на инструмент (Claude CLI → stdout)
+
+Claude запрашивает разрешение перед выполнением инструмента:
+
+```json
+{
+  "type": "control_request",
+  "request_id": "req_3_abc",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "input": {"command": "ls -la"}
+  }
+}
+```
+
+Ответ (stdin → Claude CLI):
+
+```json
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "req_3_abc",
+    "response": {"allowed": true}
+  }
+}
+```
+
+**Примечание:** При `--dangerously-skip-permissions` запросы разрешений не приходят.
+
+---
+
+## Известные баги и ограничения
+
+- **Пустой result** (issue #8126) — поле `result` в финальном ResultMessage иногда приходит пустым (~40% случаев в некоторых конфигурациях)
+- **Зависание на втором сообщении** (issue #3187) — процесс может зависнуть при отправке второго сообщения через stdin
+- **Дублирование записей** (issue #5034) — записи в JSONL-файле сессии могут дублироваться при stream-json input
+- **Буферизация stdout** (issue #25670) — stdout может не flush-иться при piped output (буфер ~4-8KB)
+- **Невалидный формат — молчаливое зависание** — если отправить невалидный JSON или неправильный формат сообщения, CLI молча ждёт правильное сообщение без какой-либо ошибки
+
+---
+
+## Источники
+
+- [Headless mode documentation](https://code.claude.com/docs/en/headless) — официальная документация по `-p` режиму
+- [CLI reference](https://code.claude.com/docs/en/cli-reference) — полный список CLI флагов
+- [Agent SDK streaming output](https://platform.claude.com/docs/en/agent-sdk/streaming-output) — типы StreamEvent
+- [Agent SDK streaming vs single mode](https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode) — формат входных сообщений
+- [Agent SDK Python reference](https://platform.claude.com/docs/en/agent-sdk/python) — все типы сообщений
+- [GitHub issue #24594](https://github.com/anthropics/claude-code/issues/24594) — обсуждение отсутствия документации + reverse-engineered формат
+- [Go SDK subprocess package](https://pkg.go.dev/github.com/dotcommander/agent-sdk-go/claude/subprocess) — полная спецификация control protocol
