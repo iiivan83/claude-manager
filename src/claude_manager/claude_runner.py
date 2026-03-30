@@ -95,6 +95,9 @@ class ClaudeProcess:
         json_line = json.dumps(message, ensure_ascii=False) + "\n"
 
         await self._write_to_stdin(json_line)
+        # Закрываем stdin — Claude CLI получает EOF и начинает обработку.
+        # Без этого CLI буферизует stdout и не отдаёт ответ при запуске через pipe.
+        self.process.stdin.close()
         logger.debug("Отправлено сообщение в Claude: %d символов", len(text))
 
     async def read_events(self) -> AsyncGenerator[dict, None]:
