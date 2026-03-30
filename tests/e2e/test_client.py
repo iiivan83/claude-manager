@@ -39,6 +39,8 @@ class TelegramTestClient:
         self._phone = phone
         self._bot_username = bot_username
         self._last_response: str | None = None
+        # Все ответы после последнего send_message (для поиска нужного среди watcher-шума)
+        self._all_responses: list[str] = []
         # Событие (asyncio.Event) — сигнал о том, что пришёл новый ответ от бота
         self._response_received = asyncio.Event()
 
@@ -52,6 +54,7 @@ class TelegramTestClient:
         async def _on_bot_message(event: events.NewMessage.Event) -> None:
             """Обработчик: сохраняет текст ответа от бота."""
             self._last_response = event.message.text
+            self._all_responses.append(event.message.text)
             self._response_received.set()
             logger.info("Получен ответ от бота: %s", event.message.text[:100])
 
@@ -107,7 +110,46 @@ class TelegramTestClient:
         """Возвращает текст последнего ответа от бота (или None)."""
         return self._last_response
 
+    async def wait_for_matching_response(
+        self,
+        match_text: str,
+        timeout: int = DEFAULT_RESPONSE_TIMEOUT_SECONDS,
+    ) -> str:
+        """Ждёт ответ, содержащий match_text. Пропускает посторонние (watcher и др.)."""
+        end_time = asyncio.get_event_loop().time() + timeout
+        checked_index = 0
+
+        while True:
+            # Проверяем все накопившиеся ответы
+            while checked_index < len(self._all_responses):
+                response = self._all_responses[checked_index]
+                checked_index += 1
+                if match_text in response:
+                    return response
+
+            remaining = end_time - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                last = self._last_response or "(нет ответов)"
+                raise TimeoutError(
+                    f"Не получен ответ с '{match_text}' за {timeout} сек. "
+                    f"Последний: {last}"
+                )
+
+            # Ждём следующее сообщение от бота
+            self._response_received.clear()
+            try:
+                await asyncio.wait_for(
+                    self._response_received.wait(), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                last = self._last_response or "(нет ответов)"
+                raise TimeoutError(
+                    f"Не получен ответ с '{match_text}' за {timeout} сек. "
+                    f"Последний: {last}"
+                ) from None
+
     def _reset_response_state(self) -> None:
         """Сбрасывает состояние ожидания перед новым сообщением."""
         self._last_response = None
+        self._all_responses.clear()
         self._response_received.clear()
