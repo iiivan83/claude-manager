@@ -136,6 +136,45 @@ cat ~/Library/Logs/claude-manager.error.log
 - **При запуске через watch_and_restart.sh**: нажмите `Ctrl+C` — скрипт остановит и бота, и наблюдатель
 - **При автозапуске через LaunchAgents**: `launchctl unload ~/Library/LaunchAgents/com.ivan.claude-manager.plist`
 
+## Шаг 7: Настройка E2E тестирования (необязательно)
+
+E2E тесты отправляют реальные сообщения боту через Telegram, используя библиотеку Telethon (подключается как обычный пользователь).
+
+**Что нужно:**
+- Отдельный Telegram-аккаунт для тестирования (не тот, с которого вы пишете боту)
+- API-ключи Telegram — получить на https://my.telegram.org (раздел API development tools)
+
+**Настройка:**
+
+1. Установите E2E-зависимости: `pip install -e ".[dev]"`
+2. Добавьте в `.env` переменные Telethon:
+   ```
+   TELETHON_API_ID=ваш_api_id
+   TELETHON_API_HASH=ваш_api_hash
+   TELETHON_PHONE=+номер_тестового_аккаунта
+   TELETHON_BOT_USERNAME=@имя_вашего_бота
+   ```
+3. Добавьте Telegram-ID тестового аккаунта в `ALLOWED_USER_IDS` (через запятую к основному ID)
+4. Перезапустите бота
+5. Авторизуйте Telethon (при первом запуске нужен SMS-код):
+   ```bash
+   # Шаг 1: запросить SMS-код
+   python tests/e2e/check_connection.py
+
+   # Шаг 2: ввести код из SMS
+   python tests/e2e/check_connection.py XXXXXX
+   ```
+6. Проверьте подключение: `python tests/e2e/check_connection.py test`
+
+**Ожидаемый результат:** скрипт выводит «Успех! Бот работает. Ответ: Создана новая сессия #N».
+
+После авторизации session-файл (`tests/e2e/telethon_test.session`) сохраняется — повторный ввод SMS-кода не нужен.
+
+**Инфраструктура E2E:**
+- `tests/e2e/test_client.py` — клиент-обёртка `TelegramTestClient` (send_message, wait_for_response, send_photo)
+- `tests/e2e/check_connection.py` — скрипт проверки подключения
+- E2E тесты исключены из обычного `pytest tests/` (запускаются отдельно)
+
 ## Решение проблем
 
 - **«TELEGRAM_BOT_TOKEN не задан»** — файл `.env` не найден или поле `TELEGRAM_BOT_TOKEN` пустое. Проверьте, что `.env` лежит в корне проекта и содержит токен
