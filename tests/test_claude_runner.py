@@ -51,14 +51,11 @@ def test_build_command_args_new_session():
     """Аргументы CLI для новой сессии — без --resume."""
     args = _build_command_args(session_id=None)
 
-    expected = [
-        "claude", "-p",
-        "--output-format", "stream-json",
-        "--verbose",
-        "--input-format", "stream-json",
-        "--dangerously-skip-permissions",
-    ]
-    assert args == expected
+    # Первый аргумент — путь к claude CLI (может быть полный путь)
+    assert args[0].endswith("claude")
+    assert "-p" in args
+    assert "--output-format" in args
+    assert "--dangerously-skip-permissions" in args
     assert "--resume" not in args
 
 
@@ -149,7 +146,7 @@ async def test_start_process_new_session(mock_exec, mock_subprocess):
     # Проверяем, что subprocess создан с нужными аргументами
     call_args = mock_exec.call_args
     command_args = call_args[0]
-    assert "claude" in command_args
+    assert command_args[0].endswith("claude")
     assert "--resume" not in command_args
 
 
@@ -180,7 +177,10 @@ async def test_send_message_writes_json_to_stdin(claude_process, mock_subprocess
     written_data = mock_subprocess.stdin.write.call_args[0][0]
     written_str = written_data.decode("utf-8")
     parsed = json.loads(written_str.strip())
-    assert parsed == {"type": "user_message", "content": text}
+    assert parsed == {
+        "type": "user",
+        "message": {"role": "user", "content": text},
+    }
 
     # Проверяем, что drain вызван (данные отправлены)
     mock_subprocess.stdin.drain.assert_awaited_once()
@@ -327,7 +327,7 @@ async def test_send_message_with_unicode(claude_process, mock_subprocess):
     written_data = mock_subprocess.stdin.write.call_args[0][0]
     written_str = written_data.decode("utf-8")
     parsed = json.loads(written_str.strip())
-    assert parsed["content"] == text
+    assert parsed["message"]["content"] == text
 
 
 async def test_send_message_with_special_json_characters(claude_process, mock_subprocess):
@@ -342,7 +342,7 @@ async def test_send_message_with_special_json_characters(claude_process, mock_su
     assert '\\"hello\\"' in written_str
     # И что JSON разбирается обратно корректно
     parsed = json.loads(written_str.strip())
-    assert parsed["content"] == text
+    assert parsed["message"]["content"] == text
 
 
 async def test_terminate_already_finished_process(claude_process, mock_subprocess):

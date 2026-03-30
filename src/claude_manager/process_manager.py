@@ -313,8 +313,12 @@ async def _wait_with_stop_check(session_id: str, duration_seconds: float) -> Non
 
 async def _restart_process(session_id: str) -> ClaudeProcess:
     """Перезапускает процесс Claude для указанной сессии (с resume)."""
+    # Для временных сессий — запускаем без --resume
+    is_temp_session = session_id.startswith(TEMP_SESSION_PREFIX)
+    cli_session_id = None if is_temp_session else session_id
+
     try:
-        claude_process = await start_process(session_id)
+        claude_process = await start_process(cli_session_id)
     except ClaudeStartError as error:
         raise ProcessManagerError(
             f"Не удалось запустить Claude: {error}"
@@ -340,10 +344,13 @@ async def create_process(session_id: str | None = None) -> str:
     else:
         effective_session_id = _generate_temp_session_id()
 
-    # Запускаем процесс через claude_runner
-    # При resume передаём session_id, при новой сессии — None
+    # Для новых сессий (временный ID типа _new_XXXX) — запускаем без --resume,
+    # чтобы Claude создал свежую сессию. Для существующих — передаём ID для resume.
+    is_temp_session = effective_session_id.startswith(TEMP_SESSION_PREFIX)
+    cli_session_id = None if is_temp_session else session_id
+
     try:
-        claude_process = await start_process(session_id)
+        claude_process = await start_process(cli_session_id)
     except ClaudeStartError as error:
         raise ProcessManagerError(
             f"Не удалось запустить Claude: {error}"

@@ -25,6 +25,12 @@ REGISTRY_TEMP_SUFFIX = ".tmp"
 # Формат даты для ключей реестра (ISO 8601 — однозначный, сортируемый)
 DATE_FORMAT = "%Y-%m-%d"
 
+# Количество попыток чтения файла при непредвиденной ошибке
+LOAD_RETRY_COUNT = 10
+
+# Пауза между попытками чтения (секунды)
+LOAD_RETRY_DELAY_SECONDS = 2
+
 # Внутреннее состояние модуля
 # Ключ — дата "YYYY-MM-DD", значение — словарь {номер_строкой: session_id}
 _registry: dict[str, dict[str, str]] = {}
@@ -34,6 +40,9 @@ _lock = asyncio.Lock()
 
 # Путь к файлу реестра (заполняется при load_registry)
 _registry_path: Path | None = None
+
+# Был ли реестр успешно загружен (защита от затирания данных при записи)
+_loaded_from_disk: bool = False
 
 
 def _get_today_key() -> str:
@@ -63,6 +72,10 @@ def _next_day_number() -> int:
 
 async def _save_registry() -> None:
     """Сохраняет реестр на диск атомарно (tmp + rename)."""
+    if not _loaded_from_disk:
+        logger.warning("Запись реестра заблокирована — данные не были загружены с диска")
+        return
+
     if _registry_path is None:
         raise OSError("Путь к файлу реестра не задан — вызовите load_registry()")
 
@@ -146,22 +159,50 @@ async def get_all_today_sessions() -> dict[int, str]:
         return {int(number): session_id for number, session_id in today_entries.items()}
 
 
+def is_registry_loaded() -> bool:
+    """Проверяет, был ли реестр успешно загружен с диска."""
+    return _loaded_from_disk
+
+
+async def _read_registry_file() -> dict | None:
+    """Читает файл реестра с повторными попытками при непредвиденных ошибках.
+
+    Возвращает словарь с данными или None если все попытки исчерпаны.
+    """
+    for attempt in range(1, LOAD_RETRY_COUNT + 1):
+        try:
+            content = await asyncio.to_thread(_registry_path.read_text, "utf-8")
+            return json.loads(content)
+        except FileNotFoundError:
+            logger.info("Файл реестра не найден, создаю пустой реестр")
+            return {}
+        except json.JSONDecodeError:
+            logger.warning("Файл реестра повреждён, создаю пустой реестр")
+            return {}
+        except Exception as error:
+            logger.warning("Попытка чтения реестра %d/%d: %s", attempt, LOAD_RETRY_COUNT, error)
+            if attempt < LOAD_RETRY_COUNT:
+                await asyncio.sleep(LOAD_RETRY_DELAY_SECONDS)
+
+    logger.error("Не удалось прочитать реестр после %d попыток", LOAD_RETRY_COUNT)
+    return None
+
+
 async def load_registry() -> None:
     """Загружает реестр из файла daily_sessions.json в память."""
-    global _registry, _registry_path
+    global _registry, _registry_path, _loaded_from_disk
 
-    # Путь к файлу реестра — рядом с sessions.json в рабочей директории
     _registry_path = Path(config.WORKING_DIR) / REGISTRY_FILENAME
 
-    try:
-        content = await asyncio.to_thread(_registry_path.read_text, "utf-8")
-        _registry = json.loads(content)
-        logger.info("Реестр дневных сессий загружен из %s", _registry_path)
-    except FileNotFoundError:
+    result = await _read_registry_file()
+
+    if result is not None:
+        _registry = result
+        _loaded_from_disk = True
+        if result:
+            logger.info("Реестр дневных сессий загружен из %s", _registry_path)
+    else:
         _registry = {}
-        logger.info("Файл реестра не найден, создаю пустой реестр")
-    except json.JSONDecodeError:
-        _registry = {}
-        logger.warning("Файл реестра повреждён, создаю пустой реестр")
+        _loaded_from_disk = False
 
     _ensure_today_registry()

@@ -1,7 +1,7 @@
 {
   "project": "claude-manager",
   "brd_path": "development/docs/brd-user-journeys.md",
-  "current_phase": 6,
+  "current_phase": 5,
   "modules": ["config", "message_splitter", "claude_runner", "session_reader", "daily_session_registry", "session_manager", "process_manager", "session_watcher", "bot", "main"],
   "layers": {
     "0": ["config", "message_splitter"],
@@ -39,20 +39,25 @@
     },
     "5": {
       "name": "E2E тесты",
-      "status": "skipped",
-      "reason": "Отсутствуют Telethon-ключи для живого тестирования"
+      "status": "in_progress"
     },
-    "6": {"name": "Ревью", "status": "pending"},
-    "7": {"name": "Документация", "status": "pending"},
+    "6": {
+      "name": "Ревью",
+      "status": "completed",
+      "completed_at": "2026-03-30T02:50:00"
+    },
+    "7": {
+      "name": "Документация",
+      "status": "completed",
+      "completed_at": "2026-03-30T03:10:00"
+    },
     "8": {
       "name": "Сценарии пользовательского тестирования",
-      "status": "skipped",
-      "reason": "Зависит от E2E тестирования (фаза 5)"
+      "status": "pending"
     },
     "9": {
       "name": "Прогон пользовательского тестирования",
-      "status": "skipped",
-      "reason": "Зависит от E2E тестирования (фаза 5)"
+      "status": "pending"
     }
   }
 }

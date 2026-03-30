@@ -86,6 +86,10 @@ claude_manager/
 
 Состояние хранится в словарях на уровне модулей: session_manager (привязки chat_id → session_id), daily_session_registry (дневные номера), process_manager (процессы, флаги занятости), session_watcher (счётчики обработанных сообщений). Персистентность — через JSON-файлы (sessions.json, daily_sessions.json). При потере состояния в памяти — автовосстановление из файлов при перезапуске.
 
+### Защита персистентных данных от затирания
+
+Модули с файловым хранилищем (daily_session_registry, session_manager) отслеживают флаг `_loaded_from_disk`. При запуске модуль пытается загрузить файл с диска (с повторными попытками при ошибке). Функция записи на диск проверяет этот флаг и отказывается записывать, если состояние не было загружено — чтобы пустые данные не перезаписали валидный файл. Если загрузка не удалась после всех попыток — бот сообщает пользователю в Telegram.
+
 ## Правила разработки
 
 ### Python стиль
@@ -139,6 +143,13 @@ python -m claude_manager
 
 # Запуск бота с автоперезапуском при изменениях
 ./watch_and_restart.sh
+
+# Автозапуск через macOS LaunchAgents (бот стартует при входе в систему)
+launchctl load ~/Library/LaunchAgents/com.ivan.claude-manager.plist
+launchctl unload ~/Library/LaunchAgents/com.ivan.claude-manager.plist  # остановить
+
+# Логи автозапуска
+cat ~/Library/Logs/claude-manager.log
 ```
 
 ## Важные детали для разработки

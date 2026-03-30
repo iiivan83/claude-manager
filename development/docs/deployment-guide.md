@@ -107,10 +107,34 @@ chmod +x watch_and_restart.sh
 
 Для остановки нажмите `Ctrl+C` — скрипт корректно завершит и наблюдатель, и бота.
 
+## Шаг 6: Автозапуск (для постоянной работы)
+
+Чтобы бот запускался автоматически при входе в систему и перезапускался при падении, используйте LaunchAgents — механизм автозапуска macOS.
+
+Файл конфигурации: `~/Library/LaunchAgents/com.ivan.claude-manager.plist`
+
+```bash
+# Загрузить сервис (бот запустится сразу и будет запускаться при каждом входе в систему)
+launchctl load ~/Library/LaunchAgents/com.ivan.claude-manager.plist
+
+# Выгрузить сервис (остановить бота и убрать из автозапуска)
+launchctl unload ~/Library/LaunchAgents/com.ivan.claude-manager.plist
+```
+
+**Ожидаемый результат:** бот запускается автоматически. Проверить логи:
+
+```bash
+cat ~/Library/Logs/claude-manager.log
+cat ~/Library/Logs/claude-manager.error.log
+```
+
+**Важно:** при использовании автозапуска не запускайте бота вручную (`python -m claude_manager`) — два экземпляра с одним токеном конфликтуют.
+
 ## Остановка бота
 
 - **При прямом запуске** (`python -m claude_manager`): нажмите `Ctrl+C` в терминале
 - **При запуске через watch_and_restart.sh**: нажмите `Ctrl+C` — скрипт остановит и бота, и наблюдатель
+- **При автозапуске через LaunchAgents**: `launchctl unload ~/Library/LaunchAgents/com.ivan.claude-manager.plist`
 
 ## Решение проблем
 

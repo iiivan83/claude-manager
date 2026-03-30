@@ -1,14 +1,13 @@
 """Тесты модуля main — точки входа приложения.
 
-Проверяет: настройку логирования, файл-замок, восстановление состояния,
+Проверяет: настройку логирования, файл-замок,
 обработку ошибок конфигурации, Conflict и KeyboardInterrupt.
 """
 
-import asyncio
 import fcntl
 import logging
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,7 +15,6 @@ from claude_manager.config import ConfigError
 from claude_manager.main import (
     LOCK_FILENAME,
     _acquire_lock,
-    _restore_state,
     _run_bot,
     _setup_logging,
     main,
@@ -117,72 +115,6 @@ class TestAcquireLock:
             lock_file.close()
 
 
-# --- Тесты _restore_state ---
-
-
-class TestRestoreState:
-    """Тесты восстановления состояния бота."""
-
-    @pytest.mark.asyncio
-    async def test_restore_state_loads_registries(self):
-        """Проверяет, что восстановление вызывает загрузку привязок."""
-        with patch(
-            "claude_manager.main.session_manager"
-        ) as mock_session_mgr:
-            mock_session_mgr.load_bindings = AsyncMock()
-            mock_session_mgr.get_all_bindings.return_value = {
-                12345: "session-abc"
-            }
-
-            await _restore_state()
-
-            mock_session_mgr.load_bindings.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_restore_state_sets_all_mode_when_no_binding(self):
-        """Проверяет логирование перехода в режим /all при отсутствии привязки."""
-        with patch(
-            "claude_manager.main.session_manager"
-        ) as mock_session_mgr:
-            mock_session_mgr.load_bindings = AsyncMock()
-            mock_session_mgr.get_all_bindings.return_value = {}
-
-            await _restore_state()
-
-            # Привязок нет — бот логирует, что в режиме /all
-            mock_session_mgr.load_bindings.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_restore_state_keeps_existing_binding(self):
-        """Проверяет, что существующая привязка к сессии сохраняется."""
-        with patch(
-            "claude_manager.main.session_manager"
-        ) as mock_session_mgr:
-            mock_session_mgr.load_bindings = AsyncMock()
-            mock_session_mgr.get_all_bindings.return_value = {
-                12345: "session-abc"
-            }
-
-            await _restore_state()
-
-            # load_bindings загрузил привязки — они просто остаются
-            mock_session_mgr.load_bindings.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_restore_state_continues_on_registry_error(self):
-        """Проверяет, что ошибка загрузки реестра не блокирует запуск."""
-        with patch(
-            "claude_manager.main.session_manager"
-        ) as mock_session_mgr:
-            mock_session_mgr.load_bindings = AsyncMock(
-                side_effect=OSError("disk error")
-            )
-            mock_session_mgr.get_all_bindings.return_value = {}
-
-            # Функция не должна выбрасывать исключение
-            await _restore_state()
-
-
 # --- Тесты main ---
 
 
@@ -225,7 +157,7 @@ class TestMain:
             patch("claude_manager.main._acquire_lock", return_value=mock_lock),
             patch("claude_manager.main.config.WORKING_DIR", "/tmp/test"),
             patch(
-                "claude_manager.main.asyncio.run",
+                "claude_manager.main._run_bot",
                 side_effect=KeyboardInterrupt,
             ),
             pytest.raises(SystemExit) as exc_info,
@@ -246,7 +178,7 @@ class TestMain:
             patch("claude_manager.main._acquire_lock", return_value=mock_lock),
             patch("claude_manager.main.config.WORKING_DIR", "/tmp/test"),
             patch(
-                "claude_manager.main.asyncio.run",
+                "claude_manager.main._run_bot",
                 side_effect=RuntimeError("unexpected"),
             ),
             patch("claude_manager.main.logger") as mock_logger,
@@ -268,7 +200,7 @@ class TestMain:
             patch("claude_manager.main.config.load_config"),
             patch("claude_manager.main._acquire_lock", return_value=mock_lock),
             patch("claude_manager.main.config.WORKING_DIR", test_working_dir),
-            patch("claude_manager.main.asyncio.run"),
+            patch("claude_manager.main._run_bot"),
             patch("claude_manager.main.logger") as mock_logger,
         ):
             main()
@@ -290,8 +222,7 @@ class TestMain:
 class TestRunBot:
     """Тесты функции _run_bot."""
 
-    @pytest.mark.asyncio
-    async def test_conflict_error_causes_exit(self):
+    def test_conflict_error_causes_exit(self):
         """Проверяет, что ошибка Conflict от Telegram логируется."""
         from telegram.error import Conflict
 
@@ -303,16 +234,11 @@ class TestRunBot:
         with (
             patch(
                 "claude_manager.main.bot.setup_bot",
-                new_callable=AsyncMock,
                 return_value=mock_application,
-            ),
-            patch(
-                "claude_manager.main._restore_state",
-                new_callable=AsyncMock,
             ),
             patch("claude_manager.main.logger") as mock_logger,
         ):
-            await _run_bot()
+            _run_bot()
 
         mock_logger.error.assert_called_once()
         error_message = str(mock_logger.error.call_args)
@@ -340,20 +266,3 @@ class TestEdgeCases:
             assert second_lock is not None
             second_lock.close()
 
-    def test_restore_state_handles_corrupted_sessions_json(self):
-        """Проверяет, что повреждённый sessions.json не мешает запуску."""
-        # Это тестируется через мок — load_bindings обрабатывает ошибки
-        # внутри себя, _restore_state ловит любые необработанные исключения
-
-        async def run_test():
-            with patch(
-                "claude_manager.main.session_manager"
-            ) as mock_session_mgr:
-                mock_session_mgr.load_bindings = AsyncMock()
-                mock_session_mgr.get_all_bindings.return_value = {}
-
-                await _restore_state()
-
-                mock_session_mgr.load_bindings.assert_called_once()
-
-        asyncio.run(run_test())

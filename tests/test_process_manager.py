@@ -259,6 +259,21 @@ async def test_create_process_new_session(mock_start):
 
 
 @patch("claude_manager.process_manager.start_process")
+async def test_create_process_with_temp_id_starts_without_resume(mock_start):
+    """Процесс с временным ID (_new_XXXX) запускается без --resume."""
+    mock_process = _make_claude_process()
+    mock_start.return_value = mock_process
+    temp_id = "_new_0042"
+
+    session_id = await create_process(session_id=temp_id)
+
+    assert session_id == temp_id
+    # start_process получает None — без --resume, хотя session_id задан
+    mock_start.assert_awaited_once_with(None)
+    assert pm_module._processes[temp_id] is mock_process
+
+
+@patch("claude_manager.process_manager.start_process")
 async def test_create_process_resume(mock_start):
     """Создание процесса с resume существующей сессии."""
     mock_process = _make_claude_process()

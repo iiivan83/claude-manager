@@ -38,6 +38,7 @@ def _reset_module_state(tmp_path: Path) -> None:
     daily_session_registry._registry = {}
     daily_session_registry._registry_path = tmp_path / REGISTRY_FILENAME
     daily_session_registry._lock = asyncio.Lock()
+    daily_session_registry._loaded_from_disk = True
 
     # session_manager
     session_manager._bindings = {}

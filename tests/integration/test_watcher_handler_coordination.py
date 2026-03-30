@@ -54,6 +54,7 @@ def _reset_daily_registry(tmp_path: Path) -> None:
     daily_session_registry._registry = {}
     daily_session_registry._registry_path = tmp_path / "daily_sessions.json"
     daily_session_registry._lock = asyncio.Lock()
+    daily_session_registry._loaded_from_disk = True
 
 
 @pytest.fixture()

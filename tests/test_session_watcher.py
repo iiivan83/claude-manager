@@ -47,6 +47,11 @@ def _make_system_message() -> dict:
     return {"type": "system", "timestamp": "2026-03-30T10:00:00Z"}
 
 
+def _make_progress_message() -> dict:
+    """Создаёт событие прогресса (выполнение инструмента) для тестирования."""
+    return {"type": "progress", "message": {"content": ""}}
+
+
 @pytest.fixture(autouse=True)
 def _reset_watcher_state():
     """Сбрасывает внутреннее состояние watcher перед каждым тестом."""
@@ -350,6 +355,7 @@ class TestDetectNewMessages:
         session_watcher._seen_message_counts = {"session-1": 3}
 
         # В сессии стало 5 сообщений (было 3), новое — assistant
+        # Файл заканчивается на assistant → Claude ещё работает → is_final=False
         messages = [
             _make_system_message(),
             _make_user_message("Вопрос"),
@@ -373,7 +379,95 @@ class TestDetectNewMessages:
             1,
             "Файл main.py содержит точку входа",
             True,
+            False,
         )
+
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.config")
+    @patch("claude_manager.session_watcher.daily_session_registry")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_active_session_marks_messages_as_intermediate(
+        self,
+        mock_reader,
+        mock_registry,
+        mock_config,
+        mock_callback,
+        mock_get_current_session,
+    ) -> None:
+        """Если файл заканчивается на progress — Claude ещё работает, is_final=False."""
+        mock_config.WORKING_DIR = "/fake/project"
+        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_get_current_session.return_value = "session-1"
+
+        session_watcher._callback = mock_callback
+        session_watcher._get_current_session = mock_get_current_session
+        session_watcher._seen_message_counts = {"session-1": 2}
+
+        # После текстового ответа есть progress-события → Claude работает
+        messages = [
+            _make_system_message(),
+            _make_user_message("Вопрос"),
+            _make_assistant_message("Промежуточный ответ"),
+            _make_progress_message(),
+            _make_progress_message(),
+        ]
+
+        mock_reader.get_recent_sessions = AsyncMock(
+            return_value=[_FakeSessionInfo("session-1")]
+        )
+        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
+        mock_reader.get_session_messages = AsyncMock(return_value=messages)
+        mock_registry.register_session = AsyncMock(return_value=1)
+
+        await session_watcher._poll_sessions()
+
+        mock_callback.assert_called_once()
+        call_args = mock_callback.call_args[0]
+        is_final_arg = call_args[5]
+        assert is_final_arg is False
+
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.config")
+    @patch("claude_manager.session_watcher.daily_session_registry")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_completed_exchange_marks_last_as_final(
+        self,
+        mock_reader,
+        mock_registry,
+        mock_config,
+        mock_callback,
+        mock_get_current_session,
+    ) -> None:
+        """Если файл заканчивается на user — обмен завершён, последний текст is_final=True."""
+        mock_config.WORKING_DIR = "/fake/project"
+        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_get_current_session.return_value = "session-1"
+
+        session_watcher._callback = mock_callback
+        session_watcher._get_current_session = mock_get_current_session
+        session_watcher._seen_message_counts = {"session-1": 2}
+
+        # Claude ответил, потом пользователь написал новое → обмен завершён
+        messages = [
+            _make_system_message(),
+            _make_user_message("Вопрос"),
+            _make_assistant_message("Финальный ответ"),
+            _make_user_message("Следующий вопрос"),
+        ]
+
+        mock_reader.get_recent_sessions = AsyncMock(
+            return_value=[_FakeSessionInfo("session-1")]
+        )
+        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
+        mock_reader.get_session_messages = AsyncMock(return_value=messages)
+        mock_registry.register_session = AsyncMock(return_value=1)
+
+        await session_watcher._poll_sessions()
+
+        mock_callback.assert_called_once()
+        call_args = mock_callback.call_args[0]
+        is_final_arg = call_args[5]
+        assert is_final_arg is True
 
     @pytest.mark.asyncio
     @patch("claude_manager.session_watcher.config")

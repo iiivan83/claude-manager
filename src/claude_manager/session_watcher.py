@@ -25,9 +25,15 @@ ERROR_RETRY_DELAY_SECONDS = 10
 # Служебные ответы Claude, которые не нужно отправлять пользователю
 NO_RESPONSE_MARKERS = frozenset({"No response requested."})
 
+# Типы событий в JSONL-файле, означающие что Claude ещё работает.
+# assistant — ответ, мысли или вызов инструмента; progress — инструмент выполняется;
+# queue-operation — операция в очереди. Если файл заканчивается одним из этих
+# типов, значит Claude ещё не закончил обработку запроса.
+ACTIVE_EVENT_TYPES = frozenset({"assistant", "progress", "queue-operation"})
+
 # Типы-алиасы для callback-функций
-# callback(chat_id, session_id, day_number, message_text, is_current_session)
-MessageCallback = Callable[[int, str, int, str, bool], Awaitable[None]]
+# callback(chat_id, session_id, day_number, message_text, is_current_session, is_final)
+MessageCallback = Callable[[int, str, int, str, bool, bool], Awaitable[None]]
 # get_current_session(chat_id) -> session_id или None
 CurrentSessionGetter = Callable[[int], Awaitable[str | None]]
 
@@ -137,9 +143,21 @@ async def _check_session(session_id: str) -> None:
     # Обновляем счётчик до актуального значения
     _seen_message_counts[session_id] = current_count
 
-    for text in new_texts:
+    # Определяем, закончил ли Claude обработку запроса.
+    # Смотрим на тип последнего события в файле: если это assistant/progress —
+    # Claude ещё работает, все сообщения промежуточные (⏳).
+    # Если user/system/last-prompt — обмен завершён, последний текст финальный (✅).
+    last_event_type = all_messages[-1].get("type", "") if all_messages else ""
+    session_is_active = last_event_type in ACTIVE_EVENT_TYPES
+
+    last_index = len(new_texts) - 1
+    for index, text in enumerate(new_texts):
         if _is_empty_response(text):
             continue
+
+        # Финальное — только последнее сообщение в пачке И только если
+        # сессия не активна (Claude закончил работу)
+        is_final = not session_is_active and (index == last_index)
 
         try:
             day_number = await daily_session_registry.register_session(
@@ -160,7 +178,8 @@ async def _check_session(session_id: str) -> None:
 
             try:
                 await _callback(
-                    chat_id, session_id, day_number, text, is_current
+                    chat_id, session_id, day_number, text,
+                    is_current, is_final,
                 )
             except Exception:
                 logger.error(

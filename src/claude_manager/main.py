@@ -4,14 +4,13 @@
 восстанавливает сохранённое состояние сессий и запускает Telegram-опрос.
 """
 
-import asyncio
 import fcntl
 import io
 import logging
 import os
 import sys
 
-from claude_manager import bot, config, session_manager
+from claude_manager import bot, config
 from claude_manager.config import ConfigError
 
 logger = logging.getLogger(__name__)
@@ -67,35 +66,13 @@ def _acquire_lock() -> io.TextIOWrapper | None:
     return lock_file
 
 
-async def _restore_state() -> None:
-    """Восстанавливает состояние бота после перезапуска."""
-    # load_bindings загружает привязки из sessions.json и дневной реестр
-    try:
-        await session_manager.load_bindings()
-    except Exception:
-        logger.warning(
-            "Ошибка при восстановлении состояния — начинаю с чистого",
-            exc_info=True,
-        )
-
-    # Если нет привязки к сессии — автоматически в режим мониторинга /all
-    bindings = session_manager.get_all_bindings()
-    if bindings:
-        logger.info("Восстановлено %d привязок к сессиям", len(bindings))
-    else:
-        logger.info("Привязок нет — бот в режиме /all (мониторинг)")
-
-
-async def _run_bot() -> None:
-    """Создаёт Telegram-бота, восстанавливает состояние и запускает polling."""
-    # Импорт здесь, чтобы избежать ошибки при отсутствии telegram
+def _run_bot() -> None:
+    """Создаёт Telegram-бота и запускает polling."""
     from telegram.error import Conflict
 
     # setup_bot создаёт Application и регистрирует все обработчики
-    application = await bot.setup_bot()
-
-    # Восстанавливаем привязки сессий до начала обработки сообщений
-    await _restore_state()
+    # Восстановление состояния и очистка файлов — в post_init (вызывается автоматически)
+    application = bot.setup_bot()
 
     try:
         # drop_pending_updates=True — игнорируем сообщения, пришедшие пока бот не работал
@@ -128,7 +105,7 @@ def main() -> None:
     logger.info("Рабочая директория: %s", config.WORKING_DIR)
 
     try:
-        asyncio.run(_run_bot())
+        _run_bot()
     except KeyboardInterrupt:
         logger.info("Получен сигнал завершения")
         sys.exit(0)

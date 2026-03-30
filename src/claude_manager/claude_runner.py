@@ -7,14 +7,16 @@
 import asyncio
 import json
 import logging
+import shutil
 from collections.abc import AsyncGenerator
 
-from claude_manager.config import WORKING_DIR
+from claude_manager import config
 
 logger = logging.getLogger(__name__)
 
-# Имя исполняемого файла Claude Code CLI
-CLAUDE_CLI_COMMAND = "claude"
+# Полный путь к Claude Code CLI (shutil.which ищет в PATH при импорте модуля)
+# Если не найден — пробуем стандартное расположение /usr/local/bin/claude
+CLAUDE_CLI_COMMAND = shutil.which("claude") or "/usr/local/bin/claude"
 
 # Время ожидания завершения процесса после SIGTERM (секунды)
 TERMINATE_TIMEOUT_SECONDS = 5
@@ -85,7 +87,10 @@ class ClaudeProcess:
         self._check_process_alive()
         self._check_stdin_available()
 
-        message = {"type": "user_message", "content": text}
+        message = {
+            "type": "user",
+            "message": {"role": "user", "content": text},
+        }
         # ensure_ascii=False сохраняет кириллицу как есть
         json_line = json.dumps(message, ensure_ascii=False) + "\n"
 
@@ -186,7 +191,7 @@ async def start_process(session_id: str | None = None) -> ClaudeProcess:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=WORKING_DIR,
+            cwd=config.WORKING_DIR,
         )
     except FileNotFoundError:
         error_message = (
@@ -205,7 +210,7 @@ async def start_process(session_id: str | None = None) -> ClaudeProcess:
         "Процесс Claude запущен: PID=%d%s, cwd=%s",
         process.pid,
         resume_info,
-        WORKING_DIR,
+        config.WORKING_DIR,
     )
 
     return ClaudeProcess(process)
