@@ -16,6 +16,7 @@ Telegram-бот, который служит пультом управления
 ## Техническая документация
 
 - `development/docs/brd-user-journeys.md` — BRD: все пользовательские сценарии (что бот должен делать)
+- `development/docs/claude-cli-stream-json-protocol.md` — справочник протокола stream-json (форматы сообщений, типы событий, известные баги)
 - `development/docs/deployment-guide.md` — пошаговая инструкция по развёртыванию бота
 - `development/docs/docs-index.md` — полный индекс всех документов проекта
 
