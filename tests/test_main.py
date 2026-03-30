@@ -13,7 +13,7 @@ import pytest
 
 from claude_manager.config import ConfigError
 from claude_manager.main import (
-    LOCK_FILENAME,
+    LOCK_PATH,
     _acquire_lock,
     _run_bot,
     _setup_logging,
@@ -61,9 +61,8 @@ class TestAcquireLock:
 
     def test_acquire_lock_success(self, tmp_path):
         """Проверяет успешный захват файла-замка."""
-        with patch("claude_manager.main.config") as mock_config:
-            mock_config.WORKING_DIR = str(tmp_path)
-
+        test_lock = str(tmp_path / "test.lock")
+        with patch("claude_manager.main.LOCK_PATH", test_lock):
             lock_file = _acquire_lock()
 
             assert lock_file is not None
@@ -71,47 +70,40 @@ class TestAcquireLock:
 
     def test_acquire_lock_writes_pid(self, tmp_path):
         """Проверяет, что в файл записывается PID процесса."""
-        with patch("claude_manager.main.config") as mock_config:
-            mock_config.WORKING_DIR = str(tmp_path)
-
+        test_lock = str(tmp_path / "test.lock")
+        with patch("claude_manager.main.LOCK_PATH", test_lock):
             lock_file = _acquire_lock()
             assert lock_file is not None
 
-            # Читаем содержимое файла bot.pid
-            lock_path = tmp_path / LOCK_FILENAME
-            content = lock_path.read_text()
+            content = open(test_lock).read()
             assert content == str(os.getpid())
 
             lock_file.close()
 
     def test_acquire_lock_returns_none_when_locked(self, tmp_path):
         """Проверяет, что при занятом замке возвращается None."""
-        lock_path = tmp_path / LOCK_FILENAME
+        test_lock = str(tmp_path / "test.lock")
 
         # Захватываем замок вручную (имитируем другой процесс)
-        first_lock = open(lock_path, "w")
+        first_lock = open(test_lock, "w")
         fcntl.flock(first_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        with patch("claude_manager.main.config") as mock_config:
-            mock_config.WORKING_DIR = str(tmp_path)
-
+        with patch("claude_manager.main.LOCK_PATH", test_lock):
             result = _acquire_lock()
             assert result is None
 
         first_lock.close()
 
     def test_lock_file_created_if_not_exists(self, tmp_path):
-        """Проверяет, что файл bot.pid создаётся, если его не было."""
-        lock_path = tmp_path / LOCK_FILENAME
-        assert not lock_path.exists()
+        """Проверяет, что файл-замок создаётся, если его не было."""
+        test_lock = str(tmp_path / "test.lock")
+        assert not os.path.exists(test_lock)
 
-        with patch("claude_manager.main.config") as mock_config:
-            mock_config.WORKING_DIR = str(tmp_path)
-
+        with patch("claude_manager.main.LOCK_PATH", test_lock):
             lock_file = _acquire_lock()
 
             assert lock_file is not None
-            assert lock_path.exists()
+            assert os.path.exists(test_lock)
             lock_file.close()
 
 
@@ -253,9 +245,8 @@ class TestEdgeCases:
 
     def test_lock_released_after_close(self, tmp_path):
         """Проверяет, что замок освобождается после закрытия файла."""
-        with patch("claude_manager.main.config") as mock_config:
-            mock_config.WORKING_DIR = str(tmp_path)
-
+        test_lock = str(tmp_path / "test.lock")
+        with patch("claude_manager.main.LOCK_PATH", test_lock):
             # Захватываем и освобождаем замок
             lock_file = _acquire_lock()
             assert lock_file is not None
@@ -265,4 +256,18 @@ class TestEdgeCases:
             second_lock = _acquire_lock()
             assert second_lock is not None
             second_lock.close()
+
+    def test_lock_uses_global_path_not_working_dir(self, tmp_path):
+        """Проверяет, что замок в фиксированном глобальном пути, а не в WORKING_DIR."""
+        # Два разных WORKING_DIR — но lock один и тот же
+        test_lock = str(tmp_path / "global.lock")
+        with patch("claude_manager.main.LOCK_PATH", test_lock):
+            first_lock = _acquire_lock()
+            assert first_lock is not None
+
+            # Вторая попытка — тот же lock, должна вернуть None
+            second_lock = _acquire_lock()
+            assert second_lock is None
+
+            first_lock.close()
 

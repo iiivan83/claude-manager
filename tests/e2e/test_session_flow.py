@@ -9,6 +9,7 @@
 от бота, пропуская посторонние (watcher-сообщения от терминальных сессий).
 """
 
+import asyncio
 import re
 
 from tests.e2e.test_client import TelegramTestClient
@@ -209,3 +210,51 @@ async def test_flow04_response_header_format(
     )
     # Финальный ответ содержит галочку ✅
     assert "\u2705" in response, f"Финальный ответ должен содержать ✅: {response[:40]}"
+
+
+# --- FLOW-05: Утечка ответов из чужих сессий ---
+
+
+async def test_flow05_new_session_no_ghost_responses(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """После /new + сообщение — ответы только от новой сессии, без утечки из других.
+
+    Баг: пользователь создаёт новую сессию, пишет «привет», а ответ
+    приходит и от новой сессии, и от другой (например #42).
+    Тест проверяет, что ВСЕ ответы содержат только номер новой сессии.
+    """
+    # 1. Создаём новую сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # 2. Отправляем сообщение Claude [Claude]
+    await telegram_client.send_message("Скажи одним словом: привет")
+    response = await telegram_client.wait_for_matching_response(
+        f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+
+    # 3. Ждём 5 секунд — если есть «призрачный» ответ от чужой сессии, он придёт
+    await asyncio.sleep(5)
+
+    # 4. Проверяем ВСЕ ответы — ни один не должен быть от чужой сессии
+    # Формат ответа от Claude: "#N ..." (где N — номер сессии)
+    # Ищем ответы, которые начинаются с заголовка сессии (#число или /число)
+    session_header_pattern = re.compile(r"^[#/](\d+)\b")
+    ghost_responses = []
+
+    for resp in telegram_client._all_responses:
+        match = session_header_pattern.match(resp)
+        if match:
+            response_session = match.group(1)
+            if response_session != num:
+                ghost_responses.append(
+                    f"Сессия #{response_session}: {resp[:120]}"
+                )
+
+    assert not ghost_responses, (
+        f"Утечка ответов из чужих сессий! Создана сессия #{num}, "
+        f"но пришли ответы от других:\n"
+        + "\n".join(ghost_responses)
+    )

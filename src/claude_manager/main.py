@@ -15,8 +15,9 @@ from claude_manager.config import ConfigError
 
 logger = logging.getLogger(__name__)
 
-# Имя файла-замка (содержит PID процесса и предотвращает двойной запуск)
-LOCK_FILENAME = "bot.pid"
+# Глобальный путь к файлу-замку — в домашней папке, чтобы работал
+# независимо от рабочей директории (LaunchAgent, watch_and_restart.sh, ручной запуск)
+LOCK_PATH = os.path.join(os.path.expanduser("~"), ".claude-manager.lock")
 
 # Формат логов: время, уровень важности, модуль, сообщение
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -42,8 +43,8 @@ def _setup_logging() -> None:
 
 
 def _acquire_lock() -> io.TextIOWrapper | None:
-    """Захватывает файл-замок bot.pid для защиты от двойного запуска."""
-    lock_path = os.path.join(config.WORKING_DIR, LOCK_FILENAME)
+    """Захватывает глобальный файл-замок для защиты от двойного запуска."""
+    lock_path = LOCK_PATH
 
     try:
         lock_file = open(lock_path, "w")

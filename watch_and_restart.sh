@@ -6,7 +6,8 @@
 # Корень проекта — папка, где лежит этот скрипт
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 SRC_DIR="$PROJECT_DIR/src/claude_manager"
-PID_FILE="$PROJECT_DIR/bot.pid"
+# Глобальный lock-файл — тот же, что использует Python-код бота
+PID_FILE="$HOME/.claude-manager.lock"
 
 # Интервал проверки изменений (в секундах)
 CHECK_INTERVAL_SECONDS=2
