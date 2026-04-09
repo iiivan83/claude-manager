@@ -27,3 +27,22 @@ daily_sessions.json
 
 # Сессии Telethon (для E2E тестов — содержат токен авторизации)
 *.session
+*.session-journal
+
+# Служебные папки проекта
+
+# dev/temp/ — черновики и временные файлы не коммитятся, остальное в dev/ трекается
+dev/temp/*
+!dev/temp/.gitkeep
+
+# .claude/ — служебные файлы Claude Code игнорируются целиком,
+# кроме .claude/skills/ с кастомными скиллами проекта.
+# Важно: без trailing slash у .claude/* — иначе исключение !.claude/skills не работает
+# (git не заходит в полностью проигнорированную папку, и re-include бесполезен).
+.claude/*
+!.claude/skills/
+# Бэкапы старых версий скиллов в git не нужны
+.claude/skills/.backup-*/
+
+# Системные файлы macOS
+.DS_Store

@@ -217,6 +217,11 @@ For each expectation across all runs:
 - Does it **always fail with skill but pass without**? (skill may be hurting)
 - Is it **highly variable**? (flaky expectation or non-deterministic behavior)
 
+**Tier-aware analysis:** if an assertion has a `tier` field, factor it into your interpretation:
+- **Tier 1 (structural)** assertion always passes in both configs — normal, structural checks are expected to pass regardless of skill
+- **Tier 2 (behavioral)** assertion always passes in both configs — worth noting, but may be acceptable if the behavior is standard
+- **Tier 3 (result_quality)** assertion always passes in both configs — red flag, the assertion is too easy and doesn't differentiate skill value. Flag this explicitly
+
 ### Step 3: Analyze Cross-Eval Patterns
 
 Look for patterns across evals:
@@ -245,6 +250,8 @@ Examples:
 - "Skill adds 13s average execution time but improves pass rate by 50%"
 - "Token usage is 80% higher with skill, primarily due to script output parsing"
 - "All 3 without-skill runs for eval 1 produced empty output"
+- "4 of 6 result_quality (tier 3) assertions pass identically in both configs — assertions need strengthening per `skill-testing-standard.md`"
+- "All non-discriminating assertions are tier 1 (structural) — expected, no action needed"
 
 ### Step 6: Write Notes
 

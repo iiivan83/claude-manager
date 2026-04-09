@@ -1,0 +1,524 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "JSON-схемы всех структур данных скилла pipeline-designer",
+  "definitions": {
+    "orchestrator_log": {
+      "description": "Лог оркестратора — единый файл, отслеживающий все шаги пайплайна",
+      "type": "object",
+      "required": ["pipeline", "created_at", "steps"],
+      "properties": {
+        "pipeline": {
+          "type": "string",
+          "description": "Название пайплайна"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Дата и время создания пайплайна"
+        },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/orchestrator_step" }
+        }
+      }
+    },
+    "orchestrator_step": {
+      "description": "Один шаг в логе оркестратора",
+      "type": "object",
+      "required": ["step_number", "start_time", "agent", "success"],
+      "properties": {
+        "step_number": { "type": "integer", "minimum": 1 },
+        "start_time": { "type": "string", "format": "date-time" },
+        "end_time": { "type": ["string", "null"], "format": "date-time" },
+        "agent": { "type": "string" },
+        "input": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "success": { "type": "boolean" },
+        "comment": { "type": "string", "default": "" },
+        "output": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Пути к выходным файлам"
+        },
+        "next_agent": { "type": ["string", "null"] }
+      }
+    },
+    "agent_output_base": {
+      "description": "Базовый формат вывода любого агента",
+      "type": "object",
+      "required": ["agent", "pipeline", "timestamp", "status", "input", "result"],
+      "properties": {
+        "agent": { "type": "string" },
+        "pipeline": { "type": "string" },
+        "called_by": { "type": "string", "default": "orchestrator" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["success", "partial", "failed"] },
+        "input": {
+          "type": "object",
+          "properties": {
+            "description": { "type": "string" },
+            "files": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "created_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "description"],
+            "properties": {
+              "path": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "result": { "type": "object" },
+        "next_agent": { "type": ["string", "null"] }
+      }
+    },
+    "interviewer_result": {
+      "description": "Поле result агента-интервьюера",
+      "type": "object",
+      "required": ["questions_and_answers", "conclusions"],
+      "properties": {
+        "questions_and_answers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["question", "answer"],
+            "properties": {
+              "question": { "type": "string" },
+              "answer": { "type": "string" }
+            }
+          }
+        },
+        "conclusions": { "type": "string" }
+      }
+    },
+    "drafter_result": {
+      "description": "Поле result агента-драфтера",
+      "type": "object",
+      "required": ["spec_file", "created_sections", "summary"],
+      "properties": {
+        "spec_file": { "type": "string" },
+        "created_sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["section", "present"],
+            "properties": {
+              "section": { "type": "string" },
+              "present": { "type": "boolean" },
+              "items_count": { "type": "integer" },
+              "stages_count": { "type": "integer" },
+              "prompts_count": { "type": "integer" },
+              "skills_count": { "type": "integer" }
+            }
+          }
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "enhancer_result": {
+      "description": "Поле result агента-улучшатора",
+      "type": "object",
+      "required": ["analysis", "improvements"],
+      "properties": {
+        "analysis": {
+          "type": "object",
+          "properties": {
+            "security": { "type": "string" },
+            "error_handling": { "type": "string" },
+            "logging": { "type": "string" },
+            "idempotency": { "type": "string" },
+            "monitoring": { "type": "string" },
+            "scalability": { "type": "string" },
+            "testability": { "type": "string" }
+          }
+        },
+        "improvements": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/improvement_item" }
+        }
+      }
+    },
+    "improvement_item": {
+      "description": "Одно предложение по улучшению",
+      "type": "object",
+      "required": ["id", "title", "what_to_add", "why", "where", "status"],
+      "properties": {
+        "id": { "type": "integer" },
+        "title": { "type": "string" },
+        "what_to_add": { "type": "string" },
+        "why": { "type": "string" },
+        "where": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        }
+      }
+    },
+    "optimizer_result": {
+      "description": "Поле result агента-оптимизатора",
+      "type": "object",
+      "required": ["analysis", "optimizations"],
+      "properties": {
+        "analysis": {
+          "type": "object",
+          "properties": {
+            "duplication": { "type": "array", "items": { "type": "string" } },
+            "parallelization": { "type": "array", "items": { "type": "string" } },
+            "simplification": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "optimizations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/optimization_item" }
+        }
+      }
+    },
+    "optimization_item": {
+      "description": "Одно предложение по оптимизации",
+      "type": "object",
+      "required": ["id", "title", "what_to_change", "why", "risks", "status"],
+      "properties": {
+        "id": { "type": "integer" },
+        "title": { "type": "string" },
+        "what_to_change": { "type": "string" },
+        "why": { "type": "string" },
+        "risks": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        }
+      }
+    },
+    "change_implementer_result": {
+      "description": "Поле result агента-исполнителя изменений",
+      "type": "object",
+      "required": ["applied_changes", "conflicts", "self_check", "summary"],
+      "properties": {
+        "applied_changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["change_id", "title", "source", "applied"],
+            "properties": {
+              "change_id": { "type": "integer" },
+              "title": { "type": "string" },
+              "source": { "type": "string", "enum": ["enhancer", "optimizer"] },
+              "applied": { "type": "boolean" },
+              "before": { "type": "string" },
+              "after": { "type": "string" }
+            }
+          }
+        },
+        "conflicts": { "type": "array", "items": { "type": "object" } },
+        "self_check": {
+          "type": "object",
+          "properties": {
+            "all_changes_reflected": { "type": "boolean" },
+            "changes_applied": { "type": "string" },
+            "nothing_extra_touched": { "type": "boolean" }
+          }
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "completeness_verifier_result": {
+      "description": "Поле result верификатора полноты",
+      "type": "object",
+      "required": ["requirements", "summary"],
+      "properties": {
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "requirement", "status", "explanation"],
+            "properties": {
+              "id": { "type": "integer" },
+              "requirement": { "type": "string" },
+              "status": {
+                "type": "string",
+                "enum": ["fulfilled", "partial", "not_fulfilled"]
+              },
+              "score": { "type": "string" },
+              "explanation": { "type": "string" }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["total_score", "threshold", "status"],
+          "properties": {
+            "total_score": { "type": "string" },
+            "threshold": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": ["PASS", "PARTIAL_PASS", "FAIL"]
+            },
+            "issues_to_fix": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "dry_run_result": {
+      "description": "Результат dry-run теста",
+      "type": "object",
+      "required": ["test_name", "timestamp", "test_number", "questions_count", "contradictions_count"],
+      "properties": {
+        "test_name": { "type": "string", "const": "dry-run" },
+        "timestamp": { "type": "string" },
+        "test_number": { "type": "integer", "minimum": 1 },
+        "questions_count": { "type": "integer", "minimum": 0 },
+        "contradictions_count": { "type": "integer", "minimum": 0 },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text"],
+            "properties": { "text": { "type": "string" } }
+          }
+        },
+        "contradictions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text"],
+            "properties": { "text": { "type": "string" } }
+          }
+        },
+        "artifacts_created": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "quality_score": { "type": "string" }
+      }
+    },
+    "structural_validation_result": {
+      "description": "Результат структурной валидации",
+      "type": "object",
+      "required": ["test_name", "timestamp", "test_number", "total_checks", "passed", "failed", "summary"],
+      "properties": {
+        "test_name": { "type": "string", "const": "structural-validation" },
+        "timestamp": { "type": "string" },
+        "test_number": { "type": "integer", "minimum": 1 },
+        "total_checks": { "type": "integer" },
+        "passed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["check", "details"],
+            "properties": {
+              "check": { "type": "string" },
+              "details": { "type": "string" }
+            }
+          }
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["check", "details"],
+            "properties": {
+              "check": { "type": "string" },
+              "details": { "type": "string" }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["pass_rate", "status"],
+          "properties": {
+            "pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "status": {
+              "type": "string",
+              "enum": ["PASS", "PARTIAL_PASS", "FAIL"]
+            }
+          }
+        }
+      }
+    },
+    "eval_comparison_result": {
+      "description": "Результат сравнения eval-прогонов",
+      "type": "object",
+      "required": ["test_name", "timestamp", "runs_count", "metrics", "summary"],
+      "properties": {
+        "test_name": { "type": "string", "const": "eval-consistency" },
+        "timestamp": { "type": "string" },
+        "test_number": { "type": "integer", "minimum": 1 },
+        "runs_count": { "type": "integer", "minimum": 2 },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["values", "status"],
+            "properties": {
+              "values": { "type": "array" },
+              "status": {
+                "type": "string",
+                "enum": ["stable", "almost_stable", "unstable"]
+              },
+              "spread": { "type": "number" }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["total_metrics", "stable", "unstable", "stability_rate", "threshold", "status"],
+          "properties": {
+            "total_metrics": { "type": "integer" },
+            "stable": { "type": "integer" },
+            "almost_stable": { "type": "integer" },
+            "unstable": { "type": "integer" },
+            "stability_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "threshold": { "type": "number" },
+            "status": {
+              "type": "string",
+              "enum": ["PASS", "FAIL"]
+            }
+          }
+        }
+      }
+    },
+    "problem_trace": {
+      "description": "Результат трассировки одной проблемы",
+      "type": "object",
+      "required": ["traced_problem"],
+      "properties": {
+        "traced_problem": {
+          "type": "object",
+          "required": ["source_test", "test_issue", "culprit_agent", "root_cause"],
+          "properties": {
+            "source_test": { "type": "string" },
+            "test_issue": { "type": "string" },
+            "culprit_agent": { "type": "string" },
+            "input_was": { "type": "string" },
+            "before_work": { "type": "string" },
+            "after_work": { "type": "string" },
+            "root_cause": { "type": "string" }
+          }
+        }
+      }
+    },
+    "fix_report": {
+      "description": "Отчёт об исправлениях",
+      "type": "object",
+      "required": ["fixed_problems", "total_fixed"],
+      "properties": {
+        "fixed_problems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["problem_id", "from_test", "before", "after", "fix_description"],
+            "properties": {
+              "problem_id": { "type": "integer" },
+              "from_test": { "type": "string" },
+              "before": { "type": "string" },
+              "after": { "type": "string" },
+              "fix_description": { "type": "string" }
+            }
+          }
+        },
+        "total_fixed": { "type": "integer" },
+        "updated_spec_file": { "type": "string" },
+        "summary": { "type": "string" }
+      }
+    },
+    "approved_changes": {
+      "description": "Сводка всех согласованных изменений (создаётся оркестратором после этапов 4-5)",
+      "type": "object",
+      "required": ["improvements", "optimizations"],
+      "properties": {
+        "improvements": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/improvement_item" },
+          "description": "Одобренные улучшения от enhancer"
+        },
+        "optimizations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/optimization_item" },
+          "description": "Одобренные оптимизации от optimizer"
+        }
+      }
+    },
+    "documentalist_result": {
+      "description": "Поле result агента-документалиста",
+      "type": "object",
+      "required": ["reference_files_read", "triggers_evaluated", "documents_created", "documents_updated", "summary"],
+      "properties": {
+        "reference_files_read": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Пути к прочитанным файлам-инструкциям по документированию"
+        },
+        "triggers_evaluated": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["document_type", "trigger_met", "reason", "action"],
+            "properties": {
+              "document_type": { "type": "string" },
+              "trigger_met": { "type": "boolean" },
+              "reason": { "type": "string" },
+              "action": {
+                "type": "string",
+                "enum": ["created", "updated", "skipped"]
+              },
+              "file_path": { "type": ["string", "null"] }
+            }
+          },
+          "description": "Оценка триггеров для каждого типа документа"
+        },
+        "documents_created": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "path", "description"],
+            "properties": {
+              "type": { "type": "string" },
+              "path": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          },
+          "description": "Созданные документы"
+        },
+        "documents_updated": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "path", "description"],
+            "properties": {
+              "type": { "type": "string" },
+              "path": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          },
+          "description": "Обновлённые документы"
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "extract_metrics_output": {
+      "description": "Выход скрипта extract-metrics.sh — метрики из спецификации",
+      "type": "object",
+      "required": ["run", "stages_count", "stages", "agents_count", "prompts_count", "checklist_items"],
+      "properties": {
+        "run": { "type": "integer", "minimum": 1 },
+        "stages_count": { "type": "integer", "minimum": 0 },
+        "stages": { "type": "array", "items": { "type": "string" } },
+        "agents_count": { "type": "integer", "minimum": 0 },
+        "skills_needed": { "type": "array", "items": { "type": "string" } },
+        "has_backup": { "type": "boolean" },
+        "has_rollback": { "type": "boolean" },
+        "has_error_handling": { "type": "boolean" },
+        "prompts_count": { "type": "integer", "minimum": 0 },
+        "checklist_items": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

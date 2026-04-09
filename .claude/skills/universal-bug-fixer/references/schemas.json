@@ -1,0 +1,503 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "universal-bug-fixer schemas",
+  "description": "JSON-схемы всех структур данных пайплайна universal-bug-fixer",
+  "definitions": {
+    "base_agent_output": {
+      "type": "object",
+      "required": ["agent", "pipeline", "called_by", "timestamp", "status", "input", "created_files", "result"],
+      "properties": {
+        "agent": { "type": "string" },
+        "pipeline": { "const": "bugfix" },
+        "called_by": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "enum": ["success", "partial", "failed"] },
+        "input": {
+          "type": "object",
+          "properties": {
+            "description": { "type": "string" },
+            "files": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "created_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "result": { "type": "object" },
+        "next_agent": { "type": ["string", "null"] }
+      }
+    },
+    "orchestrator_log": {
+      "type": "object",
+      "required": ["pipeline", "problem_summary", "created_at", "steps"],
+      "properties": {
+        "pipeline": { "const": "bugfix" },
+        "problem_summary": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "last_completed_stage": { "type": ["integer", "null"] },
+        "folder_timestamp": { "type": "string", "description": "DD.MM_HH.MM — метка для имён папок" },
+        "file_timestamp": { "type": "string", "description": "DD-MM-HH-MM — метка для имён файлов" },
+        "available_skills": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "found": { "type": "boolean" },
+                  "path": { "type": "string" }
+                }
+              }
+            },
+            "conditional": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "found": { "type": "boolean" },
+                  "path": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "backup_branch": { "type": ["string", "null"] },
+        "verification": { "$ref": "#/definitions/verification_summary" },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/orchestrator_step" }
+        }
+      }
+    },
+    "orchestrator_step": {
+      "type": "object",
+      "required": ["step_number", "start_time", "agent", "success"],
+      "properties": {
+        "step_number": { "type": "integer" },
+        "start_time": { "type": "string", "format": "date-time" },
+        "end_time": { "type": "string", "format": "date-time" },
+        "agent": { "type": "string" },
+        "input": { "type": "array", "items": { "type": "string" } },
+        "success": { "type": "boolean" },
+        "comment": { "type": "string" },
+        "output": { "type": "array", "items": { "type": "string" } },
+        "next_agent": { "type": ["string", "null"] }
+      }
+    },
+    "verification_summary": {
+      "type": "object",
+      "properties": {
+        "iteration": { "type": "integer" },
+        "whitebox": {
+          "type": "object",
+          "properties": {
+            "total": { "type": "integer" },
+            "passed": { "type": "integer" },
+            "failed": { "type": "integer" }
+          }
+        },
+        "blackbox": {
+          "type": "object",
+          "properties": {
+            "total": { "type": "integer" },
+            "passed": { "type": "integer" },
+            "failed": { "type": "integer" }
+          }
+        },
+        "all_passed": { "type": "boolean" }
+      }
+    },
+    "intake_result": {
+      "type": "object",
+      "required": ["problem_description", "context", "artifacts"],
+      "properties": {
+        "problem_description": { "type": "string" },
+        "context": {
+          "type": "object",
+          "properties": {
+            "project": { "type": "string" },
+            "working_directory": { "type": "string" },
+            "relevant_files": { "type": "array", "items": { "type": "string" } },
+            "environment": { "type": "string" }
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "content", "description"],
+            "properties": {
+              "type": { "enum": ["log", "screenshot", "file_path", "error_message", "stack_trace", "link", "text"] },
+              "content": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "understanding_result": {
+      "type": "object",
+      "required": ["problem_statement", "expected_behavior", "actual_behavior", "confidence"],
+      "properties": {
+        "problem_statement": { "type": "string" },
+        "expected_behavior": { "type": "string" },
+        "actual_behavior": { "type": "string" },
+        "questions_asked": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "question": { "type": "string" },
+              "answer": { "type": "string" }
+            }
+          }
+        },
+        "confidence": { "enum": ["high", "medium", "low"] }
+      }
+    },
+    "root_cause_result": {
+      "type": "object",
+      "required": ["summary", "deviations", "total_deviations"],
+      "properties": {
+        "summary": { "type": "string" },
+        "deviations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/deviation" }
+        },
+        "total_deviations": { "type": "integer" },
+        "previous_attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "iteration": { "type": "integer" },
+              "root_cause_summary": { "type": "string" },
+              "fix_applied": { "type": "string" },
+              "failure_reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "deviation": {
+      "type": "object",
+      "required": ["id", "description", "chain_of_events", "affected_files", "not_a_bug"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^DEV-\\d+$" },
+        "description": { "type": "string" },
+        "chain_of_events": { "type": "string" },
+        "affected_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "lines": { "type": "string" },
+              "issue": { "type": "string" }
+            }
+          }
+        },
+        "duplicates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "lines": { "type": "string" },
+              "similarity": { "type": "string" }
+            }
+          }
+        },
+        "not_a_bug": { "type": "boolean" },
+        "not_a_bug_reason": { "type": ["string", "null"] }
+      }
+    },
+    "classification_result": {
+      "type": "object",
+      "required": ["classified_deviations", "execution_order", "order_reasoning"],
+      "properties": {
+        "classified_deviations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["deviation_id", "problem_type", "scale", "severity"],
+            "properties": {
+              "deviation_id": { "type": "string" },
+              "problem_type": { "enum": ["code_bug", "config_error", "data_error", "skill_error", "script_error", "doc_error", "pipeline_error", "dependency_error", "infra_error"] },
+              "scale": { "enum": ["isolated", "widespread"] },
+              "severity": { "enum": ["blocking", "important", "minor"] },
+              "reasoning": { "type": "string" },
+              "affected_area": { "type": "string" },
+              "skip": { "type": "boolean" },
+              "skip_reason": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "execution_order": { "type": "array", "items": { "type": "string" } },
+        "order_reasoning": { "type": "string" }
+      }
+    },
+    "test_strategy_result": {
+      "type": "object",
+      "required": ["environment_validated", "project_test_framework", "method_checklist", "whitebox_tests", "blackbox_tests"],
+      "properties": {
+        "environment_validated": {
+          "type": "object",
+          "properties": {
+            "passed": { "type": "boolean" },
+            "validation_test": { "type": "string" },
+            "details": { "type": "string" }
+          }
+        },
+        "project_test_framework": {
+          "type": "object",
+          "properties": {
+            "tool": { "type": "string" },
+            "discovered_at": { "type": "string" }
+          }
+        },
+        "existing_patterns_found": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "location": { "type": "string" },
+              "relevance": { "enum": ["high", "medium", "low"] }
+            }
+          }
+        },
+        "method_checklist": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "method": { "type": "string" },
+              "selected": { "type": "boolean" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "chosen_approaches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "approach": { "type": "string" },
+              "methods_used": { "type": "array", "items": { "type": "string" } },
+              "reason": { "type": "string" },
+              "applies_to": { "enum": ["whitebox", "blackbox", "both"] }
+            }
+          }
+        },
+        "whitebox_tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "description": { "type": "string" },
+              "method": { "type": "string" }
+            }
+          }
+        },
+        "blackbox_tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "description": { "type": "string" },
+              "method": { "type": "string" }
+            }
+          }
+        },
+        "total_whitebox": { "type": "integer" },
+        "total_blackbox": { "type": "integer" }
+      }
+    },
+    "critical_verification_result": {
+      "type": "object",
+      "required": ["overall_verdict", "deviation_verdicts"],
+      "properties": {
+        "overall_verdict": { "enum": ["approved", "adjusted", "rejected", "all_skip"] },
+        "deviation_verdicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["deviation_id", "verdict"],
+            "properties": {
+              "deviation_id": { "type": "string" },
+              "verdict": { "enum": ["approved", "adjusted", "rejected", "skip"] },
+              "previously_approved": { "type": "boolean" },
+              "changed_since_last_approval": { "type": ["string", "null"] },
+              "assessment": {
+                "type": "object",
+                "properties": {
+                  "root_cause": { "type": "object", "properties": { "correct": { "type": "boolean" }, "comment": { "type": ["string", "null"] } } },
+                  "classification": { "type": "object", "properties": { "correct": { "type": "boolean" }, "comment": { "type": ["string", "null"] } } },
+                  "test_strategy": { "type": "object", "properties": { "adequate": { "type": "boolean" }, "comment": { "type": ["string", "null"] } } },
+                  "unnecessary_work": { "type": ["string", "null"] },
+                  "missing_coverage": { "type": ["string", "null"] }
+                }
+              },
+              "adjustments": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "execution_order_approved": { "type": "boolean" },
+        "execution_order_comment": { "type": ["string", "null"] },
+        "missing_deviations": { "type": ["string", "null"] },
+        "conflicts_between_fixes": { "type": ["string", "null"] },
+        "return_to_stage": { "type": ["integer", "null"] },
+        "stop_reason": { "type": ["string", "null"] }
+      }
+    },
+    "fix_strategy_result": {
+      "type": "object",
+      "required": ["deviation_strategies"],
+      "properties": {
+        "deviation_strategies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["deviation_id", "strategy", "reasoning", "estimated_scope"],
+            "properties": {
+              "deviation_id": { "type": "string" },
+              "strategy": { "enum": ["direct_fix", "spec_then_fix", "skill_update", "doc_update", "manual_instructions"] },
+              "reasoning": { "type": "string" },
+              "estimated_scope": {
+                "type": "object",
+                "properties": {
+                  "files_to_change": { "type": "array", "items": { "type": "string" } },
+                  "estimated_lines": { "type": "integer" },
+                  "touches_adjacent_code": { "type": "boolean" }
+                }
+              },
+              "spec_needed": { "type": "boolean" },
+              "execution_plan": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "step": { "type": "integer" },
+                    "action": { "type": "string" },
+                    "file": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "order_override": { "type": ["array", "null"], "items": { "type": "string" } },
+        "order_override_reasoning": { "type": ["string", "null"] }
+      }
+    },
+    "execution_result": {
+      "type": "object",
+      "required": ["deviation_fixes"],
+      "properties": {
+        "deviation_fixes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["deviation_id", "strategy_used", "changes_made"],
+            "properties": {
+              "deviation_id": { "type": "string" },
+              "strategy_used": { "type": "string" },
+              "changes_made": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "file": { "type": "string" },
+                    "action": { "enum": ["modified", "created", "deleted"] },
+                    "description": { "type": "string" },
+                    "lines_changed": { "type": "integer" },
+                    "unified_diff": { "type": "string" }
+                  }
+                }
+              },
+              "adjacent_code_affected": { "type": "boolean" },
+              "additional_tests_created": { "type": "array", "items": { "type": "string" } },
+              "whitebox_results": {
+                "type": "object",
+                "properties": {
+                  "total": { "type": "integer" },
+                  "passed": { "type": "integer" },
+                  "failed": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "previous_failure": { "type": ["string", "null"] },
+        "notes": { "type": ["string", "null"] }
+      }
+    },
+    "test_runner_result": {
+      "type": "object",
+      "required": ["iteration", "whitebox", "blackbox", "all_passed"],
+      "properties": {
+        "iteration": { "type": "integer" },
+        "whitebox": {
+          "type": "object",
+          "properties": {
+            "total": { "type": "integer" },
+            "passed": { "type": "integer" },
+            "failed": { "type": "integer" },
+            "details": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "test": { "type": "string" },
+                  "status": { "enum": ["passed", "failed"] },
+                  "output": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "blackbox": {
+          "type": "object",
+          "properties": {
+            "total": { "type": "integer" },
+            "passed": { "type": "integer" },
+            "failed": { "type": "integer" },
+            "details": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "test": { "type": "string" },
+                  "status": { "enum": ["passed", "failed"] },
+                  "output": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "all_passed": { "type": "boolean" },
+        "project_test_structure": { "type": "string" },
+        "tests_relocated": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

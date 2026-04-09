@@ -8,18 +8,39 @@ This document defines the JSON schemas used by skill-creator.
 
 Defines the evals for a skill. Located at `evals/evals.json` within the skill directory.
 
+Каноническая схема: `~/.claude/references/evals-schema.md`
+
 ```json
 {
   "skill_name": "example-skill",
   "evals": [
     {
       "id": 1,
+      "name": "descriptive-kebab-case-name",
       "prompt": "User's example prompt",
       "expected_output": "Description of expected result",
+      "description": "What this eval checks and why",
       "files": ["evals/files/sample1.pdf"],
-      "expectations": [
-        "The output includes X",
-        "The skill used script Y"
+      "test_input": {
+        "type": "spec_file",
+        "content_summary": "Brief description of input data"
+      },
+      "assertions": [
+        {
+          "text": "The output includes X with specific value Y",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "The skill used script Y — transcript shows Bash call with script_name.py",
+          "tier": 2,
+          "scope": "both"
+        },
+        {
+          "text": "output.json exists and parses as valid JSON",
+          "tier": 1,
+          "scope": "both"
+        }
       ]
     }
   ]
@@ -29,10 +50,16 @@ Defines the evals for a skill. Located at `evals/evals.json` within the skill di
 **Fields:**
 - `skill_name`: Name matching the skill's frontmatter
 - `evals[].id`: Unique integer identifier
-- `evals[].prompt`: The task to execute
+- `evals[].name`: (optional) Descriptive name in kebab-case, for logging and reports
+- `evals[].prompt`: The task to execute — realistic, as a real user would write it
 - `evals[].expected_output`: Human-readable description of success
-- `evals[].files`: Optional list of input file paths (relative to skill root)
-- `evals[].expectations`: List of verifiable statements
+- `evals[].description`: (optional) What this eval checks and why
+- `evals[].files`: (optional) List of input file paths (relative to skill root)
+- `evals[].test_input`: (optional) Structured description of input data — `type` and `content_summary`
+- `evals[].assertions`: List of assertion objects, each with:
+  - `text`: Specific verifiable statement with concrete values
+  - `tier`: 1 (Structural), 2 (Behavioral), or 3 (Result Quality)
+  - `scope`: `"both"` (check in all configurations) or `"new_only"` (main config only)
 
 ---
 
@@ -89,7 +116,7 @@ Output from the grader agent. Located at `<run-dir>/grading.json`.
 
 ```json
 {
-  "expectations": [
+  "assertions": [
     {
       "text": "The output includes the name 'John Smith'",
       "passed": true,
@@ -150,7 +177,7 @@ Output from the grader agent. Located at `<run-dir>/grading.json`.
 ```
 
 **Fields:**
-- `expectations[]`: Graded expectations with evidence
+- `assertions[]`: Graded assertions with evidence
 - `summary`: Aggregate pass/fail counts
 - `execution_metrics`: Tool usage and output size (from executor's metrics.json)
 - `timing`: Wall clock timing (from timing.json)
@@ -248,7 +275,7 @@ Output from Benchmark mode. Located at `benchmarks/<timestamp>/benchmark.json`.
         "tool_calls": 18,
         "errors": 0
       },
-      "expectations": [
+      "assertions": [
         {"text": "...", "passed": true, "evidence": "..."}
       ],
       "notes": [

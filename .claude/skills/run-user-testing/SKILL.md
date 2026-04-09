@@ -3,11 +3,11 @@ name: run-user-testing
 description: >-
   Прогон пользовательских тест-сценариев с живым ботом, LLM-верификацией ответов
   и автоматическим циклом починки. Читает готовые сценарии из
-  development/docs/testing/user-test-scenarios_*.md, запускает бота, подключается
+  dev/docs/logs/testing/user-test-scenarios_*.md, запускает бота, подключается
   к Telegram через Telethon, проходит каждый сценарий, проверяет ответы бота
   через Claude (LLM-верификация), при fail — исправляет код, гоняет все автотесты,
   перезапускает бота и повторяет ТОЛЬКО упавший сценарий (до 5 попыток).
-  Записывает результаты в development/docs/testing/user-test-results_ДД-ММ-ЧЧ-ММ.md.
+  Записывает результаты в dev/docs/logs/testing/user-test-results_ДД-ММ-ЧЧ-ММ.md.
   Используй ВСЕГДА когда пользователь говорит «запусти пользовательские тесты»,
   «run user testing», «прогони сценарии», «пользовательское тестирование»,
   «прогони user test scenarios», «протестируй по сценариям», «запусти тесты
@@ -36,7 +36,7 @@ description: >-
 Найди последний файл сценариев:
 
 ```bash
-ls -t /Users/ivan/Desktop/claude-sandbox/claude_manager/development/docs/testing/user-test-scenarios_*.md 2>/dev/null | head -1
+ls -t /Users/ivan/Desktop/claude-sandbox/claude_manager/dev/docs/logs/testing/user-test-scenarios_*.md 2>/dev/null | head -1
 ```
 
 Если файлов нет — **остановись и сообщи пользователю**: «Сценарии пользовательского тестирования не найдены. Сначала нужно создать их скиллом create-user-test-scenarios.»
@@ -60,7 +60,7 @@ ls -t /Users/ivan/Desktop/claude-sandbox/claude_manager/development/docs/testing
 
 Проверь наличие файла `tests/e2e/test_client.py` — в нём должен быть класс `TelegramTestClient` (обёртка над Telethon с методами send_message, wait_for_response, send_command, send_photo).
 
-Если файла нет — **остановись и сообщи пользователю**, что нужно сначала создать тестовый клиент. Описание класса: `development/specs/pipeline-spec.md`, раздел «Технический стек тестирования».
+Если файла нет — **остановись и сообщи пользователю**, что нужно сначала создать тестовый клиент. Описание класса: `dev/docs/specs/pipeline-spec.md`, раздел «Технический стек тестирования».
 
 ### Проверка 4: Зависимости
 
@@ -83,12 +83,12 @@ pip install telethon
 Проверь, существует ли скрипт запуска:
 
 ```bash
-ls /Users/ivan/Desktop/claude-sandbox/claude_manager/development/scripts/run-all-tests.sh
+ls /Users/ivan/Desktop/claude-sandbox/claude_manager/dev/scripts/run-all-tests.sh
 ```
 
 Если существует:
 ```bash
-cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./development/scripts/run-all-tests.sh
+cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./dev/scripts/run-all-tests.sh
 ```
 
 Если не существует:
@@ -228,7 +228,7 @@ client = asyncio.run(connect())
 
 **THINK HARD** при верификации. Для каждого ответа:
 
-1. Прочитай BRD — раздел, соответствующий CJM этого сценария: `development/docs/brd-user-journeys.md`
+1. Прочитай BRD — раздел, соответствующий CJM этого сценария: `dev/docs/brd/brd-user-journeys.md`
 2. Сопоставь фактический ответ бота с:
    - Ожидаемым результатом из сценария
    - Критериями pass/fail из сценария
@@ -297,7 +297,7 @@ DETAILS: что именно совпало / не совпало (если FAIL
    - Баг в тестовом клиенте (сообщение не доставлено или ответ не прочитан)
    - Проблема с Claude (таймаут, пустой ответ)
    - Проблема с сетью/Telegram
-4. **Прочитай код**, который отвечает за упавший сценарий — файлы в `src/claude_manager/`. Сверься с BRD и спецификациями модулей из `development/specs/realized/`.
+4. **Прочитай код**, который отвечает за упавший сценарий — файлы в `src/claude_manager/`. Сверься с BRD и спецификациями модулей из `dev/docs/specs/realised/`.
 
 ### 5.2 Остановка бота
 
@@ -319,12 +319,12 @@ pkill -f "python -m claude_manager"
 
 Проверь, существует ли скрипт запуска:
 ```bash
-ls /Users/ivan/Desktop/claude-sandbox/claude_manager/development/scripts/run-all-tests.sh
+ls /Users/ivan/Desktop/claude-sandbox/claude_manager/dev/scripts/run-all-tests.sh
 ```
 
 Если существует:
 ```bash
-cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./development/scripts/run-all-tests.sh
+cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./dev/scripts/run-all-tests.sh
 ```
 
 Если не существует:
@@ -366,12 +366,12 @@ echo $!
 
 Проверь, существует ли скрипт запуска:
 ```bash
-ls /Users/ivan/Desktop/claude-sandbox/claude_manager/development/scripts/run-all-tests.sh
+ls /Users/ivan/Desktop/claude-sandbox/claude_manager/dev/scripts/run-all-tests.sh
 ```
 
 Если существует:
 ```bash
-cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./development/scripts/run-all-tests.sh
+cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./dev/scripts/run-all-tests.sh
 ```
 
 Если не существует:
@@ -400,12 +400,12 @@ date "+%d-%m-%H-%M"
 ### 8.2 Создание папки (если не существует)
 
 ```bash
-mkdir -p /Users/ivan/Desktop/claude-sandbox/claude_manager/development/docs/testing
+mkdir -p /Users/ivan/Desktop/claude-sandbox/claude_manager/dev/docs/logs/testing
 ```
 
 ### 8.3 Создание отчёта о результатах
 
-Создай файл `development/docs/testing/user-test-results_ДД-ММ-ЧЧ-ММ.md` (подставь реальную дату-время):
+Создай файл `dev/docs/logs/testing/user-test-results_ДД-ММ-ЧЧ-ММ.md` (подставь реальную дату-время):
 
 ```markdown
 # Результаты пользовательского тестирования
@@ -483,8 +483,8 @@ mkdir -p /Users/ivan/Desktop/claude-sandbox/claude_manager/development/docs/test
         "fix_cycles": 2
       }
     ],
-    "test_scenarios": "development/docs/testing/user-test-scenarios_ДД-ММ-ЧЧ-ММ.md",
-    "test_results": "development/docs/testing/user-test-results_ДД-ММ-ЧЧ-ММ.md"
+    "test_scenarios": "dev/docs/logs/testing/user-test-scenarios_ДД-ММ-ЧЧ-ММ.md",
+    "test_results": "dev/docs/logs/testing/user-test-results_ДД-ММ-ЧЧ-ММ.md"
   }
 }
 ```
@@ -505,12 +505,12 @@ mkdir -p /Users/ivan/Desktop/claude-sandbox/claude_manager/development/docs/test
 
 ## Справочник
 
-- **BRD (пользовательские сценарии):** `development/docs/brd-user-journeys.md`
-- **Сценарии тестирования:** `development/docs/testing/user-test-scenarios_*.md`
+- **BRD (пользовательские сценарии):** `dev/docs/brd/brd-user-journeys.md`
+- **Сценарии тестирования:** `dev/docs/logs/testing/user-test-scenarios_*.md`
 - **TelegramTestClient:** `tests/e2e/test_client.py`
-- **Спецификация пайплайна:** `development/specs/pipeline-spec.md`, раздел S10
-- **Технический стек тестирования:** `development/specs/pipeline-spec.md`, раздел «Технический стек тестирования»
-- **Спецификации модулей:** `development/specs/realized/`
+- **Спецификация пайплайна:** `dev/docs/specs/pipeline-spec.md`, раздел S10
+- **Технический стек тестирования:** `dev/docs/specs/pipeline-spec.md`, раздел «Технический стек тестирования»
+- **Спецификации модулей:** `dev/docs/specs/realised/`
 - **Код бота:** `src/claude_manager/`
-- **Тест-планы и результаты:** `development/docs/testing/`
-- **Формат pipeline-state.json:** `development/specs/pipeline-spec.md`, раздел D1
+- **Тест-планы и результаты:** `dev/docs/logs/testing/`
+- **Формат pipeline-state.json:** `dev/docs/specs/pipeline-spec.md`, раздел D1

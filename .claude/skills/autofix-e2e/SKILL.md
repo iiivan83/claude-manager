@@ -35,7 +35,7 @@ description: >-
 
 - **MAX_ATTEMPTS_PER_GROUP** = 3 (максимум попыток починки одной группы ошибок)
 - **MAX_TOTAL_TIME** = 60 минут (общий лимит времени на весь цикл)
-- **STATE_FILE** = `development/temp-docs/autofix-state.json`
+- **STATE_FILE** = `dev/temp/autofix-state.json`
 
 ## Фаза 0: Базовая линия (baseline)
 
@@ -43,7 +43,7 @@ Baseline нужен чтобы отличить «тест сломался из
 
 ### 0.1 Проверка сохранённого состояния
 
-Прочитай `development/temp-docs/autofix-state.json`. Если файл существует — это прерванный предыдущий запуск. Прочитай состояние и продолжи с того места, где остановились (номер текущей группы, attempt, failed_approaches). Сообщи: «Обнаружен прерванный запуск. Продолжаю с группы N, попытка M.»
+Прочитай `dev/temp/autofix-state.json`. Если файл существует — это прерванный предыдущий запуск. Прочитай состояние и продолжи с того места, где остановились (номер текущей группы, attempt, failed_approaches). Сообщи: «Обнаружен прерванный запуск. Продолжаю с группы N, попытка M.»
 
 Если файла нет — это новый запуск, продолжай ниже.
 
@@ -81,7 +81,7 @@ date +%s
 
 ### 0.5 Инициализация состояния
 
-Создай `development/temp-docs/autofix-state.json`:
+Создай `dev/temp/autofix-state.json`:
 
 ```json
 {
@@ -124,7 +124,7 @@ date +%s
 
 > «Все E2E тесты проходят, починка не нужна. Удаляю файл состояния.»
 
-Удали `development/temp-docs/autofix-state.json` и тег `autofix/baseline`.
+Удали `dev/temp/autofix-state.json` и тег `autofix/baseline`.
 
 Если есть FAIL — сохрани список падений в state файл и переходи к Фазе 2.
 
@@ -215,7 +215,7 @@ git rev-parse HEAD
 > {содержимое failed_approaches — ВЕСЬ список целиком}
 >
 > Учти эти неудачные попытки и предложи ДРУГОЙ подход к решению.
-> output_dir=development/docs/root-cause-reports»
+> output_dir=dev/docs/logs/root-cause-reports»
 >
 > Это автоматический цикл починки — не задавай вопросов пользователю, действуй самостоятельно.
 
@@ -338,7 +338,7 @@ date "+%d-%m" && date "+%H-%M"
 
 ### 5.2 Создание отчёта
 
-Создай файл `development/docs/session-reports/DD-MM/HH-MM_autofix-e2e-results.md`:
+Создай файл `dev/docs/session-reports/DD-MM/HH-MM_autofix-e2e-results.md`:
 
 ```markdown
 # Автофикс E2E: результаты
@@ -393,7 +393,7 @@ date "+%d-%m" && date "+%H-%M"
 Удали файл состояния:
 
 ```bash
-rm -f development/temp-docs/autofix-state.json
+rm -f dev/temp/autofix-state.json
 ```
 
 Удали git-тег:
@@ -449,7 +449,7 @@ pkill -f "python -m claude_manager" 2>/dev/null
 
 ### Сохранение состояния
 
-Состояние записывается в `development/temp-docs/autofix-state.json` после каждого значимого шага (завершение группы, попытка, откат). При прерывании скилла — следующий запуск продолжит с места остановки. После успешного завершения файл удаляется.
+Состояние записывается в `dev/temp/autofix-state.json` после каждого значимого шага (завершение группы, попытка, откат). При прерывании скилла — следующий запуск продолжит с места остановки. После успешного завершения файл удаляется.
 
 ## Режим dry-run
 
@@ -465,10 +465,10 @@ pkill -f "python -m claude_manager" 2>/dev/null
 
 ## Справочник
 
-- **BRD:** `development/docs/brd-user-journeys.md`
+- **BRD:** `dev/docs/brd/brd-user-journeys.md`
 - **E2E тесты:** `tests/e2e/`
 - **TelegramTestClient:** `tests/e2e/test_client.py`
 - **Код бота:** `src/claude_manager/`
-- **Root-cause отчёты:** `development/docs/root-cause-reports/`
-- **State файл:** `development/temp-docs/autofix-state.json`
-- **Отчёты:** `development/docs/session-reports/`
+- **Root-cause отчёты:** `dev/docs/logs/root-cause-reports/`
+- **State файл:** `dev/temp/autofix-state.json`
+- **Отчёты:** `dev/docs/session-reports/`

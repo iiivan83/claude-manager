@@ -47,7 +47,7 @@ description: >-
 
 Проверь наличие файла `tests/e2e/test_client.py` — в нём должен быть класс `TelegramTestClient` (обёртка над Telethon с методами send_message, wait_for_response, send_command, send_photo).
 
-Если файла нет — **остановись и сообщи пользователю**, что нужно сначала создать тестовый клиент. Файл описан в `development/specs/pipeline-spec.md`, раздел «Технический стек тестирования».
+Если файла нет — **остановись и сообщи пользователю**, что нужно сначала создать тестовый клиент. Файл описан в `dev/docs/specs/pipeline-spec.md`, раздел «Технический стек тестирования».
 
 ### Проверка 3: Зависимости
 
@@ -68,12 +68,12 @@ cd /Users/ivan/Desktop/claude-sandbox/claude_manager && pip install telethon
 Перед E2E тестированием все автоматические тесты должны быть зелёными. Проверь, существует ли скрипт запуска:
 
 ```bash
-ls /Users/ivan/Desktop/claude-sandbox/claude_manager/development/scripts/run-all-tests.sh
+ls /Users/ivan/Desktop/claude-sandbox/claude_manager/dev/scripts/run-all-tests.sh
 ```
 
 Если существует:
 ```bash
-cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./development/scripts/run-all-tests.sh
+cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./dev/scripts/run-all-tests.sh
 ```
 
 Если не существует:
@@ -89,7 +89,7 @@ cd /Users/ivan/Desktop/claude-sandbox/claude_manager && python -m pytest tests/ 
 
 ### 1.1 Чтение BRD
 
-Прочитай `development/docs/brd-user-journeys.md` — это документ со всеми пользовательскими сценариями (CJM). Каждый CJM описывает, что делает пользователь, что происходит внутри, что пользователь видит в ответ, и что может пойти не так.
+Прочитай `dev/docs/brd/brd-user-journeys.md` — это документ со всеми пользовательскими сценариями (CJM). Каждый CJM описывает, что делает пользователь, что происходит внутри, что пользователь видит в ответ, и что может пойти не так.
 
 ### 1.2 Формирование тест-сценариев
 
@@ -129,7 +129,7 @@ CJM-01 (первый запуск) и CJM-09 (защита от двойного
 date "+%d-%m-%H-%M"
 ```
 
-Создай файл `development/docs/testing/e2e-test-plan_ДД-ММ-ЧЧ-ММ.md` (подставь реальную дату-время). Убедись, что папка `development/docs/testing/` существует (создай если нет).
+Создай файл `dev/docs/logs/testing/e2e-test-plan_ДД-ММ-ЧЧ-ММ.md` (подставь реальную дату-время). Убедись, что папка `dev/docs/logs/testing/` существует (создай если нет).
 
 Формат файла:
 
@@ -137,7 +137,7 @@ date "+%d-%m-%H-%M"
 # E2E Тест-план
 
 **Дата:** ДД.ММ.ГГГГ ЧЧ:ММ
-**BRD:** development/docs/brd-user-journeys.md
+**BRD:** dev/docs/brd/brd-user-journeys.md
 **Количество сценариев:** N
 
 ## CJM-04: Создание новой сессии
@@ -323,7 +323,7 @@ pkill -f "python -m claude_manager"
 
 ### 5.3 Исправление кода
 
-**THINK HARD** — прочитай код, который отвечает за упавший сценарий. Сверься с BRD и спецификациями модулей из `development/specs/realized/`.
+**THINK HARD** — прочитай код, который отвечает за упавший сценарий. Сверься с BRD и спецификациями модулей из `dev/docs/specs/realised/`.
 
 Внеси исправления в соответствующие файлы в `src/claude_manager/`.
 
@@ -333,12 +333,12 @@ pkill -f "python -m claude_manager"
 
 Проверь, существует ли скрипт запуска:
 ```bash
-ls /Users/ivan/Desktop/claude-sandbox/claude_manager/development/scripts/run-all-tests.sh
+ls /Users/ivan/Desktop/claude-sandbox/claude_manager/dev/scripts/run-all-tests.sh
 ```
 
 Если существует:
 ```bash
-cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./development/scripts/run-all-tests.sh
+cd /Users/ivan/Desktop/claude-sandbox/claude_manager && ./dev/scripts/run-all-tests.sh
 ```
 
 Если не существует:
@@ -388,7 +388,7 @@ pkill -f "python -m claude_manager"
 date "+%d-%m-%H-%M"
 ```
 
-Создай файл `development/docs/testing/e2e-test-results_ДД-ММ-ЧЧ-ММ.md`:
+Создай файл `dev/docs/logs/testing/e2e-test-results_ДД-ММ-ЧЧ-ММ.md`:
 
 ```markdown
 # E2E Результаты тестирования
@@ -457,8 +457,8 @@ date "+%d-%m-%H-%M"
         "fix_cycles": 1
       }
     ],
-    "test_plan": "development/docs/testing/e2e-test-plan_ДД-ММ-ЧЧ-ММ.md",
-    "test_results": "development/docs/testing/e2e-test-results_ДД-ММ-ЧЧ-ММ.md"
+    "test_plan": "dev/docs/logs/testing/e2e-test-plan_ДД-ММ-ЧЧ-ММ.md",
+    "test_results": "dev/docs/logs/testing/e2e-test-results_ДД-ММ-ЧЧ-ММ.md"
   }
 }
 ```
@@ -478,10 +478,10 @@ date "+%d-%m-%H-%M"
 
 ## Справочник
 
-- **BRD (пользовательские сценарии):** `development/docs/brd-user-journeys.md`
+- **BRD (пользовательские сценарии):** `dev/docs/brd/brd-user-journeys.md`
 - **TelegramTestClient:** `tests/e2e/test_client.py`
-- **Спецификация пайплайна:** `development/specs/pipeline-spec.md`, раздел «Технический стек тестирования»
-- **Спецификации модулей:** `development/specs/realized/`
+- **Спецификация пайплайна:** `dev/docs/specs/pipeline-spec.md`, раздел «Технический стек тестирования»
+- **Спецификации модулей:** `dev/docs/specs/realised/`
 - **Код бота:** `src/claude_manager/`
-- **Тест-планы и результаты:** `development/docs/testing/`
-- **Формат pipeline-state.json:** `development/specs/pipeline-spec.md`, раздел D1
+- **Тест-планы и результаты:** `dev/docs/logs/testing/`
+- **Формат pipeline-state.json:** `dev/docs/specs/pipeline-spec.md`, раздел D1

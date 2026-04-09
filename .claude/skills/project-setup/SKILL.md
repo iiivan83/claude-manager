@@ -29,7 +29,7 @@ description: >-
 3. **requirements.txt** — текущие зависимости (если файл существует)
 4. **.gitignore** — что уже исключено из git
 5. **.env.example** — текущий шаблон переменных окружения (если файл существует)
-6. **development/specs/pipeline-spec.md** — раздел «Технический стек тестирования» (описывает все фикстуры, моки, E2E клиент) и раздел «D1: pipeline-state.json» (формат файла состояния)
+6. **dev/docs/specs/pipeline-spec.md** — раздел «Технический стек тестирования» (описывает все фикстуры, моки, E2E клиент) и раздел «D1: pipeline-state.json» (формат файла состояния)
 
 Из CLAUDE.md извлеки:
 - Язык и версию (Python 3.13)
@@ -225,7 +225,7 @@ logging.basicConfig(
 
 ## Шаг 7: Папка для документов тестирования
 
-Создай папку `development/docs/testing/` с пустым файлом `.gitkeep` (чтобы git отслеживал пустую папку). В эту папку скиллы test-e2e и run-user-testing будут складывать планы и результаты тестирования.
+Создай папку `dev/docs/logs/testing/` с пустым файлом `.gitkeep` (чтобы git отслеживал пустую папку). В эту папку скиллы test-e2e и run-user-testing будут складывать планы и результаты тестирования.
 
 ## Шаг 8: .gitignore
 
@@ -274,7 +274,7 @@ cd <корень_проекта> && pip install -e ".[test]"
 ```json
 {
   "project": "claude-manager",
-  "brd_path": "development/docs/brd-user-journeys.md",
+  "brd_path": "dev/docs/brd/brd-user-journeys.md",
   "current_phase": 1,
   "phases": {
     "0": {
@@ -309,7 +309,7 @@ cd <корень_проекта> && pip install -e ".[test]"
 - pytest настроен (asyncio_mode, testpaths)
 - `tests/conftest.py` существует и содержит все 5 фикстур
 - `tests/e2e/test_client.py` существует и содержит TelegramTestClient
-- `development/docs/testing/` существует
+- `dev/docs/logs/testing/` существует
 - `*.session` есть в .gitignore
 - `pipeline-state.json` создан с фазой 1 = completed
 - `python -m claude_manager` не падает
@@ -327,7 +327,7 @@ cd <корень_проекта> && pip install -e ".[test]"
 - `tests/conftest.py` — фикстуры для моков
 - `tests/e2e/__init__.py` — инициализация пакета
 - `tests/e2e/test_client.py` — TelegramTestClient
-- `development/docs/testing/.gitkeep` — папка для документов тестирования
+- `dev/docs/logs/testing/.gitkeep` — папка для документов тестирования
 - `pipeline-state.json` — состояние пайплайна (фаза 1 = completed)
 - `.gitignore` — обновлён (если нужно)
 - `src/claude_manager/main.py` — обновлён логированием (если нужно)

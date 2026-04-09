@@ -34,7 +34,7 @@ description: >-
 
 Ожидаемый аргумент: `brd_path` — путь к BRD-документу.
 
-- При первом запуске (нет `pipeline-state.json`) аргумент `brd_path` обязателен. Если не передан — спроси: «Укажи путь к BRD-документу, например: `development/docs/brd-user-journeys.md`»
+- При первом запуске (нет `pipeline-state.json`) аргумент `brd_path` обязателен. Если не передан — спроси: «Укажи путь к BRD-документу, например: `dev/docs/brd/brd-user-journeys.md`»
 - При возобновлении (есть `pipeline-state.json`) аргумент не нужен — путь уже сохранён в файле состояния
 
 ## Шаг 0: Определение режима — новый запуск или возобновление
@@ -57,7 +57,7 @@ THINK HARD.
 4. Сообщи пользователю: «Пайплайн обнаружен. Текущая фаза: {N} — {name}. Продолжаю с задачи {task_id}.»
 5. Переходи к соответствующей фазе и задаче
 
-Формат `pipeline-state.json` описан в `development/specs/pipeline-spec.md`, раздел D1.
+Формат `pipeline-state.json` описан в `dev/docs/specs/pipeline-spec.md`, раздел D1.
 
 ---
 
@@ -122,7 +122,7 @@ THINK HARD.
 ### Правило 6: Возврат спеки при ошибке реализации
 
 Если агент-реализатор (фаза 3) обнаружил ошибку в спецификации, которую невозможно исправить на уровне кода:
-1. Спецификация возвращается из `development/specs/realized/` в `development/specs/`
+1. Спецификация возвращается из `dev/docs/specs/realised/` в `dev/docs/specs/`
 2. Запускается агент для исправления спецификации (скилл spec-module)
 3. Коммит с исправленной спекой
 4. Реализация модуля продолжается с обновлённой спекой
@@ -155,7 +155,7 @@ THINK HARD.
 
 ### Ворота качества
 
-- Файл `development/docs/brd-validation-report_*.md` существует
+- Файл `dev/docs/brd/brd-validation-report_*.md` существует
 - Все расхождения разрешены (ответы пользователя зафиксированы)
 
 Проверь ворота вручную (прочитай отчёт и убедись, что нет открытых вопросов). Если всё чисто — переход к фазе 1.
@@ -214,7 +214,7 @@ THINK HARD.
 
    > Вызови скилл brd-decompose. BRD: `{brd_path}`. Создай граф зависимостей модулей с разбивкой по слоям.
 
-2. Дождись завершения — результат: `development/specs/module-dependency-graph.md`
+2. Дождись завершения — результат: `dev/docs/specs/module-dependency-graph.md`
 
 3. Git-коммит: `pipeline(phase-2): декомпозиция на модули, граф зависимостей создан`
 
@@ -244,8 +244,8 @@ THINK HARD.
 Запусти агента-верификатора:
 
 > Проверь ворота фазы 2:
-> 1. Файл `development/specs/module-dependency-graph.md` существует
-> 2. Для каждого модуля из графа существует `development/specs/{module}_spec.md`
+> 1. Файл `dev/docs/specs/module-dependency-graph.md` существует
+> 2. Для каждого модуля из графа существует `dev/docs/specs/{module}_spec.md`
 > 3. Прочитай BRD и список спецификаций — каждый CJM должен быть покрыт хотя бы одной спекой
 > Верни: PASS или FAIL + что не покрыто
 
@@ -269,7 +269,7 @@ THINK HARD.
 
 1. **Запуск агентов слоя** — для каждого модуля в текущем слое запусти агента параллельно:
 
-   > Вызови скилл implement-module с аргументом `{module_name}`. Реализуй модуль по спецификации, напиши юнит-тесты, добейся зелёных тестов. После успешной реализации перенеси спеку в `development/specs/realized/`.
+   > Вызови скилл implement-module с аргументом `{module_name}`. Реализуй модуль по спецификации, напиши юнит-тесты, добейся зелёных тестов. После успешной реализации перенеси спеку в `dev/docs/specs/realised/`.
 
 2. **После завершения каждого агента:**
    - Git-коммит: `pipeline(phase-3): модуль {module} реализован, тесты зелёные`
@@ -277,7 +277,7 @@ THINK HARD.
 
 3. **После завершения всех модулей слоя** — запусти агента для регрессионной проверки:
 
-   > Запусти все тесты проекта: `development/scripts/run-all-tests.sh` (если существует, иначе `python -m pytest tests/ -v --tb=short`). Все тесты должны быть зелёными. Если есть красные — верни список упавших тестов.
+   > Запусти все тесты проекта: `dev/scripts/run-all-tests.sh` (если существует, иначе `python -m pytest tests/ -v --tb=short`). Все тесты должны быть зелёными. Если есть красные — верни список упавших тестов.
 
 4. **Если регрессия обнаружена** (тесты, которые были зелёными, стали красными):
    - Запусти агента для починки
@@ -291,20 +291,20 @@ THINK HARD.
 
 Если агент-реализатор сообщил, что спецификация содержит ошибку:
 
-1. Верни спеку из `development/specs/realized/` в `development/specs/` (если она уже была перенесена)
+1. Верни спеку из `dev/docs/specs/realised/` в `dev/docs/specs/` (если она уже была перенесена)
 2. Запусти агента: `Вызови скилл spec-module с аргументом {module_name}. Исправь спецификацию: {описание проблемы}`
 3. Git-коммит: `pipeline(phase-3): спецификация {module} исправлена`
 4. Запусти реализацию модуля заново
 
 ### Ворота качества
 
-Запусти `development/scripts/check-phase-gate.py --phase 3` (через агента).
+Запусти `dev/scripts/check-phase-gate.py --phase 3` (через агента).
 
 Дополнительно проверь:
 - Все модули из графа реализованы (файлы в `src/claude_manager/` существуют)
 - Для каждого модуля есть `tests/test_{module}.py`
 - Все юнит-тесты зелёные
-- Все спеки в `development/specs/realized/`
+- Все спеки в `dev/docs/specs/realised/`
 
 Если PASS — обнови `pipeline-state.json` (фаза 3 = completed, current_phase = 4).
 
@@ -330,7 +330,7 @@ THINK HARD.
 
 ### Ворота качества
 
-Запусти `development/scripts/check-phase-gate.py --phase 4` (через агента).
+Запусти `dev/scripts/check-phase-gate.py --phase 4` (через агента).
 
 Проверь:
 - `tests/integration/` содержит тесты
@@ -365,11 +365,11 @@ THINK HARD.
 
 ### Ворота качества
 
-Запусти `development/scripts/check-phase-gate.py --phase 5` (через агента).
+Запусти `dev/scripts/check-phase-gate.py --phase 5` (через агента).
 
 Проверь:
-- `development/docs/testing/e2e-test-plan_*.md` существует
-- `development/docs/testing/e2e-test-results_*.md` — все сценарии = pass
+- `dev/docs/logs/testing/e2e-test-plan_*.md` существует
+- `dev/docs/logs/testing/e2e-test-results_*.md` — все сценарии = pass
 - Все автотесты зелёные
 
 Если PASS — обнови `pipeline-state.json` (фаза 5 = completed, current_phase = 6).
@@ -396,10 +396,10 @@ THINK HARD.
 
 ### Ворота качества
 
-Запусти `development/scripts/check-phase-gate.py --phase 6` (через агента).
+Запусти `dev/scripts/check-phase-gate.py --phase 6` (через агента).
 
 Проверь:
-- `development/docs/review-report_*.md` содержит 4 прохода с 0 замечаний
+- `dev/docs/review-report_*.md` содержит 4 прохода с 0 замечаний
 - Все тесты (юнит + интеграционные) зелёные
 
 Если PASS — обнови `pipeline-state.json` (фаза 6 = completed, current_phase = 7).
@@ -428,8 +428,8 @@ THINK HARD.
 
 Проверь (через агента):
 - CLAUDE.md отражает реальную структуру проекта
-- `development/docs/deployment-guide.md` существует
-- `development/docs/docs-index.md` обновлён
+- `dev/docs/deployment-guide.md` существует
+- `dev/docs/docs-index.md` обновлён
 
 Если PASS — обнови `pipeline-state.json` (фаза 7 = completed, current_phase = 8).
 
@@ -456,7 +456,7 @@ THINK HARD.
 ### Ворота качества
 
 Проверь (через агента):
-- `development/docs/testing/user-test-scenarios_*.md` существует
+- `dev/docs/logs/testing/user-test-scenarios_*.md` существует
 - Для каждого CJM из BRD есть основной сценарий, сценарии ошибок, граничные случаи
 - Каждый сценарий содержит конкретные шаги и критерии pass/fail
 
@@ -478,7 +478,7 @@ THINK HARD.
 
 1. Запусти агента:
 
-   > Вызови скилл run-user-testing. Прогони все сценарии из `development/docs/testing/user-test-scenarios_*.md` с живым ботом. Используй TelegramTestClient через Telethon. При fail: останови бота, исправь код, прогони автотесты, перезапусти, повтори ТОЛЬКО упавший сценарий (макс 5 попыток). Если нужен SMS-код — спроси через AskUserQuestion.
+   > Вызови скилл run-user-testing. Прогони все сценарии из `dev/docs/logs/testing/user-test-scenarios_*.md` с живым ботом. Используй TelegramTestClient через Telethon. При fail: останови бота, исправь код, прогони автотесты, перезапусти, повтори ТОЛЬКО упавший сценарий (макс 5 попыток). Если нужен SMS-код — спроси через AskUserQuestion.
 
 2. Git-коммит: `pipeline(phase-9): пользовательское тестирование пройдено`
 
@@ -486,10 +486,10 @@ THINK HARD.
 
 ### Ворота качества
 
-Запусти `development/scripts/check-phase-gate.py --phase 9` (через агента).
+Запусти `dev/scripts/check-phase-gate.py --phase 9` (через агента).
 
 Проверь:
-- `development/docs/testing/user-test-results_*.md` — все сценарии = pass
+- `dev/docs/logs/testing/user-test-results_*.md` — все сценарии = pass
 - Все автотесты зелёные
 
 Если PASS — обнови `pipeline-state.json` (фаза 9 = completed).
@@ -510,9 +510,9 @@ THINK HARD.
 - **Тесты** — количество по типам:
   - Юнит-тесты (количество файлов `tests/test_*.py`)
   - Интеграционные тесты (количество файлов в `tests/integration/`)
-  - E2E тесты (результаты из `development/docs/testing/e2e-test-results_*.md`)
-  - Пользовательские сценарии (результаты из `development/docs/testing/user-test-results_*.md`)
-- **Ревью** — сколько проблем найдено и исправлено (из `development/docs/review-report_*.md`)
+  - E2E тесты (результаты из `dev/docs/logs/testing/e2e-test-results_*.md`)
+  - Пользовательские сценарии (результаты из `dev/docs/logs/testing/user-test-results_*.md`)
+- **Ревью** — сколько проблем найдено и исправлено (из `dev/docs/review-report_*.md`)
 - **Циклы починки** — суммарное количество `fix_cycles` по всем задачам в `pipeline-state.json`
 - **Время** — общее время пайплайна (от started_at фазы 0 до completed_at фазы 9)
 
@@ -587,7 +587,7 @@ THINK HARD.
 4. При завершении фазы: статус фазы = `completed`, current_phase += 1
 5. При каждом цикле починки: fix_cycles += 1
 
-Формат файла — JSON, как описано в `development/specs/pipeline-spec.md`, раздел D1.
+Формат файла — JSON, как описано в `dev/docs/specs/pipeline-spec.md`, раздел D1.
 
 ---
 
@@ -607,4 +607,4 @@ THINK HARD.
 - **Фаза 9:** `run-user-testing` — прогон пользовательских тестов
 
 Подробная спецификация каждого скилла — в соответствующих файлах `.claude/skills/{skill-name}/SKILL.md`.
-Полная спецификация процесса — `development/specs/pipeline-spec.md`.
+Полная спецификация процесса — `dev/docs/specs/pipeline-spec.md`.

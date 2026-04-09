@@ -1,0 +1,95 @@
+{
+  "skill_name": "pipeline-explorer",
+  "evals": [
+    {
+      "id": 1,
+      "name": "simple-data-processing-exploration",
+      "description": "Основной сценарий: исследование задачи обработки CSV-данных. Проверяет полный цикл: сбор требований, генерация тестов, стратегия, реализация, финальная проверка, генерация ТЗ.",
+      "prompt": "Исследуй, как можно автоматизировать обработку CSV-файлов с продажами. На входе — CSV с колонками: дата, товар, количество, цена. Нужно: валидация формата, подсчёт итогов по месяцам, топ-5 товаров по выручке, выгрузка результатов в JSON. Попробуй разные подходы и подготовь ТЗ.",
+      "expected_output": "Пайплайн проходит все 7 фаз. Рабочая директория с orchestrator-log.json, agent-outputs/, tests/. Итоговые продукты: ТЗ в dev/docs/specs/ и финальный скилл-оркестратор в {name}-final/. Архив результатов в dev/docs/logs/skills-modifications/.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Создана рабочая директория с orchestrator-log.json, agent-outputs/, tests/blackbox/, tests/open/, failure-log/failure-log.json",
+          "tier": 1,
+          "scope": "both"
+        },
+        {
+          "text": "orchestrator-log.json содержит поля budget (с max_total_iterations: 5, max_strategy_restarts: 3, used_iterations, used_strategy_restarts), current_phase, steps и decisions",
+          "tier": 2,
+          "scope": "both"
+        },
+        {
+          "text": "Фаза 0.2 — требования собраны через агента requirements-collector, результат в agent-outputs/00-requirements.json содержит описание задачи, критерии приёмки и golden examples",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "Тесты blackbox (фаза 1.1) и open (фаза 1.2) сгенерированы параллельно. Путь tests/blackbox/ НЕ передавался агентам разработки в фазах 2-3 (абсолютное правило изоляции тестов)",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "ТЗ создано в dev/docs/specs/{DD.MM_HH.MM}-{task-name}-tz.md и содержит минимум 5 секций из 10 обязательных (описание, этапы, зависимости, контракты данных, тесты)",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "Финальный скилл-оркестратор создан в {skill-name}-final/ — содержит SKILL.md с YAML frontmatter и agents/ с файлами агентов для каждого этапа",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "Фаза 7 выполнена: архив результатов создан в dev/docs/logs/skills-modifications/ с подпапками pipeline/, logs/, workspace/. Промежуточные данные очищены",
+          "tier": 3,
+          "scope": "both"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "exploration-with-strategy-restart",
+      "description": "Edge case: первая стратегия проваливается, пайплайн перезапускает стратегию. Проверяет механизм обработки ошибок, диагностику и повторное планирование.",
+      "prompt": "Разведай подход к автоматизации парсинга PDF-документов с таблицами. PDF приходят от разных поставщиков в разных форматах — единой структуры нет. Нужно извлечь таблицы, определить заголовки, нормализовать данные и сохранить в SQLite. Задача сложная — возможно, придётся попробовать несколько подходов.",
+      "expected_output": "Пайплайн пробует первую стратегию, при неудаче диагностик определяет причину, запускается перезапуск стратегии с учётом failure-log. Финальное ТЗ учитывает все попытки — включает рекомендации по обработке разных форматов.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "Создана рабочая директория с orchestrator-log.json и failure-log/failure-log.json — оба файла существуют и парсятся как валидный JSON",
+          "tier": 1,
+          "scope": "both"
+        },
+        {
+          "text": "failure-log/failure-log.json содержит минимум 1 запись с полями strategy, stage, attempt, error, diagnosis, lesson — каждое поле непустое",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "При неудаче этапа запущен агент-diagnostician (agents/diagnostician.md), который вынес решение из набора: RETRY / BACKTRACK / STRATEGY RESTART — решение обосновано и записано в лог",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "Failure-log передан при перезапуске стратегии агенту strategy-planner — новая стратегия учитывает прошлые неудачи (field 'lesson' из failure-log упомянут в описании новой стратегии)",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "Бюджет отслеживается: used_strategy_restarts в orchestrator-log.json увеличивается при каждом перезапуске, пайплайн остановится при достижении max_strategy_restarts (3)",
+          "tier": 2,
+          "scope": "both"
+        },
+        {
+          "text": "Финальное ТЗ в dev/docs/specs/ содержит информацию о пробованных подходах — что работает, что не работает, почему выбрана итоговая стратегия",
+          "tier": 3,
+          "scope": "both"
+        },
+        {
+          "text": "Каждый этап выполнялся в изолированной временной директории (TEMP_DIR через mktemp -d), а не в рабочей директории пайплайна — в логе видны пути вида /tmp/ или /var/folders/",
+          "tier": 3,
+          "scope": "both"
+        }
+      ]
+    }
+  ]
+}

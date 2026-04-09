@@ -1,0 +1,23 @@
+{
+  "skill_name": "pipeline-designer",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Мне нужно спроектировать пайплайн для миграции базы данных MongoDB в PostgreSQL. У нас около 2 ГБ данных, 15 коллекций с связями между ними. Продакшн-среда, нужен откат, даунтайм максимум 30 минут.",
+      "expected_output": "The skill should start the pipeline-designer flow: create infrastructure (stage 0), launch the interviewer agent to ask follow-up questions about the migration details, then proceed through all stages. The interviewer should ask about specific collections, relationships, data types, rollback strategy, and testing approach.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Хочу автоматизировать процесс деплоя нашего Telegram-бота. Сейчас всё делается руками: тесты, сборка Docker-образа, пуш в реестр, обновление на сервере. Хочу чтобы это был автоматический пайплайн.",
+      "expected_output": "The skill should trigger pipeline-designer and start with the interview stage. The interviewer should ask about the current deployment process in detail, CI/CD requirements, testing strategy, Docker registry, server configuration, rollback mechanism, and notification preferences.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I need to design a multi-step data processing workflow. Raw CSV files come in from an S3 bucket, need to be validated, transformed, enriched with data from an external API, and loaded into a data warehouse. Some steps can run in parallel.",
+      "expected_output": "The skill should trigger pipeline-designer and begin the interview. It should explore the CSV format, validation rules, transformation logic, API details, parallelization opportunities, error handling for API failures, data warehouse specifics, and scheduling requirements.",
+      "files": []
+    }
+  ]
+}

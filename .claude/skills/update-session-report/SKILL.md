@@ -30,7 +30,7 @@ user_invocable: true
 3. **Спроси пользователя** — если отчёт не найден ни в selection, ни в аргументах,
    покажи список последних отчётов и попроси выбрать:
    ```bash
-   ls -t development/docs/session-reports/2*//*.md 2>/dev/null | head -15
+   ls -t dev/docs/session-reports/2*//*.md 2>/dev/null | head -15
    ```
 
 Прочитай найденный отчёт целиком через Read.

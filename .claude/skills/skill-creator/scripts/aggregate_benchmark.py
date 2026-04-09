@@ -153,12 +153,13 @@ def load_run_results(benchmark_dir: Path) -> dict:
                     result["tokens"] = metrics.get("output_chars", 0)
                 result["errors"] = metrics.get("errors_encountered", 0)
 
-                # Extract expectations — viewer requires fields: text, passed, evidence
-                raw_expectations = grading.get("expectations", [])
-                for exp in raw_expectations:
-                    if "text" not in exp or "passed" not in exp:
-                        print(f"Warning: expectation in {grading_file} missing required fields (text, passed, evidence): {exp}")
-                result["expectations"] = raw_expectations
+                # Extract assertions — viewer requires fields: text, passed, evidence
+                # Fallback to old "expectations" field for backward compatibility
+                raw_assertions = grading.get("assertions") or grading.get("expectations", [])
+                for assertion in raw_assertions:
+                    if "text" not in assertion or "passed" not in assertion:
+                        print(f"Warning: assertion in {grading_file} missing required fields (text, passed, evidence): {assertion}")
+                result["assertions"] = raw_assertions
 
                 # Extract notes from user_notes_summary
                 notes_summary = grading.get("user_notes_summary", {})
@@ -249,7 +250,7 @@ def generate_benchmark(benchmark_dir: Path, skill_name: str = "", skill_path: st
                     "tool_calls": result.get("tool_calls", 0),
                     "errors": result.get("errors", 0)
                 },
-                "expectations": result["expectations"],
+                "assertions": result["assertions"],
                 "notes": result["notes"]
             })
 

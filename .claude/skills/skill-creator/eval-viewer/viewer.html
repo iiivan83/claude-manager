@@ -871,7 +871,8 @@
       document.getElementById("grades-arrow").classList.remove("open");
 
       const summary = grading.summary || {};
-      const expectations = grading.expectations || [];
+      // Fallback to old "expectations" field for backward compatibility
+      const expectations = grading.assertions || grading.expectations || [];
 
       let html = '<div style="padding: 1rem;">';
 
@@ -1253,7 +1254,7 @@
           // Per-assertion detail for this eval
           const runsWithExpectations = {};
           for (const config of configGroups) {
-            runsWithExpectations[config] = evalRuns.filter(r => r.configuration === config && r.expectations && r.expectations.length > 0);
+            runsWithExpectations[config] = evalRuns.filter(r => r.configuration === config && (r.assertions || r.expectations) && (r.assertions || r.expectations).length > 0);
           }
           const hasAnyExpectations = Object.values(runsWithExpectations).some(runs => runs.length > 0);
           if (hasAnyExpectations) {
@@ -1262,7 +1263,7 @@
             const seen = new Set();
             for (const config of configGroups) {
               for (const run of runsWithExpectations[config]) {
-                for (const exp of (run.expectations || [])) {
+                for (const exp of (run.assertions || run.expectations || [])) {
                   if (!seen.has(exp.text)) {
                     seen.add(exp.text);
                     allAssertions.push(exp.text);
@@ -1285,7 +1286,7 @@
               for (const config of configGroups) {
                 html += "<td>";
                 for (const run of runsWithExpectations[config]) {
-                  const exp = (run.expectations || []).find(e => e.text === assertionText);
+                  const exp = (run.assertions || run.expectations || []).find(e => e.text === assertionText);
                   if (exp) {
                     const cls = exp.passed ? "benchmark-delta-positive" : "benchmark-delta-negative";
                     const icon = exp.passed ? "\u2713" : "\u2717";
