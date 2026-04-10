@@ -132,8 +132,43 @@
     {
       "phase": "phase-4",
       "start_time": "2026-04-10T17:21:00Z",
-      "status": "in_progress",
-      "comment": "Коммит изменений, архивация отчёта в realized/, сессионный отчёт"
+      "end_time": "2026-04-10T17:24:00Z",
+      "success": true,
+      "commit_sha": "dd37ecc",
+      "commit_message_header": "fix(root-cause): ссылки на раздел 19 об отказе инструмента делегирования + архив",
+      "files_in_commit": [
+        ".claude/skills/autofix-e2e/SKILL.md",
+        ".claude/skills/pipeline-run/SKILL.md",
+        "CLAUDE.md",
+        "dev/docs/logs/root-cause-fixes/10.04_22.11-apply-root-cause-fixes-feature-pipeline-orchestrator-self-execution/orchestrator-log.json",
+        "dev/docs/logs/root-cause-reports/realized/10-04_20-21_feature-pipeline-orchestrator-self-execution.md (rename + modify)"
+      ],
+      "files_skipped_not_in_commit": [
+        "tests/e2e/test_session_flow.py (чужие изменения до сессии)",
+        "dev/docs/session-reports/10-04/21-47_dedupe-rca-with-budgets-spec.md (чужой untracked)",
+        "dev/docs/session-reports/10-04/21-52_flow02-marker-fix.md (чужой untracked)"
+      ],
+      "archived_report": {
+        "from": "dev/docs/logs/root-cause-reports/10-04_20-21_feature-pipeline-orchestrator-self-execution.md",
+        "to": "dev/docs/logs/root-cause-reports/realized/10-04_20-21_feature-pipeline-orchestrator-self-execution.md",
+        "method": "git mv с сохранением пользовательской разметки делегирования"
+      },
+      "amend_used": false,
+      "amend_skip_reason": "Правило git safety: не использовать --amend без явной просьбы пользователя. Вместо amend сделан один коммит, куда включены и правки, и rename отчёта одновременно — чище и безопаснее."
+    },
+    {
+      "phase": "completed",
+      "end_time": "2026-04-10T17:24:00Z",
+      "total_recommendations": 11,
+      "delegated_to_budgets_spec": 3,
+      "delegated_to_skill_templates": 5,
+      "active_project_recommendations": 3,
+      "accepted": 3,
+      "rejected": 0,
+      "applied_successfully": 3,
+      "errors": 0,
+      "total_files_changed": 4,
+      "summary": "Все три проектных пункта применены без ошибок. Четыре файла изменены: CLAUDE.md, autofix-e2e/SKILL.md, pipeline-run/SKILL.md, feedback_no_step_questions.md (последний — вне репо). Коммит dd37ecc. Отчёт перенесён в realized/."
     }
   ]
 }
