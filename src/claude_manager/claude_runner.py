@@ -21,6 +21,20 @@ CLAUDE_CLI_COMMAND = shutil.which("claude") or "/usr/local/bin/claude"
 # Время ожидания завершения процесса после SIGTERM (секунды)
 TERMINATE_TIMEOUT_SECONDS = 5
 
+# Максимальное время ожидания одной строки из stdout Claude CLI (секунды).
+# Если CLI не выдаёт ни одной строки за это время — считаем, что он завис.
+# 5 минут — достаточно для инициализации тяжёлой сессии с --resume.
+READ_LINE_TIMEOUT_SECONDS = 300
+
+# Размер буфера StreamReader для stdout/stderr процесса Claude CLI (байты).
+# Дефолт asyncio — 64 KB на одну строку, но события stream-json могут
+# быть значительно больше: длинные ответы Claude с markdown, результаты
+# инструментов Read/Bash для больших файлов. Превышение дефолта приводит
+# к asyncio.LimitOverrunError при чтении через readline(), что выглядит
+# как обрыв процесса и запускает ретрай. 16 MB покрывает реалистичные
+# edge cases — буфер растёт по мере необходимости, не аллоцируется заранее.
+STREAM_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
+
 # Формат обмена данными с Claude CLI через stdin/stdout
 STREAM_JSON_INPUT_FORMAT = "stream-json"
 STREAM_JSON_OUTPUT_FORMAT = "stream-json"
@@ -103,7 +117,19 @@ class ClaudeProcess:
     async def read_events(self) -> AsyncGenerator[dict, None]:
         """Читает JSON-события из stdout процесса Claude."""
         while True:
-            raw_bytes = await self.process.stdout.readline()
+            try:
+                raw_bytes = await asyncio.wait_for(
+                    self.process.stdout.readline(),
+                    timeout=READ_LINE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Claude CLI (PID %d) не отвечает %d секунд — завис",
+                    self.process.pid, READ_LINE_TIMEOUT_SECONDS,
+                )
+                raise ClaudeProcessError(
+                    f"Claude CLI не отвечает {READ_LINE_TIMEOUT_SECONDS} секунд"
+                )
 
             # Пустые байты — процесс завершился
             if not raw_bytes:
@@ -194,6 +220,7 @@ async def start_process(session_id: str | None = None) -> ClaudeProcess:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_BUFFER_LIMIT_BYTES,
             cwd=config.WORKING_DIR,
         )
     except FileNotFoundError:

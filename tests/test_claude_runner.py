@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from claude_manager.claude_runner import (
+    STREAM_BUFFER_LIMIT_BYTES,
     ClaudeProcess,
     ClaudeProcessError,
     ClaudeStartError,
@@ -162,6 +163,32 @@ async def test_start_process_resume_session(mock_exec, mock_subprocess):
     command_args = call_args[0]
     assert "--resume" in command_args
     assert session_id in command_args
+
+
+@patch("claude_manager.claude_runner.asyncio.create_subprocess_exec")
+async def test_start_process_passes_increased_stream_buffer_limit(
+    mock_exec, mock_subprocess,
+):
+    """Регрессия LimitOverrunError: subprocess получает увеличенный лимит буфера.
+
+    Дефолт asyncio.StreamReader — 64 KB на одну строку. Длинные события
+    stream-json от Claude CLI (markdown-ответы, tool_result от Read/Bash)
+    превышают этот лимит и приводят к LimitOverrunError, который выглядит
+    как обрыв процесса. Параметр limit= должен передаваться всегда и быть
+    не меньше 16 MB.
+    """
+    mock_exec.return_value = mock_subprocess
+
+    await start_process(session_id=None)
+
+    call_kwargs = mock_exec.call_args.kwargs
+    assert "limit" in call_kwargs, (
+        "create_subprocess_exec вызван без параметра limit — "
+        "вернётся дефолт 64 KB и снова появится LimitOverrunError"
+    )
+    assert call_kwargs["limit"] == STREAM_BUFFER_LIMIT_BYTES
+    # Защита от случайного уменьшения константы ниже безопасного порога
+    assert STREAM_BUFFER_LIMIT_BYTES >= 16 * 1024 * 1024
 
 
 # --- Юнит-тесты: send_message ---
