@@ -4,6 +4,7 @@ import asyncio
 import os
 
 import pytest
+import pytest_asyncio
 from dotenv import load_dotenv
 
 from tests.e2e.test_client import TelegramTestClient
@@ -20,9 +21,18 @@ REQUIRED_ENV_VARS = [
 ]
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def telegram_client():
-    """Подключённый Telethon-клиент для отправки сообщений боту."""
+    """Подключённый Telethon-клиент для отправки сообщений боту.
+
+    Session-scoped: единый connect/disconnect на весь прогон тестов.
+    Каждый тест — новый connect/disconnect копит FLOOD_WAIT в Telegram
+    и делает E2E тесты нестабильными.
+
+    loop_scope="session" обязателен: Telethon привязывается к event loop
+    на connect и падает, если его меняют между тестами. В pytest-asyncio
+    1.x дефолт для async фикстур — function-scoped loop.
+    """
     load_dotenv()
 
     missing = [var for var in REQUIRED_ENV_VARS if not os.environ.get(var)]
@@ -48,3 +58,15 @@ async def telegram_client():
 
     yield client
     await client.disconnect()
+
+
+@pytest.fixture(autouse=True)
+def _clean_response_buffer_between_tests(telegram_client):
+    """Сбрасывает накопленные ответы и состояние ожидания перед каждым тестом.
+
+    Клиент session-scoped, поэтому буфер `_all_responses` и последний ответ
+    живут между тестами. Без сброса подстрочный поиск в одном тесте может
+    поймать ответ от предыдущего — источник ложных совпадений и flaky.
+    """
+    telegram_client._reset_response_state()
+    yield

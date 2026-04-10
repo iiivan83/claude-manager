@@ -1,0 +1,231 @@
+"""E2E тесты: переключение между проектами (CJM-11).
+
+Проверяют сценарии команды /projects и кликабельных команд /pN:
+- Список проектов с маркером текущего
+- Переключение на другой проект и возврат на исходный
+- Обработка несуществующего номера проекта
+- No-op при переключении на уже активный проект
+
+Требования: бот запущен, Telethon авторизован, в PROJECTS_ROOT_DIR
+есть минимум один доступный проект (для переключения на другой —
+минимум два, иначе соответствующий тест будет пропущен).
+
+Тесты НЕ обращаются к Claude API — команды /projects и /pN полностью
+обрабатываются ботом локально, ответ приходит быстро (миллисекунды).
+"""
+
+import re
+from dataclasses import dataclass
+
+import pytest
+
+from tests.e2e.test_client import TelegramTestClient
+
+# Таймаут ожидания ответа от бота на команды переключения (секунды).
+# Переключение проекта — локальная операция без обращения к Claude,
+# но должен быть запас на фоновые задачи watcher и сеть Telegram.
+BOT_RESPONSE_TIMEOUT_SECONDS = 15
+
+# Имя проекта, из которого запускаются E2E тесты. Должно совпадать с
+# именем папки в PROJECTS_ROOT_DIR (по умолчанию /Users/ivan/Desktop/claude-sandbox).
+# Если тесты переносятся в другой проект — поменяй константу.
+EXPECTED_CURRENT_PROJECT_NAME = "claude_manager"
+
+# Маркер текущего активного проекта в списке /projects — чёрный кружок U+25CF
+CURRENT_PROJECT_MARKER = "\u25cf"
+
+# Регулярное выражение для строки вида "● /p3 claude_manager" или "/p5 other_repo".
+# Группа 1 — номер проекта, группа 2 — имя папки проекта.
+_PROJECT_LINE_PATTERN = re.compile(
+    rf"^(?:{CURRENT_PROJECT_MARKER}\s+)?/p(\d+)\s+(.+)$"
+)
+
+
+@dataclass(frozen=True)
+class ParsedProject:
+    """Разобранная строка из ответа команды /projects."""
+
+    number: int
+    name: str
+    is_current: bool
+
+
+def _parse_projects_response(response_text: str) -> list[ParsedProject]:
+    """Разбирает многострочный ответ /projects в список структур ParsedProject."""
+    projects: list[ParsedProject] = []
+    for line in response_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _PROJECT_LINE_PATTERN.match(stripped)
+        assert match, (
+            f"Не удалось распарсить строку проекта: {stripped!r}. "
+            f"Ожидался формат '[● ]/pN name'"
+        )
+        projects.append(
+            ParsedProject(
+                number=int(match.group(1)),
+                name=match.group(2),
+                is_current=stripped.startswith(CURRENT_PROJECT_MARKER),
+            )
+        )
+    return projects
+
+
+async def _fetch_project_list(
+    telegram_client: TelegramTestClient,
+) -> list[ParsedProject]:
+    """Запрашивает /projects и возвращает распарсенный список проектов."""
+    await telegram_client.send_command("/projects")
+    # Ищем сообщение, у которого хотя бы одна строка начинается с /pN
+    # (опционально с маркером текущего ●). Ни watcher-сообщения, ни
+    # обычные markdown-ответы Claude такого формата не дают — в них
+    # `/p` если и встречается, то в середине строки как часть пути.
+    # Ранее здесь был поиск по подстроке "/p" — он ловил watcher-шум.
+    response = await telegram_client.wait_for_regex_response(
+        rf"(?m)^(?:{CURRENT_PROJECT_MARKER}\s+)?/p\d+\s",
+        timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+    )
+    return _parse_projects_response(response)
+
+
+def _find_current_project(
+    projects: list[ParsedProject],
+) -> ParsedProject:
+    """Возвращает проект с маркером ● — в списке должен быть ровно один."""
+    current_projects = [project for project in projects if project.is_current]
+    assert len(current_projects) == 1, (
+        f"Ожидался ровно один текущий проект (с маркером ●), "
+        f"найдено {len(current_projects)}: "
+        f"{[project.name for project in current_projects]}"
+    )
+    return current_projects[0]
+
+
+def _find_other_project(
+    projects: list[ParsedProject], current_name: str,
+) -> ParsedProject | None:
+    """Возвращает первый проект в списке, отличный от текущего. None если таких нет."""
+    for project in projects:
+        if project.name != current_name:
+            return project
+    return None
+
+
+# --- FLOW-08: /projects показывает список с маркером текущего ---
+
+
+async def test_flow08_projects_lists_available_with_current_marker(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """/projects возвращает непустой список, текущий проект помечен маркером ●.
+
+    Проверяет базовый сценарий CJM-11 шаг 1-3: пользователь видит список
+    всех доступных проектов в виде кликабельных /pN и понимает, где сейчас
+    работает бот по маркеру ●.
+    """
+    projects = await _fetch_project_list(telegram_client)
+
+    assert len(projects) >= 1, "Список проектов пуст — ожидался хотя бы один"
+
+    current = _find_current_project(projects)
+    assert current.name == EXPECTED_CURRENT_PROJECT_NAME, (
+        f"Тест запускается из проекта {EXPECTED_CURRENT_PROJECT_NAME}, "
+        f"но текущим помечен: {current.name}"
+    )
+
+
+# --- FLOW-09: /pN переключает проект и возвращается обратно ---
+
+
+async def test_flow09_switch_to_other_project_and_back(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Переключиться на другой проект, затем вернуться на исходный.
+
+    Блок try/finally гарантированно возвращает бота на исходный проект —
+    иначе последующие тесты пойдут в чужом проекте и упадут.
+
+    Если в PROJECTS_ROOT_DIR только один проект — тест пропускается,
+    переключаться некуда.
+    """
+    projects = await _fetch_project_list(telegram_client)
+    original = _find_current_project(projects)
+    other = _find_other_project(projects, original.name)
+
+    if other is None:
+        pytest.skip(
+            "В PROJECTS_ROOT_DIR только один проект — некуда переключаться"
+        )
+
+    try:
+        # Переключаемся на другой проект
+        await telegram_client.send_command(f"/p{other.number}")
+        switch_response = await telegram_client.wait_for_matching_response(
+            "Переключено на проект", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+        assert other.name in switch_response, (
+            f"Ответ должен содержать имя нового проекта {other.name}: "
+            f"{switch_response}"
+        )
+        assert "Остановлено процессов" in switch_response, (
+            f"Ответ должен содержать счётчик остановленных процессов: "
+            f"{switch_response}"
+        )
+    finally:
+        # Гарантированно возвращаемся на исходный проект — иначе последующие
+        # тесты пойдут в чужом проекте. Ждём ответ команды /pN: это либо
+        # "Переключено на проект" (успешный переход), либо "Уже работаю
+        # в проекте" (если try-блок упал до переключения). Regex ловит оба
+        # варианта точной фразой и отсекает watcher-сообщения, которые
+        # таких фраз не содержат. Раньше здесь был поиск по имени проекта —
+        # ловил остатки буфера с "● /p3 name" и давал ложное совпадение.
+        await telegram_client.send_command(f"/p{original.number}")
+        await telegram_client.wait_for_regex_response(
+            r"(?:Переключено на проект|Уже работаю в проекте)",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+
+# --- FLOW-10: /pN с несуществующим номером ---
+
+
+async def test_flow10_invalid_project_number(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """/p999 — несуществующий номер. Бот отвечает 'Проект #999 не найден'.
+
+    Проверяет ветку ошибки CJM-11: пользователь ввёл номер вне диапазона.
+    """
+    await telegram_client.send_command("/p999")
+    response = await telegram_client.wait_for_matching_response(
+        "не найден", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+    )
+    assert "#999" in response, (
+        f"Ответ должен содержать номер #999: {response}"
+    )
+
+
+# --- FLOW-11: переключение на уже активный проект — no-op ---
+
+
+async def test_flow11_switch_to_current_is_noop(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Переключение на уже активный проект — бот отвечает 'Уже работаю в проекте'.
+
+    Проверяет специальную ветку в project_manager.switch_project,
+    где путь совпадает с текущим — переключение не выполняется,
+    процессы не останавливаются.
+    """
+    projects = await _fetch_project_list(telegram_client)
+    current = _find_current_project(projects)
+
+    await telegram_client.send_command(f"/p{current.number}")
+    response = await telegram_client.wait_for_matching_response(
+        "Уже работаю", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+    )
+    assert current.name in response, (
+        f"Ответ должен содержать имя текущего проекта {current.name}: "
+        f"{response}"
+    )

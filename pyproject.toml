@@ -33,6 +33,13 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Session-scoped event loop по умолчанию — нужно для session-scoped
+# async фикстур (например, telegram_client в tests/e2e/conftest.py).
+# Telethon привязывается к event loop на connect и падает, если его
+# меняют между тестами. Без этой настройки session-scoped async фикстуры
+# не работают в pytest-asyncio >= 0.24.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
