@@ -1,0 +1,92 @@
+{
+  "pipeline": "apply-root-cause-fixes",
+  "created_at": "2026-04-10T20:40:03+0500",
+  "report_file": "/Users/ivan/Desktop/claude-sandbox/claude_manager/dev/docs/logs/root-cause-fixes/10-04_20-26_pending-bot-tasks-audit.md",
+  "report_name": "pending-bot-tasks-audit",
+  "mode": "normal",
+  "steps": [
+    {
+      "phase": "phase-0",
+      "start_time": "2026-04-10T20:40:03+0500",
+      "end_time": "2026-04-10T20:40:15+0500",
+      "success": true,
+      "comment": "Парсинг отчёта завершён. Извлечено 15 рекомендаций, разбиты по категориям критичности."
+    },
+    {
+      "phase": "phase-1",
+      "start_time": "2026-04-10T20:40:15+0500",
+      "end_time": "2026-04-10T20:44:21+0500",
+      "success": true,
+      "verifier_model": "opus",
+      "total_recommendations": 15,
+      "approved": 5,
+      "approved_with_notes": 3,
+      "rejected": 6,
+      "special_manual_step": 1,
+      "comment": "Верификатор прошёл 5 критериев по каждой рекомендации, подтвердил факты эмпирически (git status, код на диске). Принято: 1, 2, 5, 8, 9 (ОДОБРЕНО), 4, 7, 14 (С ЗАМЕЧАНИЯМИ). Отклонено: 6 (нужна спека очереди), 10-14 (опциональные следующие итерации), 15 (вне области пайплайна). Пункт 3 — ручная проверка как постусловие."
+    },
+    {
+      "phase": "phase-2",
+      "start_time": "2026-04-10T20:44:21+0500",
+      "status": "in_progress",
+      "agents_planned": 4,
+      "agent_model": "opus",
+      "strategy": "Группировка по целевым файлам: A=main.py (пп.4+5), B=протокол stream-json (пп.8+9), C=watch_and_restart.sh (п.7), D=project_manager.py (п.14). Пункты 1 и 2 (session_reader.py, claude_runner.py) не требуют агентов — уже в рабочей копии, будут закоммичены в Фазе 4.",
+      "user_confirmed": true,
+      "agents": [
+        {
+          "id": "A",
+          "target": "src/claude_manager/main.py",
+          "recommendations": [4, 5],
+          "status": "completed",
+          "first_attempt": {
+            "lock_fix": "режим 'a+' вместо 'w', seek/truncate/write после flock — 18/18 тестов зелёные",
+            "log_rotation": "добавлены константы ERROR_LOG_PATH, ERROR_LOG_MAX_BYTES=10MB, ERROR_LOG_BACKUP_COUNT=5 и функция _attach_rotating_error_handler",
+            "quality_issue": "функция _attach_rotating_error_handler получилась 42 строки (~25 логики), превышает лимит 20 строк из CLAUDE.md. Отправлена на доработку через SendMessage."
+          },
+          "rework": {
+            "decomposition": "Разбита на 3 подфункции + оркестратор: _ensure_error_log_directory (16 строк), _build_rotating_error_handler (14), _has_rotating_handler_for_file (12), _attach_rotating_error_handler оркестратор (12). Все ≤20 строк.",
+            "behaviour_preserved": "Поведение сохранено один-в-один: создание папки с OSError, уровень WARNING, формат LOG_FORMAT, кодировка UTF-8, защита от дублей по baseFilename.",
+            "tests": "18/18 PASSED в tests/test_main.py"
+          }
+        },
+        {
+          "id": "B",
+          "target": "dev/docs/claude-cli-stream-json-protocol.md",
+          "recommendations": [8, 9],
+          "status": "completed",
+          "details": "Две записи добавлены в раздел «Известные баги и ограничения» (строки 261-262). Стиль адаптирован под существующий плоский список буллетов без подзаголовков. Первой идёт permission-mode без timestamp (регрессия Claude CLI 2.1.96), второй — дефолтный буфер StreamReader 64 KB и asyncio.LimitOverrunError. Каждая сущность кода пояснена при первом упоминании."
+        },
+        {
+          "id": "C",
+          "target": "watch_and_restart.sh",
+          "recommendations": [7],
+          "status": "completed",
+          "details": "Добавлена константа LAUNCH_AGENT_LABEL='com.ivan.claude-manager' в верх скрипта. Добавлена функция check_launch_agent() (16 строк) с проверкой через 'launchctl list'. Вызов встроен внутрь start_bot(), покрывает оба кейса: первичный старт и перезапуск по изменениям файлов. bash -n — синтаксис валиден."
+        },
+        {
+          "id": "D",
+          "target": "src/claude_manager/project_manager.py",
+          "recommendations": [14],
+          "status": "completed",
+          "details": "switch_project разбита на оркестратор (20 строк ровно) + 5 приватных подфункций: _make_error_result (12), _make_success_result (15), _precheck_switch (16), _try_switch_with_rollback (17), _finalize_successful_switch (13). Все ≤20 строк. Публичный API и поведение не менялись. 23/23 юнит-теста project_manager + 61/61 интеграционный = 84/84 зелёные."
+        }
+      ],
+      "end_time": "2026-04-10T20:58:42+0500",
+      "success": true,
+      "comment": "Фаза 2 завершена. Один агент (A) потребовал доработки через SendMessage для разбиения _attach_rotating_error_handler на подфункции. Все 4 агента в итоге закрылись чисто, на модели Opus."
+    },
+    {
+      "phase": "phase-3",
+      "start_time": "2026-04-10T20:58:42+0500",
+      "end_time": "2026-04-10T20:59:12+0500",
+      "success": true,
+      "checks": {
+        "completeness": "Все 9 принятых правок применены (пункты 1, 2, 4, 5, 7, 8, 9, 14 через агентов + пункт 3 как постусловие)",
+        "consistency": "Затронутые файлы из Фазы 2 видны в git status, не пересекаются между агентами, правки не противоречат друг другу",
+        "tests": "460/460 PASSED за 17.09 сек (pytest tests/ --ignore=tests/e2e). Включая регрессионный тест test_permission_mode_first_line_claude_cli_2_1_96, тесты _acquire_lock, _setup_logging, switch_project и все зависимые модули (bot, session_watcher)."
+      },
+      "comment": "Верификация результата чистая. Готов к Фазе 4."
+    }
+  ]
+}
