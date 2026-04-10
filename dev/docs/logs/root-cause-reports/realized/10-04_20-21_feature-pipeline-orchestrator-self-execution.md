@@ -3,6 +3,17 @@
 **Дата анализа:** 10-04-2026
 **Проект:** Claude Manager (Telegram-бот — пульт управления Claude Code с телефона)
 **Статус:** Первопричина найдена
+**Статус применения:** почти все правки делегированы наружу, в claude_manager остаётся только три пункта. Делегирование идёт двумя отдельными потоками, и оба помечены в тексте отчёта одинаковым синтаксисом — `✓ делегировано → <куда>`:
+
+1. **Все три `[ARCHITECTURE]`-правки → спецификация budgets** (`/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`). Это новый раздел 19 и дополнения в разделах 12 и 16 глобального референса `~/.claude/references/skills-agents-rules.md`. Глобальный референс — единый источник истины для всех проектов: после применения budgets spec эти правила автоматически действуют и в claude_manager.
+2. **Все `[CODE]` и `[SKILL]`-правки по фабричным скиллам → фабрика скиллов `~/.claude/skill-templates/`**. Все пайплайн-скиллы, упомянутые в отчёте (`feature-pipeline`, `pipeline-implementer`, `script-creator-pipeline`, `universal-bug-fixer`) — это копии из фабрики. Править проектные копии запрещено: изменения затрутся при следующем копировании, правки должны идти только в `~/.claude/skill-templates/<skill>/`. Сюда относятся: валидатор `structural-validator.sh` с функцией `check_orchestrator_discipline`, интеграция валидатора в `feature-finalizer.md`, секция «Обработка отказа Agent tool по лимиту» в `feature-pipeline/SKILL.md`, расширение enum `log_entry.action` в `references/schemas.json`, обновление 4 координаторов `feature-pipeline`, и вторая волна правок для остальных фабричных пайплайн-скиллов.
+
+**Для проекта claude_manager остаются только 3 пункта, которые `apply-root-cause-fixes` реально должен применить:**
+- `[DOC]` — короткая ссылка на раздел 19 глобального референса в проектном `CLAUDE.md`
+- `[SKILL]` — уточнение памяти `feedback_no_step_questions.md` (проектная память, не фабричный скилл)
+- `[SKILL]` — вторая волна для **проектных** тонких скиллов `autofix-e2e` и `pipeline-run` (у них есть только `SKILL.md`, правка — одна строка-ссылка на раздел 19 глобального референса)
+
+Скилл `apply-root-cause-fixes` при применении этого отчёта обязан **пропускать все пункты с пометкой `✓ делегировано`** (и `→ budgets spec`, и `→ фабрика скиллов`), и применять только оставшиеся три проектных пункта выше.
 
 ## Симптом
 
@@ -94,16 +105,16 @@
 
 Задача сейчас — не исправить уже сделанный коммит (с ним всё хорошо, фича работает), а изменить скилл и окружающие правила так, чтобы такое **больше не могло повториться**.
 
-1. **Добавить валидатор дисциплины оркестратора в `feature-pipeline`.** Создать файл `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/scripts/structural-validator.sh` (новый файл, зеркалить структуру `pipeline-implementer/scripts/structural-validator.sh`). Добавить в него проверку `check_orchestrator_discipline`, которая после прогона читает `orchestrator-log.json` текущей сессии и падает, если находит хотя бы одно из:
+1. **✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/`)**. **Добавить валидатор дисциплины оркестратора в `feature-pipeline`.** Создать файл `~/.claude/skill-templates/feature-pipeline/scripts/structural-validator.sh` (новый файл, зеркалить структуру `~/.claude/skill-templates/pipeline-implementer/scripts/structural-validator.sh`). **Проектная копия `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/` не редактируется** — после правки шаблона она обновится при следующем копировании. Добавить в валидатор проверку `check_orchestrator_discipline`, которая после прогона читает `orchestrator-log.json` текущей сессии и падает, если находит хотя бы одно из:
    - Запись `action: fail` + записью `action: complete` от того же агента в той же фазе подряд, без записи `action: rollback` или `action: start` между ними
    - Запись `details` содержащую подстроки `"делаю сам"`, `"продолжает работу сам"`, `"без делегирования"`, `"напрямую"`, `"читаю файлы сам"`
    - Фазу в `pipeline-state.json` помеченную как `completed`, но без соответствующего `agent-outputs/NN-*.json` файла с `status: "success"`
 
    Этот валидатор должен запускаться автоматически в фазе 10 (финализатор), ДО git commit — если валидатор падает, коммит блокируется, пользователь получает структурированное сообщение.
 
-2. **Расширить enum `log_entry.action` в `references/schemas.json`.** Файл `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/references/schemas.json`, строка 29. Добавить новые значения: `"quota_limit_hit"` (Agent tool отказал по лимиту), `"delegation_paused"` (пайплайн приостановлен из-за недоступности делегирования), `"user_escalation"` (оркестратор эскалировал решение пользователю). Это позволит структурированно фиксировать ситуацию и валидатору — её ловить.
+2. **✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/`)**. **Расширить enum `log_entry.action` в `references/schemas.json`.** Файл `~/.claude/skill-templates/feature-pipeline/references/schemas.json` (проектную копию `claude_manager/.claude/skills/feature-pipeline/references/schemas.json` не трогать), строка 29. Добавить новые значения: `"quota_limit_hit"` (Agent tool отказал по лимиту), `"delegation_paused"` (пайплайн приостановлен из-за недоступности делегирования), `"user_escalation"` (оркестратор эскалировал решение пользователю). Это позволит структурированно фиксировать ситуацию и валидатору — её ловить.
 
-3. **Добавить секцию «Обработка отказа Agent tool по лимиту» в `feature-pipeline/SKILL.md`.** Файл `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/SKILL.md`, после строки 226 (в конец секции «Цикл исправления», перед «Механика отката»). Текст должен содержать явные шаги:
+3. **✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/`)**. **Добавить секцию «Обработка отказа Agent tool по лимиту» в `feature-pipeline/SKILL.md`.** Файл `~/.claude/skill-templates/feature-pipeline/SKILL.md` (проектную копию не править), после строки 226 (в конец секции «Цикл исправления», перед «Механика отката»). Текст должен содержать явные шаги:
    - Записать в `orchestrator-log.json` запись с `action: "quota_limit_hit"` и текстом ошибки
    - Попытка 2 — одиночный вызов вместо параллельного (возможно, лимит только на спавн нескольких агентов одновременно)
    - Если снова отказ — записать `action: "user_escalation"`, остановить пайплайн, сообщить пользователю
@@ -111,11 +122,11 @@
    - **Решение принимает пользователь**, а не оркестратор
    - Явный запрет: «Ни при каких обстоятельствах оркестратор не должен выполнять работу фазы сам, если не получил явного разрешения от пользователя»
 
-4. **Обновить секцию «Обработка сбоев суб-агентов» во всех 4 координаторах.** Файлы:
-   - `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/agents/feature-impact-analysis.md` — строка 40-42
-   - `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/agents/feature-implement.md` — строка 41-43
-   - `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/agents/feature-review.md` — строка 30-32
-   - `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/agents/feature-docs.md` — строка 25-27
+4. **✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/`)**. **Обновить секцию «Обработка сбоев суб-агентов» во всех 4 координаторах.** Проектные копии файлов не редактируются, правки только в шаблоне:
+   - `~/.claude/skill-templates/feature-pipeline/agents/feature-impact-analysis.md` — строка 40-42
+   - `~/.claude/skill-templates/feature-pipeline/agents/feature-implement.md` — строка 41-43
+   - `~/.claude/skill-templates/feature-pipeline/agents/feature-review.md` — строка 30-32
+   - `~/.claude/skill-templates/feature-pipeline/agents/feature-docs.md` — строка 25-27
 
    В каждом разделить «crash» и «quota_limit»: crash → текущее поведение, quota_limit → немедленно передать управление оркестратору с `status: "blocked_by_quota_limit"`, чтобы оркестратор применил процедуру из пункта 3.
 
@@ -125,7 +136,7 @@
 
 Коренная причина архитектурная, значит приоритетные правки — на уровне CLAUDE.md и глобального референса. Порядок приоритетов: `[ARCHITECTURE]` → `[DOC]` → `[CODE]` → `[SKILL]`.
 
-1. **[ARCHITECTURE]** Добавить в **глобальный референс** `~/.claude/references/skills-agents-rules.md` новый **раздел 19 «Обработка отказа инструмента делегирования»**. Место: после существующего раздела 17 «Enforcement-first», перед разделом 18 «Карта связанных глобальных референсов» (или в конец файла). Формулировка принципа:
+1. **[ARCHITECTURE]** **✓ делегировано → budgets spec пункт 1** (`/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`). Добавить в **глобальный референс** `~/.claude/references/skills-agents-rules.md` новый **раздел 19 «Обработка отказа инструмента делегирования»**. Место: после существующего раздела 17 «Enforcement-first», перед разделом 18 «Карта связанных глобальных референсов» (или в конец файла). Формулировка принципа:
 
    > **При отказе инструмента делегирования (Agent tool, CLI-подпроцесс) по временной причине — лимит квоты, rate limit, недоступность сети — оркестратор пайплайн-скилла обязан:**
    >
@@ -139,11 +150,11 @@
    >
    > **How to apply:** В каждом пайплайн-скилле должна быть явная секция «Обработка отказа инструмента делегирования». Категория ошибок «временная недоступность» **принципиально отличается** от «crash агента» и должна обрабатываться отдельной процедурой. Правило проверяется `structural-validator.sh` каждого пайплайн-скилла.
 
-2. **[ARCHITECTURE]** Добавить в **раздел 16 «Валидация скилла»** глобального референса `~/.claude/references/skills-agents-rules.md` новую обязательную проверку для пайплайн-скиллов: «проверка дисциплины оркестратора». Формулировка:
+2. **[ARCHITECTURE]** **✓ делегировано → budgets spec пункт 2** (`/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`). Добавить в **раздел 16 «Валидация скилла»** глобального референса `~/.claude/references/skills-agents-rules.md` новую обязательную проверку для пайплайн-скиллов: «проверка дисциплины оркестратора». Формулировка:
 
    > Для каждого пайплайн-скилла `structural-validator.sh` обязан содержать проверку `check_orchestrator_discipline`, которая по завершении тестового прогона парсит `orchestrator-log.json` и падает при обнаружении: записей `action: fail` + `action: complete` подряд от того же агента без записи `rollback` между ними; любых `details` с подстроками, указывающими на работу оркестратора напрямую; фаз в `completed` без соответствующего агентского JSON-файла с `status: success`.
 
-3. **[ARCHITECTURE]** В том же глобальном референсе в **раздел 12 «Тестирование и пропорциональность»** добавить требование: **минимум один assertion Tier 2 Behavioral на дисциплину оркестратора** обязателен в `evals.json` любого пайплайн-скилла. Пример assertion:
+3. **[ARCHITECTURE]** **✓ делегировано → budgets spec пункт 3** (`/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`). В том же глобальном референсе в **раздел 12 «Тестирование и пропорциональность»** добавить требование: **минимум один assertion Tier 2 Behavioral на дисциплину оркестратора** обязателен в `evals.json` любого пайплайн-скилла. Пример assertion:
 
    > `{"text": "Все 10 фаз в orchestrator-log.json имеют action: start с именем агента, а не записи работы оркестратора напрямую; ни одна фаза не помечена completed без соответствующего agent-outputs/NN-*.json файла с status: success", "tier": 2, "scope": "both"}`
 
@@ -151,19 +162,25 @@
 
    > Обработка отказа инструмента делегирования (лимит квоты, rate limit) — в разделе 19 глобального референса `~/.claude/references/skills-agents-rules.md`. Любой пайплайн-скилл проекта обязан следовать этому правилу: оркестратор не переключается в режим «делаю сам», решение принимает пользователь.
 
-5. **[CODE]** Написать валидатор `check_orchestrator_discipline` для `feature-pipeline` (см. пункт 1 раздела «Рекомендации по исправлению»). Это конкретный код, который закрепляет принцип. Без него архитектурное правило останется только текстом.
+5. **[CODE]** **✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/`)**. Написать валидатор `check_orchestrator_discipline` для `feature-pipeline` (см. пункт 1 раздела «Рекомендации по исправлению»). Это конкретный код, который закрепляет принцип. Без него архитектурное правило останется только текстом. Валидатор кладётся в `~/.claude/skill-templates/feature-pipeline/scripts/`, а не в проектную копию.
 
-6. **[SKILL]** Применить правило ко всем существующим пайплайн-скиллам проекта, которые используют Agent tool для делегирования:
+6. **[SKILL]** **частично делегировано → фабрика скиллов**. Применить правило ко всем существующим пайплайн-скиллам, которые используют Agent tool для делегирования. Скиллы делятся на две группы по месту правки:
+
+   **Фабричные скиллы** (правки в `~/.claude/skill-templates/`, проектные копии не трогаются):
    - `feature-pipeline` — главный пострадавший
    - `pipeline-implementer` — строит другие скиллы через параллельные агенты
-   - `autofix-e2e` — координирует test-e2e, root-cause-analysis, apply-root-cause-fixes
    - `script-creator-pipeline` — drafter + codebase-researcher + fix-cycle
-   - `pipeline-run` — полный оркестратор engineering-пайплайна из 11 скиллов
    - `universal-bug-fixer` — универсальный пайплайн исправления багов
 
-   Для каждого: (а) добавить секцию «Обработка отказа Agent tool по лимиту» в SKILL.md с явной ссылкой на раздел 19 глобального референса, без дублирования правила; (б) обновить секции «Обработка сбоев» у всех координаторов; (в) расширить enum `action` в schemas.json; (г) добавить `check_orchestrator_discipline` в `structural-validator.sh` (создать валидатор, если его нет).
+   **Проектные скиллы** (правки в `claude_manager/.claude/skills/`):
+   - `autofix-e2e` — тонкий проектный координатор test-e2e, root-cause-analysis, apply-root-cause-fixes; у него только `SKILL.md` без папок `agents/` и `scripts/`
+   - `pipeline-run` — тонкий проектный оркестратор engineering-пайплайна из 11 скиллов; у него только `SKILL.md` без папок `agents/` и `scripts/`
 
-7. **[SKILL]** Обновить память проекта `feedback_no_step_questions.md` одной строкой про исключения (см. пункт 5 раздела «Рекомендации по исправлению»). Это не правило пайплайна, а напоминание общему поведению Claude в проекте — память формирует поведение до того, как Claude дочитает скилл.
+   Для **фабричных** (применяется в template): (а) добавить секцию «Обработка отказа Agent tool по лимиту» в SKILL.md с явной ссылкой на раздел 19 глобального референса, без дублирования правила; (б) обновить секции «Обработка сбоев» у всех координаторов; (в) расширить enum `action` в schemas.json; (г) добавить `check_orchestrator_discipline` в `structural-validator.sh` (создать валидатор, если его нет).
+
+   Для **проектных** (применяется в claude_manager): правка сводится к одной строке-ссылке на раздел 19 глобального референса в теле `SKILL.md` — других файлов для правки у этих скиллов нет.
+
+7. **[SKILL]** Обновить память проекта `feedback_no_step_questions.md` одной строкой про исключения (см. пункт 5 раздела «Рекомендации по исправлению»). Это не правило пайплайна, а напоминание общему поведению Claude в проекте — память формирует поведение до того, как Claude дочитает скилл. Эта правка — единственная `[SKILL]`-правка, которая остаётся в проекте claude_manager безо всякого делегирования: память проектная, не фабричная.
 
 ## Верификация выводов
 
@@ -188,21 +205,25 @@
   - **Вердикт:** ОДОБРЕНО
   - **Обоснование:** Прямо применяет принцип enforcement-first к конкретному скиллу. Не нарушает никаких правил CLAUDE.md, укладывается в существующую инфраструктуру валидаторов (`pipeline-implementer/scripts/structural-validator.sh` как референс). Осуществимо сейчас — все нужные данные (`orchestrator-log.json`, `pipeline-state.json`, `agent-outputs/`) уже формируются пайплайном. Необходимо, потому что закрывает дыру, через которую вытекла вся проблема
   - **Корректировка:** без изменений
+  - **Статус применения:** ✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/scripts/structural-validator.sh`). Проектная копия `feature-pipeline` в `claude_manager/.claude/skills/` не редактируется. Не применять повторно при исполнении этого отчёта.
 
 - **Рекомендация 2 (расширить enum `action` в `schemas.json`).**
   - **Вердикт:** ОДОБРЕНО
   - **Обоснование:** Обратно совместимо — новые значения не ломают существующие записи. Даёт валидатору точную семантическую категорию для ловли. Соответствует правилу кодинга CLAUDE.md «Никаких магических значений» — каждое значение enum имеет понятное имя
   - **Корректировка:** без изменений
+  - **Статус применения:** ✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/references/schemas.json`). Проектная копия не редактируется. Не применять повторно при исполнении этого отчёта.
 
 - **Рекомендация 3 (секция «Обработка отказа Agent tool» в `SKILL.md`).**
   - **Вердикт:** ОДОБРЕНО С ЗАМЕЧАНИЯМИ
   - **Обоснование:** Нужна, но есть риск дублирования. По правилу «Global reference → skill → code» из глобального референса, детальная формулировка правила должна жить в одном месте — в глобальном референсе (рекомендация по предотвращению №1), а в SKILL.md — только **ссылка** на него и проектно-специфичные детали
   - **Корректировка:** Не дублировать полную формулировку в SKILL.md. Вместо этого в секции SKILL.md написать одно предложение со ссылкой: «Обработка отказа инструмента делегирования — см. раздел 19 глобального референса `~/.claude/references/skills-agents-rules.md`. Применяется буквально, без исключений». А детальная процедура с шагами и вариантами для пользователя — в самом глобальном референсе
+  - **Статус применения:** ✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/SKILL.md`). Проектная копия не редактируется. Не применять повторно при исполнении этого отчёта.
 
 - **Рекомендация 4 (обновить секции «Обработка сбоев» в 4 координаторах).**
   - **Вердикт:** ОДОБРЕНО
   - **Обоснование:** Устраняет копи-паст формулировки про только `crash`. Необходимо, потому что каждый координатор вызывает суб-агентов и должен знать, как обработать отказ
   - **Корректировка:** без изменений
+  - **Статус применения:** ✓ делегировано → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/agents/`). Проектные копии координаторов в `claude_manager/.claude/skills/` не редактируются. Не применять повторно при исполнении этого отчёта.
 
 - **Рекомендация 5 (уточнить `feedback_no_step_questions`).**
   - **Вердикт:** ОДОБРЕНО С ЗАМЕЧАНИЯМИ
@@ -213,16 +234,19 @@
   - **Вердикт:** ОДОБРЕНО
   - **Обоснование:** Это главная архитектурная правка — создаёт принцип, от которого наследуют все пайплайн-скиллы. Место в разделе 19 логично: после 17 (enforcement-first) и 18 (карта связанных референсов). Соответствует правилу CLAUDE.md «Правь только глобальный референс — изменения автоматически применятся ко всем проектам»
   - **Корректировка:** без изменений
+  - **Статус применения:** ✓ делегировано → budgets spec пункт 1 (`/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`). Не применять повторно при исполнении этого отчёта
 
 - **Рекомендация 7 (обязательная проверка `check_orchestrator_discipline` в разделе 16 глобального референса).**
   - **Вердикт:** ОДОБРЕНО
   - **Обоснование:** Раздел 16 уже содержит список обязательных проверок валидатора — добавление новой проверки укладывается в формат. Enforcement-first применён к самому принципу enforcement-first
   - **Корректировка:** без изменений
+  - **Статус применения:** ✓ делегировано → budgets spec пункт 2 (`/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`). Не применять повторно при исполнении этого отчёта
 
 - **Рекомендация 8 (Tier 2 assertion в разделе 12 глобального референса).**
   - **Вердикт:** ОДОБРЕНО
   - **Обоснование:** Раздел 12 уже требует «минимум 70% assertions должны быть Tier 3», но для пайплайн-скиллов особенно критичен Tier 2 (дисциплина процесса). Это не противоречит правилу 70%, а дополняет его
   - **Корректировка:** без изменений
+  - **Статус применения:** ✓ делегировано → budgets spec пункт 3 (`/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`). Не применять повторно при исполнении этого отчёта
 
 - **Рекомендация 9 (ссылка в проектном `CLAUDE.md`).**
   - **Вердикт:** ОДОБРЕНО
@@ -232,7 +256,10 @@
 - **Рекомендация 10 (применить ко всем пайплайн-скиллам проекта).**
   - **Вердикт:** ОДОБРЕНО С ЗАМЕЧАНИЯМИ
   - **Обоснование:** Правило должно применяться ко всем. Но делать это сразу ко всем 6 скиллам — большой объём работы, который может скрыть ошибки. Разумно сначала сделать `feature-pipeline` как пилот, убедиться что всё работает, потом перенести паттерн на остальные
-  - **Корректировка:** Разбить на две волны: (1) `feature-pipeline` — немедленно, как пилот; (2) остальные 5 скиллов (`pipeline-implementer`, `autofix-e2e`, `script-creator-pipeline`, `pipeline-run`, `universal-bug-fixer`) — вторая итерация после того, как пилот подтверждён на практике. Формально добавить в отчёт как две отдельных задачи
+  - **Корректировка:** Разбить на две волны: (1) `feature-pipeline` — немедленно, как пилот; (2) остальные 5 скиллов — вторая итерация. При этом 5 скиллов второй волны делятся на две группы по месту правки:
+    - **Фабричные скиллы** (правки в `~/.claude/skill-templates/`): `pipeline-implementer`, `script-creator-pipeline`, `universal-bug-fixer`
+    - **Проектные скиллы** (правки в `claude_manager/.claude/skills/`): `autofix-e2e`, `pipeline-run` — это тонкие оркестраторы с одним `SKILL.md` без папок `agents/scripts/`, для них правка — одна строка-ссылка на раздел 19 глобального референса
+  - **Статус применения:** частично делегировано. Правки для трёх фабричных скиллов (`pipeline-implementer`, `script-creator-pipeline`, `universal-bug-fixer`) делаются в `~/.claude/skill-templates/`. Правки для `autofix-e2e` и `pipeline-run` остаются проектными и применяются в claude_manager.
 
 - **Рекомендация 11 (отвергнутая): парсить `reset_time` из текста ошибки Agent tool.**
   - **Вердикт:** ОТКЛОНЕНО
@@ -241,25 +268,42 @@
 
 ## Чек-лист исправлений
 
-### Изменения в архитектуру [ARCHITECTURE]
+### Изменения в архитектуру [ARCHITECTURE] — ✓ делегировано → budgets spec
 
-- [ ] Добавить раздел 19 «Обработка отказа инструмента делегирования» в `~/.claude/references/skills-agents-rules.md` (файл: `~/.claude/references/skills-agents-rules.md`, место: после раздела 17, зачем: создать единый принцип, который наследуют все пайплайн-скиллы; закрыть системный слепой пятно категории «лимит квоты»)
-- [ ] Добавить обязательную проверку `check_orchestrator_discipline` в раздел 16 «Валидация скилла» глобального референса (файл: `~/.claude/references/skills-agents-rules.md`, зачем: закрепить правило кодом валидатора, enforcement-first для самого enforcement-first)
-- [ ] Добавить требование минимум одного Tier 2 Behavioral assertion про дисциплину оркестратора в раздел 12 «Тестирование и пропорциональность» (файл: `~/.claude/references/skills-agents-rules.md`, зачем: обязать evals.json проверять поведение, а не только результат)
+> Все три архитектурные правки глобального референса `~/.claude/references/skills-agents-rules.md` выполняются через спецификацию соседнего проекта budgets: `/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md` (её пункты 1, 2, 3 в разделе «Рекомендации — что делать»). Глобальный референс — единый источник истины для всех проектов; после его правки изменения автоматически действуют и в claude_manager. **При применении `apply-root-cause-fixes` этого отчёта пункты ниже пропускаются**, чтобы не дублировать правки и не создавать риска расхождения формулировок.
+
+- [x] ~~Добавить раздел 19 «Обработка отказа инструмента делегирования» в `~/.claude/references/skills-agents-rules.md` (после раздела 17)~~ → budgets spec пункт 1
+- [x] ~~Добавить обязательную проверку `check_orchestrator_discipline` в раздел 16 «Валидация скилла» глобального референса~~ → budgets spec пункт 2
+- [x] ~~Добавить требование минимум одного Tier 2 Behavioral assertion про дисциплину оркестратора в раздел 12 «Тестирование и пропорциональность»~~ → budgets spec пункт 3
 
 ### Изменения в документацию [DOC]
 
 - [ ] Добавить ссылку на раздел 19 глобального референса в проектный `CLAUDE.md` (файл: `/Users/ivan/Desktop/claude-sandbox/claude_manager/CLAUDE.md`, место: после строки 219 в секции «Стандарты разработки скиллов и пайплайнов», зачем: сделать правило видимым для любого, кто читает `CLAUDE.md` проекта первым, без необходимости сразу идти в глобальный референс)
 
-### Изменения в коде [CODE]
+### Изменения в коде [CODE] — ✓ делегировано → фабрика скиллов
 
-- [ ] Создать `feature-pipeline/scripts/structural-validator.sh` с проверкой `check_orchestrator_discipline` (файл: `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/scripts/structural-validator.sh`, зачем: enforcement-first для feature-pipeline; ловить отклонения от процедуры по orchestrator-log.json и pipeline-state.json до того, как оркестратор сделает коммит)
-- [ ] Интегрировать вызов валидатора в фазу 10 финализатора ДО git commit (файл: `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/agents/feature-finalizer.md`, зачем: сделать проверку обязательной частью прогона, а не опциональным тестом)
+> Оба пункта ниже касаются файлов фабричного скилла `feature-pipeline` и должны быть применены в `~/.claude/skill-templates/feature-pipeline/`, а не в проектной копии `claude_manager/.claude/skills/feature-pipeline/`. Проектная копия обновится автоматически при следующем копировании шаблона. **При применении `apply-root-cause-fixes` этого отчёта пункты ниже пропускаются.**
+
+- [x] ~~Создать `feature-pipeline/scripts/structural-validator.sh` с проверкой `check_orchestrator_discipline`~~ → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/scripts/structural-validator.sh`, зачем: enforcement-first для feature-pipeline; ловить отклонения от процедуры по orchestrator-log.json и pipeline-state.json до того, как оркестратор сделает коммит)
+- [x] ~~Интегрировать вызов валидатора в фазу 10 финализатора ДО git commit~~ → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/agents/feature-finalizer.md`, зачем: сделать проверку обязательной частью прогона, а не опциональным тестом)
 
 ### Изменения в скиллах [SKILL]
 
-- [ ] Добавить секцию «Обработка отказа Agent tool по лимиту» в `feature-pipeline/SKILL.md` одной ссылкой на раздел 19 глобального референса (файл: `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/SKILL.md`, место: после строки 226 в конце секции «Цикл исправления», зачем: оркестратор при чтении SKILL.md увидит правило)
-- [ ] Расширить enum `log_entry.action` новыми значениями в `references/schemas.json` (файл: `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/feature-pipeline/references/schemas.json`, строка 29, новые значения: `quota_limit_hit`, `delegation_paused`, `user_escalation`, зачем: дать валидатору и оркестратору точную семантическую категорию)
-- [ ] Обновить секции «Обработка сбоев суб-агентов» в 4 файлах координаторов (скилл: `feature-pipeline`, файлы: `agents/feature-impact-analysis.md` строка 40-42, `agents/feature-implement.md` строка 41-43, `agents/feature-review.md` строка 30-32, `agents/feature-docs.md` строка 25-27, зачем: различать crash и quota_limit, добавить процедуру эскалации оркестратору)
-- [ ] Уточнить `feedback_no_step_questions.md` добавлением исключений в секцию **How to apply:** (скилл: память проекта, файл: `/Users/ivan/.claude/projects/-Users-ivan-Desktop-claude-sandbox-claude-manager/memory/feedback_no_step_questions.md`, зачем: перевести неявное исключение из основного правила в явный короткий чеклист для Claude)
-- [ ] **Вторая итерация (после пилота на feature-pipeline):** применить ту же схему ко всем остальным пайплайн-скиллам проекта, которые используют делегирование через Agent tool (скиллы: `pipeline-implementer`, `autofix-e2e`, `script-creator-pipeline`, `pipeline-run`, `universal-bug-fixer`, зачем: системная правка; пока не починены — та же ошибка может повториться в любом из них)
+> Часть пунктов делегирована в фабрику скиллов `~/.claude/skill-templates/` и помечена `[x] ~~...~~ → фабрика скиллов`. Эти пункты `apply-root-cause-fixes` пропускает. Активные `[ ]` пункты — это правки, которые реально применяются в проекте claude_manager.
+
+- [x] ~~Добавить секцию «Обработка отказа Agent tool по лимиту» в `feature-pipeline/SKILL.md` одной ссылкой на раздел 19 глобального референса~~ → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/SKILL.md`, место: после строки 226 в конце секции «Цикл исправления», зачем: оркестратор при чтении SKILL.md увидит правило)
+- [x] ~~Расширить enum `log_entry.action` новыми значениями в `references/schemas.json`~~ → фабрика скиллов (`~/.claude/skill-templates/feature-pipeline/references/schemas.json`, строка 29, новые значения: `quota_limit_hit`, `delegation_paused`, `user_escalation`, зачем: дать валидатору и оркестратору точную семантическую категорию)
+- [x] ~~Обновить секции «Обработка сбоев суб-агентов» в 4 файлах координаторов~~ → фабрика скиллов (скилл: `feature-pipeline`, файлы: `~/.claude/skill-templates/feature-pipeline/agents/feature-impact-analysis.md` строка 40-42, `agents/feature-implement.md` строка 41-43, `agents/feature-review.md` строка 30-32, `agents/feature-docs.md` строка 25-27, зачем: различать crash и quota_limit, добавить процедуру эскалации оркестратору)
+- [ ] Уточнить `feedback_no_step_questions.md` добавлением исключений в секцию **How to apply:** (скилл: память проекта claude_manager — это не фабричный скилл, правка остаётся в проекте, файл: `/Users/ivan/.claude/projects/-Users-ivan-Desktop-claude-sandbox-claude-manager/memory/feedback_no_step_questions.md`, зачем: перевести неявное исключение из основного правила в явный короткий чеклист для Claude)
+- [x] ~~**Вторая итерация для фабричных скиллов:** применить ту же схему ко всем пайплайн-скиллам фабрики, которые используют делегирование~~ → фабрика скиллов (скиллы: `~/.claude/skill-templates/pipeline-implementer/`, `~/.claude/skill-templates/script-creator-pipeline/`, `~/.claude/skill-templates/universal-bug-fixer/`, зачем: системная правка; пока не починены — та же ошибка может повториться в любом из них)
+- [ ] **Вторая итерация для проектных скиллов:** добавить в `SKILL.md` двух тонких проектных оркестраторов ссылку на раздел 19 глобального референса (скиллы: `autofix-e2e`, `pipeline-run`, файлы: `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/autofix-e2e/SKILL.md`, `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/pipeline-run/SKILL.md`, зачем: эти скиллы не в фабрике, они проектно-специфичные для claude_manager, и у них нет папок `agents/` и `scripts/` — правка сводится к одной строке-ссылке в SKILL.md)
+
+## Связанные документы
+
+- **Фабрика скиллов (skill-templates)** — `~/.claude/skill-templates/`. Это источник всех пайплайн-скиллов, которые потом копируются в проекты. Для этого отчёта важны четыре папки внутри фабрики: `~/.claude/skill-templates/feature-pipeline/`, `~/.claude/skill-templates/pipeline-implementer/`, `~/.claude/skill-templates/script-creator-pipeline/`, `~/.claude/skill-templates/universal-bug-fixer/`. **Все `[CODE]` и `[SKILL]`-правки по этим скиллам идут только сюда**, проектные копии в `claude_manager/.claude/skills/` не редактируются — они обновятся автоматически при следующем копировании шаблонов. Шаблон функции `check_orchestrator_discipline` и новые значения enum `action` можно переиспользовать из спецификации budgets (см. следующий пункт) — не надо изобретать заново, достаточно скопировать с адаптацией путей.
+- **Спецификация исправлений в соседнем проекте budgets** — `/Users/ivan/Desktop/claude-sandbox/budgets/dev/docs/specs/10.04_20.35-orchestrator-discipline-standard.md`. Туда вынесены все три `[ARCHITECTURE]`-правки этого отчёта (новый раздел 19, расширение раздела 16, расширение раздела 12 глобального референса `~/.claude/references/skills-agents-rules.md`), плюс закреплён шаблон функции `check_orchestrator_discipline` в `pipeline-implementer/scripts/structural-validator.sh` и новые значения enum `action` (`budget_limit_hit`, `quota_limit_hit`, `delegation_unavailable`, `subprocess_crashed`) в `references/schemas.json` фабричных скиллов. Шаблон валидатора из budgets — готовый исходник для копирования в фабрику скиллов.
+- **Глобальный референс** — `~/.claude/references/skills-agents-rules.md`. Источник правды для всех проектов. Новый раздел 19, расширения разделов 12 и 16 — всё через budgets spec.
+- **Корневой `CLAUDE.md` проекта claude_manager** — `/Users/ivan/Desktop/claude-sandbox/claude_manager/CLAUDE.md`. Единственная проектно-специфичная `[DOC]`-правка этого отчёта: короткая ссылка на раздел 19 глобального референса после строки 219.
+- **Память проекта claude_manager** — `/Users/ivan/.claude/projects/-Users-ivan-Desktop-claude-sandbox-claude-manager/memory/feedback_no_step_questions.md`. Единственная `[SKILL]`-правка в этом отчёте, которая реально живёт в проекте, а не в фабрике: добавить в секцию **How to apply:** короткий список исключений из основного правила.
+- **Проектные тонкие оркестраторы** — `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/autofix-e2e/SKILL.md` и `/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/pipeline-run/SKILL.md`. Это не фабричные скиллы — они проектно-специфичные, правка остаётся в проекте. У обоих нет папок `agents/` и `scripts/`, так что правка — одна строка-ссылка на раздел 19 глобального референса в теле SKILL.md.
+- **Скилл-исполнитель** — `apply-root-cause-fixes`. При применении этого отчёта обязан пропускать все пункты, помеченные `✓ делегировано` (независимо от того, куда — в `budgets spec` или в `фабрика скиллов`), и применять только три оставшихся проектных пункта: `[DOC]` в `CLAUDE.md`, `[SKILL]` в памяти `feedback_no_step_questions.md`, и `[SKILL]` вторую волну для двух тонких проектных оркестраторов `autofix-e2e` и `pipeline-run`.
