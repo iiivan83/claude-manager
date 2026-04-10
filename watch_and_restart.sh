@@ -9,6 +9,11 @@ SRC_DIR="$PROJECT_DIR/src/claude_manager"
 # Глобальный lock-файл — тот же, что использует Python-код бота
 PID_FILE="$HOME/.claude-manager.lock"
 
+# Имя LaunchAgent, который может запустить бот параллельно с этим скриптом.
+# Скрипт проверяет статус этого агента перед каждым стартом — две копии бота
+# одновременно слушать Telegram не могут, будет гонка за обновления.
+LAUNCH_AGENT_LABEL="com.ivan.claude-manager"
+
 # Интервал проверки изменений (в секундах)
 CHECK_INTERVAL_SECONDS=2
 
@@ -54,8 +59,27 @@ stop_bot() {
     fi
 }
 
+# Проверить, не запущен ли уже бот через macOS LaunchAgent.
+# Если да — останавливаем скрипт, иначе две копии будут драться за Telegram.
+# Вызывается перед каждым стартом, в том числе после перезапуска по изменениям,
+# чтобы поймать ситуацию, когда пользователь вручную загрузил LaunchAgent
+# посреди работы watcher'а.
+check_launch_agent() {
+    # launchctl list возвращает 0, если агент с таким label загружен
+    if launchctl list "$LAUNCH_AGENT_LABEL" >/dev/null 2>&1; then
+        log_error "LaunchAgent '$LAUNCH_AGENT_LABEL' уже активен."
+        echo "   Две копии бота одновременно слушать Telegram не могут."
+        echo "   Останови LaunchAgent перед запуском watcher'а:"
+        echo "     launchctl unload ~/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist"
+        echo "   Или запусти watcher только после того, как убедишься, что LaunchAgent остановлен."
+        exit 1
+    fi
+}
+
 # Запустить бота
 start_bot() {
+    # Сначала убеждаемся, что система не держит параллельную копию через LaunchAgent
+    check_launch_agent
     log_info "Запускаю бота..."
     cd "$PROJECT_DIR" || exit 1
     python3 -m claude_manager &
