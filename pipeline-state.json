@@ -1,6 +1,6 @@
 {
   "project": "claude-manager",
-  "brd_path": "development/docs/brd-user-journeys.md",
+  "brd_path": "dev/docs/brd/brd-user-journeys.md",
   "current_phase": 5,
   "modules": ["config", "message_splitter", "claude_runner", "session_reader", "daily_session_registry", "session_manager", "process_manager", "session_watcher", "bot", "main"],
   "layers": {
@@ -39,7 +39,23 @@
     },
     "5": {
       "name": "E2E тесты",
-      "status": "in_progress"
+      "status": "completed",
+      "completed_at": "2026-04-10T19:02:00",
+      "tasks": [
+        {"id": "T5.1", "type": "e2e-test", "scenario": "CJM-04-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.2", "type": "e2e-test", "scenario": "CJM-02-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.3", "type": "e2e-test", "scenario": "CJM-10-01", "status": "completed", "verdict": "pass", "fix_cycles": 0, "note": "live streaming через watcher — новый сценарий на класс багов «контракт с внешним CLI», path encoding не регрессирует"},
+        {"id": "T5.4", "type": "e2e-test", "scenario": "CJM-05-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.5", "type": "e2e-test", "scenario": "CJM-06-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.6", "type": "e2e-test", "scenario": "CJM-07-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.7", "type": "e2e-test", "scenario": "CJM-02-02", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.8", "type": "e2e-test", "scenario": "CJM-08-01", "status": "completed", "verdict": "pass", "fix_cycles": 0}
+      ],
+      "test_plan": "dev/docs/logs/testing/e2e-test-plan_10-04-18-54.md",
+      "test_results": "dev/docs/logs/testing/e2e-test-results_10-04-19-02.md",
+      "observations": [
+        "Новый баг LimitOverrunError в claude_runner.py:112 — обнаружен в CJM-10-01, не блокер, замаскирован механизмом retry. Требует отдельного root-cause."
+      ]
     },
     "6": {
       "name": "Ревью",
