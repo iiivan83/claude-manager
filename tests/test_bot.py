@@ -1211,7 +1211,8 @@ class TestHandleSwitchProject:
         switch_result = project_manager.SwitchResult(
             success=True, already_active=False,
             old_path="/fake/old", new_path="/fake/alpha",
-            stopped_processes_count=2, error_message="",
+            pending_messages_count=0, pending_messages=[],
+            error_message="",
         )
 
         with patch.object(
@@ -1251,7 +1252,8 @@ class TestHandleSwitchProject:
         switch_result = project_manager.SwitchResult(
             success=True, already_active=True,
             old_path="/fake/alpha", new_path="/fake/alpha",
-            stopped_processes_count=0, error_message="",
+            pending_messages_count=0, pending_messages=[],
+            error_message="",
         )
 
         with patch.object(
@@ -1268,8 +1270,8 @@ class TestHandleSwitchProject:
         assert "уже" in sent.lower() or "Уже" in sent
 
     @pytest.mark.asyncio()
-    async def test_success_message_includes_name_and_count(self) -> None:
-        """Успешное переключение → сообщение с именем проекта и количеством остановленных."""
+    async def test_success_message_includes_name(self) -> None:
+        """Успешное переключение → сообщение с именем проекта."""
         projects = [_make_project_info("beta", path="/fake/beta")]
         update = _make_update(text="/p1")
         context = MagicMock()
@@ -1277,7 +1279,8 @@ class TestHandleSwitchProject:
         switch_result = project_manager.SwitchResult(
             success=True, already_active=False,
             old_path="/fake/alpha", new_path="/fake/beta",
-            stopped_processes_count=5, error_message="",
+            pending_messages_count=0, pending_messages=[],
+            error_message="",
         )
 
         with patch.object(
@@ -1291,7 +1294,33 @@ class TestHandleSwitchProject:
 
         sent = bot_module._application.bot.send_message.call_args.args[1]
         assert "beta" in sent
-        assert "5" in sent
+
+    @pytest.mark.asyncio()
+    async def test_success_message_includes_pending_count(self) -> None:
+        """Если есть непрочитанные сообщения — их количество добавляется в ответ."""
+        projects = [_make_project_info("beta", path="/fake/beta")]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=False,
+            old_path="/fake/alpha", new_path="/fake/beta",
+            pending_messages_count=3, pending_messages=[],
+            error_message="",
+        )
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ):
+            await handle_switch_project(update, context)
+
+        sent = bot_module._application.bot.send_message.call_args.args[1]
+        assert "beta" in sent
+        assert "3" in sent
 
     @pytest.mark.asyncio()
     async def test_error_shows_error_message(self) -> None:
@@ -1303,7 +1332,7 @@ class TestHandleSwitchProject:
         switch_result = project_manager.SwitchResult(
             success=False, already_active=False,
             old_path="/fake/alpha", new_path="/fake/beta",
-            stopped_processes_count=0,
+            pending_messages_count=0, pending_messages=[],
             error_message="Нет прав на чтение папки",
         )
 
@@ -1318,3 +1347,43 @@ class TestHandleSwitchProject:
 
         sent = bot_module._application.bot.send_message.call_args.args[1]
         assert "Нет прав" in sent
+
+    @pytest.mark.asyncio()
+    async def test_delivers_pending_messages_after_switch(self) -> None:
+        """При наличии pending_messages каждое доставляется через send_response."""
+        from claude_manager.unread_buffer import PendingMessage
+
+        projects = [_make_project_info("beta", path="/fake/beta")]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+
+        pending = [
+            PendingMessage(session_id="sess-1", text="Ответ из фона"),
+            PendingMessage(session_id="sess-2", text="Второй ответ"),
+        ]
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=False,
+            old_path="/fake/alpha", new_path="/fake/beta",
+            pending_messages_count=2, pending_messages=pending,
+            error_message="",
+        )
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ), patch.object(
+            daily_session_registry, "register_session",
+            new=AsyncMock(side_effect=[1, 2]),
+        ):
+            await handle_switch_project(update, context)
+
+        # Должно быть 3 вызова send_message:
+        # 1 — результат переключения, 2 и 3 — pending-сообщения
+        all_calls = bot_module._application.bot.send_message.call_args_list
+        assert len(all_calls) >= 3, (
+            f"Ожидалось минимум 3 вызова send_message (1 результат + 2 pending), "
+            f"получено {len(all_calls)}"
+        )

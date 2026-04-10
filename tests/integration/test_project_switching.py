@@ -1,8 +1,8 @@
 """Интеграционные тесты переключения между проектами.
 
 Проверяет координацию модулей project_manager, config, session_manager,
-daily_session_registry, session_watcher и process_manager при переключении
-между двумя реальными директориями (не мокаются файлы, только процессы Claude).
+daily_session_registry, session_watcher и unread_buffer при переключении
+между двумя реальными директориями.
 """
 
 import asyncio
@@ -18,6 +18,7 @@ from claude_manager import (
     project_manager,
     session_manager,
     session_watcher,
+    unread_buffer,
 )
 from claude_manager.daily_session_registry import REGISTRY_FILENAME
 from claude_manager.session_manager import BINDINGS_FILENAME
@@ -64,6 +65,8 @@ def _reset_all_module_state() -> None:
     session_watcher._seen_message_counts.clear()
     session_watcher._paused_sessions.clear()
 
+    unread_buffer._snapshots.clear()
+
     process_manager._processes.clear()
     process_manager._busy_flags.clear()
     process_manager._stop_events.clear()
@@ -104,7 +107,6 @@ class TestFullSwitchCycle:
 
             assert result.success is True
             assert result.already_active is False
-            assert result.stopped_processes_count == 0
             assert config.WORKING_DIR == str(project_b)
 
             # Состояние сброшено: в B нет привязок и сессий
@@ -152,10 +154,10 @@ class TestFullSwitchCycle:
             assert session_manager.get_bound_session(TEST_CHAT_ID) == TEST_SESSION_A
 
     @pytest.mark.asyncio()
-    async def test_switch_stops_running_processes(
+    async def test_switch_saves_watcher_snapshot(
         self, project_layout: dict[str, Path]
     ) -> None:
-        """При переключении все процессы Claude останавливаются."""
+        """При переключении сохраняется снапшот watcher через unread_buffer."""
         root = project_layout["root"]
         project_a = project_layout["project_a"]
         project_b = project_layout["project_b"]
@@ -165,15 +167,9 @@ class TestFullSwitchCycle:
              patch.object(config, "WORKING_DIR", str(project_a)), \
              patch.object(config, "LAST_PROJECT_FILE", last_file):
 
-            # Заполняем _processes фейковыми процессами
-            fake_process_1 = _make_fake_running_process()
-            fake_process_2 = _make_fake_running_process()
-            process_manager._processes["sess-1"] = fake_process_1
-            process_manager._processes["sess-2"] = fake_process_2
-            process_manager._busy_flags["sess-1"] = False
-            process_manager._busy_flags["sess-2"] = False
-            process_manager._stop_events["sess-1"] = asyncio.Event()
-            process_manager._stop_events["sess-2"] = asyncio.Event()
+            # Подготавливаем watcher: две сессии с обработанными сообщениями
+            session_watcher._seen_message_counts["sess-1"] = 5
+            session_watcher._seen_message_counts["sess-2"] = 3
 
             await session_manager.load_bindings()
             await daily_session_registry.load_registry()
@@ -181,8 +177,7 @@ class TestFullSwitchCycle:
             result = await project_manager.switch_project(str(project_b))
 
             assert result.success is True
-            assert result.stopped_processes_count == 2
-            assert len(process_manager._processes) == 0
+            assert result.pending_messages_count == 0
 
     @pytest.mark.asyncio()
     async def test_switch_to_nonexistent_fails_gracefully(
@@ -233,23 +228,3 @@ class TestFullSwitchCycle:
             assert "вне корневой папки" in result.error_message
             assert config.WORKING_DIR == str(project_a)
 
-
-# --- Вспомогательные функции ---
-
-
-def _make_fake_running_process():
-    """Создаёт фейковый ClaudeProcess для тестов интеграции с process_manager."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    subprocess_mock = MagicMock()
-    subprocess_mock.pid = 99999
-    subprocess_mock.returncode = None
-    subprocess_mock.terminate = MagicMock()
-    subprocess_mock.wait = AsyncMock(return_value=0)
-    subprocess_mock.kill = MagicMock()
-    subprocess_mock.stdin = MagicMock()
-    subprocess_mock.stdout = MagicMock()
-    subprocess_mock.stderr = MagicMock()
-
-    from claude_manager.claude_runner import ClaudeProcess
-    return ClaudeProcess(subprocess_mock)

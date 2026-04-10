@@ -13,6 +13,7 @@ from claude_manager.session_watcher import (
     _extract_message_text,
     _get_sessions_to_monitor,
     _is_empty_response,
+    get_seen_counts_snapshot,
 )
 
 
@@ -790,6 +791,43 @@ class TestUpdateSessionId:
         assert "old-id" not in session_watcher._paused_sessions
 
 
+# --- Юнит-тесты get_seen_counts_snapshot ---
+
+
+class TestGetSeenCountsSnapshot:
+    """Тесты функции get_seen_counts_snapshot — копия счётчиков для снапшота."""
+
+    def test_returns_copy_of_counts(self) -> None:
+        """Возвращает копию словаря _seen_message_counts."""
+        session_watcher._seen_message_counts = {
+            "session-1": 5,
+            "session-2": 10,
+        }
+
+        snapshot = get_seen_counts_snapshot()
+
+        assert snapshot == {"session-1": 5, "session-2": 10}
+
+    def test_returned_dict_is_independent(self) -> None:
+        """Изменение возвращённого словаря не влияет на оригинал."""
+        session_watcher._seen_message_counts = {"session-1": 5}
+
+        snapshot = get_seen_counts_snapshot()
+        snapshot["session-1"] = 999
+        snapshot["session-new"] = 1
+
+        # Оригинал не изменился
+        assert session_watcher._seen_message_counts == {"session-1": 5}
+
+    def test_empty_counts_returns_empty_dict(self) -> None:
+        """При пустых счётчиках возвращается пустой словарь."""
+        session_watcher._seen_message_counts = {}
+
+        snapshot = get_seen_counts_snapshot()
+
+        assert snapshot == {}
+
+
 # --- Граничные случаи ---
 
 
@@ -1219,33 +1257,69 @@ class TestErrorHandling:
 class TestResetState:
     """Тесты сброса состояния watcher при переключении проекта."""
 
-    def test_reset_clears_seen_counts(self) -> None:
-        """После reset_state словарь _seen_message_counts пуст."""
+    async def test_reset_clears_seen_counts(self) -> None:
+        """После reset_state старые ключи заменяются на ключи нового проекта."""
         session_watcher._seen_message_counts.clear()
-        session_watcher._seen_message_counts["sess-1"] = 5
-        session_watcher._seen_message_counts["sess-2"] = 10
+        session_watcher._seen_message_counts["old-sess-1"] = 5
+        session_watcher._seen_message_counts["old-sess-2"] = 10
 
-        session_watcher.reset_state()
+        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
+             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
+            await session_watcher.reset_state()
 
+        # Старые ключи очищены, новых сессий нет — словарь пуст
         assert len(session_watcher._seen_message_counts) == 0
 
-    def test_reset_clears_paused_sessions(self) -> None:
+    async def test_reset_clears_paused_sessions(self) -> None:
         """После reset_state set _paused_sessions пуст."""
         session_watcher._paused_sessions.clear()
         session_watcher._paused_sessions.add("sess-paused-1")
         session_watcher._paused_sessions.add("sess-paused-2")
 
-        session_watcher.reset_state()
+        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
+             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
+            await session_watcher.reset_state()
 
         assert len(session_watcher._paused_sessions) == 0
 
-    def test_reset_state_keeps_dict_identity(self) -> None:
-        """reset_state использует clear(), а не пересоздание — ссылки остаются валидными."""
+    async def test_reset_state_keeps_dict_identity(self) -> None:
+        """reset_state использует clear()+update(), а не пересоздание — ссылки остаются валидными."""
         original_counts = session_watcher._seen_message_counts
         original_paused = session_watcher._paused_sessions
 
-        session_watcher.reset_state()
+        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
+             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
+            await session_watcher.reset_state()
 
-        # Те же объекты в памяти — значит clear(), а не новый dict/set
+        # Те же объекты в памяти — значит clear()+update(), а не новый dict/set
         assert session_watcher._seen_message_counts is original_counts
         assert session_watcher._paused_sessions is original_paused
+
+    async def test_reset_initializes_counts_for_new_project(self) -> None:
+        """reset_state заполняет счётчики для сессий нового проекта."""
+        session_watcher._seen_message_counts.clear()
+        session_watcher._seen_message_counts["old-sess"] = 99
+
+        # Новый проект содержит две сессии с 3 и 7 сообщениями
+        mock_messages_by_session = {
+            "new-sess-a": [{"type": "user"}] * 3,
+            "new-sess-b": [{"type": "user"}] * 7,
+        }
+
+        async def fake_get_messages(session_id, _working_dir):
+            return mock_messages_by_session.get(session_id, [])
+
+        with patch.object(
+                session_watcher, "_get_sessions_to_monitor",
+                return_value=["new-sess-a", "new-sess-b"],
+             ), \
+             patch.object(
+                session_watcher.session_reader, "get_session_messages",
+                side_effect=fake_get_messages,
+             ):
+            await session_watcher.reset_state()
+
+        # Старые ключи удалены, новые проинициализированы
+        assert "old-sess" not in session_watcher._seen_message_counts
+        assert session_watcher._seen_message_counts["new-sess-a"] == 3
+        assert session_watcher._seen_message_counts["new-sess-b"] == 7

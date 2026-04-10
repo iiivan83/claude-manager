@@ -108,7 +108,7 @@ async def test_flow02_two_sessions_and_navigation(
         "Запомни кодовое слово: яблоко. Ответь ТОЛЬКО: ок"
     )
     response = await telegram_client.wait_for_matching_response(
-        f"#{num_a}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+        f"#{num_a} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
     )
 
     # 3. Создаём сессию B
@@ -122,7 +122,7 @@ async def test_flow02_two_sessions_and_navigation(
         "Запомни кодовое слово: банан. Ответь ТОЛЬКО: ок"
     )
     response = await telegram_client.wait_for_matching_response(
-        f"#{num_b}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+        f"#{num_b} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
     )
 
     # 5. /sessions — обе сессии в списке
@@ -139,7 +139,7 @@ async def test_flow02_two_sessions_and_navigation(
         "Какое кодовое слово я просил тебя запомнить? Ответь одним словом"
     )
     response = await telegram_client.wait_for_matching_response(
-        f"#{num_a}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+        f"#{num_a} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
     )
     assert "яблоко" in response.lower(), f"Ожидали 'яблоко': {response}"
 
@@ -152,7 +152,7 @@ async def test_flow02_two_sessions_and_navigation(
         "Какое кодовое слово я просил тебя запомнить? Ответь одним словом"
     )
     response = await telegram_client.wait_for_matching_response(
-        f"#{num_b}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+        f"#{num_b} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
     )
     assert "банан" in response.lower(), f"Ожидали 'банан': {response}"
 

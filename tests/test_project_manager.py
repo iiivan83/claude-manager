@@ -173,10 +173,13 @@ class TestSwitchProject:
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
-             patch.object(project_manager.process_manager, "stop_all_processes", AsyncMock(return_value=0)), \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
+             patch.object(project_manager.unread_buffer, "cleanup_expired"), \
              patch.object(project_manager.session_manager, "reset_state", AsyncMock()), \
              patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
-             patch.object(project_manager.session_watcher, "reset_state"):
+             patch.object(project_manager.session_watcher, "reset_state", AsyncMock()):
             result = await switch_project(str(target))
 
             # Проверки внутри with — иначе patch уже откатит config.WORKING_DIR
@@ -192,18 +195,18 @@ class TestSwitchProject:
     ) -> None:
         """Переключение на текущий проект возвращает already_active=True и не сбрасывает state."""
         working_dir = projects_root / "project_alpha"
-        stop_mock = AsyncMock(return_value=0)
+        snapshot_mock = MagicMock(return_value={})
         reset_mock = AsyncMock()
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
-             patch.object(project_manager.process_manager, "stop_all_processes", stop_mock), \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", snapshot_mock), \
              patch.object(project_manager.session_manager, "reset_state", reset_mock):
             result = await switch_project(str(working_dir))
 
         assert result.success is True
         assert result.already_active is True
-        stop_mock.assert_not_called()
+        snapshot_mock.assert_not_called()
         reset_mock.assert_not_called()
 
     @pytest.mark.asyncio()
@@ -254,24 +257,31 @@ class TestSwitchProject:
         assert "не папка" in result.error_message
 
     @pytest.mark.asyncio()
-    async def test_stops_all_processes(
+    async def test_saves_snapshot_on_switch(
         self, projects_root: Path, last_project_file: Path
     ) -> None:
-        """switch_project вызывает process_manager.stop_all_processes и пробрасывает количество."""
+        """switch_project сохраняет снапшот watcher через unread_buffer.save_snapshot."""
         working_dir = projects_root / "project_alpha"
         target = projects_root / "project_beta"
-        stop_mock = AsyncMock(return_value=3)
+        seen_counts = {"session-1": 5, "session-2": 3}
+        snapshot_mock = MagicMock(return_value=seen_counts)
+        save_mock = MagicMock()
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
-             patch.object(project_manager.process_manager, "stop_all_processes", stop_mock), \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", snapshot_mock), \
+             patch.object(project_manager.unread_buffer, "save_snapshot", save_mock), \
+             patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
+             patch.object(project_manager.unread_buffer, "cleanup_expired"), \
              patch.object(project_manager.session_manager, "reset_state", AsyncMock()), \
              patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
-             patch.object(project_manager.session_watcher, "reset_state"):
+             patch.object(project_manager.session_watcher, "reset_state", AsyncMock()):
             result = await switch_project(str(target))
 
-        stop_mock.assert_awaited_once()
-        assert result.stopped_processes_count == 3
+        snapshot_mock.assert_called_once()
+        save_mock.assert_called_once_with(str(working_dir), seen_counts)
+        assert result.pending_messages_count == 0
+        assert result.pending_messages == []
 
     @pytest.mark.asyncio()
     async def test_resets_all_state_modules(
@@ -283,12 +293,14 @@ class TestSwitchProject:
 
         session_reset = AsyncMock()
         registry_reset = AsyncMock()
-        # session_watcher.reset_state — синхронная функция, мокаем через MagicMock
-        watcher_reset = MagicMock()
+        watcher_reset = AsyncMock()
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
-             patch.object(project_manager.process_manager, "stop_all_processes", AsyncMock(return_value=0)), \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
+             patch.object(project_manager.unread_buffer, "cleanup_expired"), \
              patch.object(project_manager.session_manager, "reset_state", session_reset), \
              patch.object(project_manager.daily_session_registry, "reset_state", registry_reset), \
              patch.object(project_manager.session_watcher, "reset_state", watcher_reset):
@@ -296,7 +308,7 @@ class TestSwitchProject:
 
         session_reset.assert_awaited_once()
         registry_reset.assert_awaited_once()
-        watcher_reset.assert_called_once()
+        watcher_reset.assert_awaited_once()
 
     @pytest.mark.asyncio()
     async def test_saves_to_last_project_file(
@@ -308,10 +320,13 @@ class TestSwitchProject:
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
-             patch.object(project_manager.process_manager, "stop_all_processes", AsyncMock(return_value=0)), \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
+             patch.object(project_manager.unread_buffer, "cleanup_expired"), \
              patch.object(project_manager.session_manager, "reset_state", AsyncMock()), \
              patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
-             patch.object(project_manager.session_watcher, "reset_state"):
+             patch.object(project_manager.session_watcher, "reset_state", AsyncMock()):
             await switch_project(str(target))
 
         assert last_project_file.exists()
@@ -330,10 +345,12 @@ class TestSwitchProject:
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
-             patch.object(project_manager.process_manager, "stop_all_processes", AsyncMock(return_value=0)), \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "clear_snapshot"), \
              patch.object(project_manager.session_manager, "reset_state", failing_reset), \
              patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
-             patch.object(project_manager.session_watcher, "reset_state"):
+             patch.object(project_manager.session_watcher, "reset_state", AsyncMock()):
             result = await switch_project(str(target))
 
             # Проверки внутри with — config.WORKING_DIR должен быть откачен к original_wd
@@ -354,25 +371,27 @@ class TestSwitchProject:
 
         call_order: list[str] = []
 
-        async def tracked_stop() -> int:
-            call_order.append("stop")
-            await asyncio.sleep(0.01)
-            return 0
+        def tracked_snapshot() -> dict:
+            call_order.append("snapshot")
+            return {}
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
-             patch.object(project_manager.process_manager, "stop_all_processes", tracked_stop), \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", tracked_snapshot), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
+             patch.object(project_manager.unread_buffer, "cleanup_expired"), \
              patch.object(project_manager.session_manager, "reset_state", AsyncMock()), \
              patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
-             patch.object(project_manager.session_watcher, "reset_state"):
+             patch.object(project_manager.session_watcher, "reset_state", AsyncMock()):
             await asyncio.gather(
                 switch_project(str(target_b)),
                 switch_project(str(target_a)),
             )
 
-        # Оба вызова должны были пройти stop (второй — already_active НЕ вызовет)
-        # Первый переключает на project_beta (stop вызывается).
-        # Второй: к этому моменту WORKING_DIR уже project_beta, а target_a=project_alpha — значит stop тоже вызывается.
+        # Оба вызова должны были сделать snapshot (второй — already_active НЕ вызовет)
+        # Первый переключает на project_beta (snapshot вызывается).
+        # Второй: к этому моменту WORKING_DIR уже project_beta, а target_a=project_alpha — значит snapshot тоже вызывается.
         # Главное — блокировка сработала и оба вызова завершились без исключений
         assert len(call_order) >= 1
 

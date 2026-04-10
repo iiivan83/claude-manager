@@ -237,13 +237,33 @@ async def resume_session(session_id: str) -> None:
     )
 
 
-def reset_state() -> None:
-    """Очищает счётчики обработанных сообщений и список приостановленных сессий."""
-    # Используем .clear() вместо присваивания — ссылки на словари остаются валидными,
-    # это безопасно для модулей, которые могли сохранить ссылку
+async def reset_state() -> None:
+    """Сбрасывает состояние и инициализирует счётчики для сессий нового проекта.
+
+    Без инициализации watcher увидит все сессии нового проекта с already_seen=0
+    и отправит ВСЕ исторические сообщения как «новые».
+    """
+    # Собираем счётчики для нового проекта ДО очистки старых —
+    # между clear() и update() нет await, поэтому event loop
+    # не сможет запустить _poll_sessions в момент пустого словаря
+    session_ids = await _get_sessions_to_monitor()
+    new_counts: dict[str, int] = {}
+    for session_id in session_ids:
+        messages = await session_reader.get_session_messages(
+            session_id, config.WORKING_DIR
+        )
+        new_counts[session_id] = len(messages)
+
+    # Атомарная подмена: clear + update без await между ними —
+    # event loop не прервёт эту пару операций
     _seen_message_counts.clear()
+    _seen_message_counts.update(new_counts)
     _paused_sessions.clear()
-    logger.info("Состояние session_watcher сброшено для переключения проекта")
+
+    logger.info(
+        "Состояние session_watcher сброшено для переключения проекта (%d сессий)",
+        len(session_ids),
+    )
 
 
 def update_session_id(old_session_id: str, new_session_id: str) -> None:
@@ -269,6 +289,11 @@ def update_session_id(old_session_id: str, new_session_id: str) -> None:
     logger.info(
         "Watcher: session_id обновлён %s → %s", old_session_id, new_session_id
     )
+
+
+def get_seen_counts_snapshot() -> dict[str, int]:
+    """Возвращает копию счётчиков обработанных сообщений для снапшота."""
+    return dict(_seen_message_counts)
 
 
 async def start(

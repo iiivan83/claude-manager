@@ -26,6 +26,7 @@ from claude_manager import (
     process_manager,
     session_manager,
     session_watcher,
+    unread_buffer,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,8 @@ class SwitchResult:
     already_active: bool
     old_path: str
     new_path: str
-    stopped_processes_count: int
+    pending_messages_count: int
+    pending_messages: list
     error_message: str
 
 
@@ -174,23 +176,32 @@ async def _reset_all_state_modules() -> None:
     """Сбрасывает состояние всех state-модулей — для switch_project."""
     await session_manager.reset_state()
     await daily_session_registry.reset_state()
-    session_watcher.reset_state()
+    await session_watcher.reset_state()
 
 
-async def _perform_switch(target_path: str) -> int:
-    """Выполняет само переключение: останавливает процессы и сбрасывает state."""
-    stopped_count = await process_manager.stop_all_processes()
+async def _perform_switch(target_path: str) -> None:
+    """Выполняет переключение: сохраняет снапшот, переключает state.
+
+    Процессы Claude НЕ останавливаются — они продолжают работать в фоне.
+    При возврате в проект непрочитанные сообщения будут доставлены.
+    """
+    # Сохраняем снапшот счётчиков watcher ДО смены проекта —
+    # чтобы при возврате знать, какие сообщения уже были обработаны
+    seen_snapshot = session_watcher.get_seen_counts_snapshot()
+    old_path = config.WORKING_DIR
+    unread_buffer.save_snapshot(old_path, seen_snapshot)
 
     # Меняем WORKING_DIR ДО сброса state — модули при перезагрузке прочитают новый путь
     config.WORKING_DIR = target_path
 
     await _reset_all_state_modules()
-    return stopped_count
 
 
 async def _rollback_switch(old_path: str) -> None:
     """Пытается восстановить старое значение WORKING_DIR после неудачного переключения."""
     config.WORKING_DIR = old_path
+    # При откате уход из проекта не произошёл — удаляем снапшот
+    unread_buffer.clear_snapshot(old_path)
     try:
         await _reset_all_state_modules()
     except Exception:
@@ -210,7 +221,8 @@ def _make_error_result(
         already_active=False,
         old_path=old_path,
         new_path=target_path,
-        stopped_processes_count=0,
+        pending_messages_count=0,
+        pending_messages=[],
         error_message=error_message,
     )
 
@@ -218,7 +230,8 @@ def _make_error_result(
 def _make_success_result(
     old_path: str,
     target_path: str,
-    stopped_count: int,
+    pending_messages_count: int,
+    pending_messages: list,
     already_active: bool,
 ) -> SwitchResult:
     """Собирает SwitchResult для успешного переключения или no-op (уже активен)."""
@@ -227,7 +240,8 @@ def _make_success_result(
         already_active=already_active,
         old_path=old_path,
         new_path=target_path,
-        stopped_processes_count=stopped_count,
+        pending_messages_count=pending_messages_count,
+        pending_messages=pending_messages,
         error_message="",
     )
 
@@ -242,20 +256,22 @@ def _precheck_switch(
         logger.warning("Отклонено переключение на %s: %s", target_path, error)
         return _make_error_result(old_path, target_path, str(error))
 
-    # Уже в этом проекте — no-op, без остановки процессов и сброса состояния
+    # Уже в этом проекте — no-op, без переключения
     if _paths_point_to_same_dir(target_path, old_path):
         return _make_success_result(
-            old_path, target_path, stopped_count=0, already_active=True,
+            old_path, target_path,
+            pending_messages_count=0, pending_messages=[],
+            already_active=True,
         )
     return None
 
 
 async def _try_switch_with_rollback(
     target_path: str, old_path: str,
-) -> tuple[int | None, SwitchResult | None]:
-    """Выполняет переключение с откатом при ошибке. Возвращает (stopped_count, None) или (None, error_result)."""
+) -> tuple[bool, SwitchResult | None]:
+    """Выполняет переключение с откатом при ошибке. Возвращает (True, None) или (False, error_result)."""
     try:
-        stopped_count = await _perform_switch(target_path)
+        await _perform_switch(target_path)
     except Exception as error:
         logger.error(
             "Ошибка при переключении проекта на %s: %s",
@@ -265,22 +281,41 @@ async def _try_switch_with_rollback(
         error_result = _make_error_result(
             old_path, target_path, f"Ошибка переключения: {error}",
         )
-        return None, error_result
-    return stopped_count, None
+        return False, error_result
+    return True, None
+
+
+async def _collect_pending_messages(
+    target_path: str,
+) -> tuple[int, list]:
+    """Собирает непрочитанные сообщения для проекта, в который возвращаемся."""
+    if not unread_buffer.has_pending(target_path):
+        return 0, []
+
+    pending = await unread_buffer.get_pending_messages(target_path)
+    unread_buffer.clear_snapshot(target_path)
+    return len(pending), pending
 
 
 async def _finalize_successful_switch(
-    old_path: str, target_path: str, stopped_count: int,
+    old_path: str, target_path: str,
 ) -> SwitchResult:
-    """Сохраняет путь в файл последнего проекта, пишет лог и собирает успешный результат."""
+    """Сохраняет путь в файл последнего проекта, собирает pending и пишет лог."""
     # Ошибка save_selected_project не отменяет успешное переключение — она логируется внутри
     await save_selected_project(target_path)
+
+    # Собираем непрочитанные сообщения (если пользователь возвращается в проект)
+    pending_count, pending = await _collect_pending_messages(target_path)
+
+    # Очищаем просроченные снапшоты других проектов
+    unread_buffer.cleanup_expired()
+
     logger.info(
-        "Переключение проекта выполнено: %s -> %s (остановлено процессов=%d)",
-        old_path, target_path, stopped_count,
+        "Переключение проекта выполнено: %s -> %s (непрочитанных=%d)",
+        old_path, target_path, pending_count,
     )
     return _make_success_result(
-        old_path, target_path, stopped_count, already_active=False,
+        old_path, target_path, pending_count, pending, already_active=False,
     )
 
 
@@ -295,15 +330,13 @@ async def switch_project(target_path: str) -> SwitchResult:
             return early_result
 
         # Основное переключение с транзакционной семантикой — при сбое делаем rollback
-        stopped_count, error_result = await _try_switch_with_rollback(
+        success, error_result = await _try_switch_with_rollback(
             target_path, old_path,
         )
         if error_result is not None:
             return error_result
 
-        return await _finalize_successful_switch(
-            old_path, target_path, stopped_count or 0,
-        )
+        return await _finalize_successful_switch(old_path, target_path)
 
 
 async def save_selected_project(path: str) -> None:

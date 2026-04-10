@@ -192,6 +192,7 @@ class TestMain:
         with (
             patch("claude_manager.main._setup_logging"),
             patch("claude_manager.main.config.load_config"),
+            patch("claude_manager.main._restore_last_selected_project"),
             patch("claude_manager.main._acquire_lock", return_value=mock_lock),
             patch("claude_manager.main.config.WORKING_DIR", test_working_dir),
             patch("claude_manager.main._run_bot"),

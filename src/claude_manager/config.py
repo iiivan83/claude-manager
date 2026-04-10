@@ -27,6 +27,10 @@ DEFAULT_PROJECTS_ROOT = "/Users/ivan/Desktop/claude-sandbox"
 # Используется для восстановления выбранного проекта после перезапуска бота.
 LAST_PROJECT_FILE: Path = Path.home() / ".claude-manager-current-project"
 
+# Максимальное время хранения снапшота непрочитанных сообщений (часы).
+# Сообщения старше этого возраста не доставляются при возврате в проект.
+UNREAD_BUFFER_TTL_HOURS: int = 3
+
 # Константы модуля — заполняются после вызова load_config()
 BOT_TOKEN: str = ""
 ALLOWED_USER_IDS: set[int] = set()

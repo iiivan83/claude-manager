@@ -14,6 +14,7 @@
 обрабатываются ботом локально, ответ приходит быстро (миллисекунды).
 """
 
+import asyncio
 import re
 from dataclasses import dataclass
 
@@ -168,10 +169,6 @@ async def test_flow09_switch_to_other_project_and_back(
             f"Ответ должен содержать имя нового проекта {other.name}: "
             f"{switch_response}"
         )
-        assert "Остановлено процессов" in switch_response, (
-            f"Ответ должен содержать счётчик остановленных процессов: "
-            f"{switch_response}"
-        )
     finally:
         # Гарантированно возвращаемся на исходный проект — иначе последующие
         # тесты пойдут в чужом проекте. Ждём ответ команды /pN: это либо
@@ -229,3 +226,68 @@ async def test_flow11_switch_to_current_is_noop(
         f"Ответ должен содержать имя текущего проекта {current.name}: "
         f"{response}"
     )
+
+
+# --- FLOW-12: после переключения проекта watcher не спамит историей ---
+
+# Интервал опроса watcher — 2 сек. Ждём 4 цикла, чтобы дать ему время
+# ошибочно отправить исторические сообщения (если баг вернётся).
+WATCHER_SETTLE_SECONDS = 8
+
+
+async def test_flow12_no_ghost_messages_after_project_switch(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """После /pN watcher не отправляет исторические сообщения из нового проекта.
+
+    Баг (до исправления): session_watcher.reset_state() обнулял счётчики
+    seen_message_counts. При первом poll после переключения watcher видел
+    все сессии нового проекта с already_seen=0 и отправлял ВСЕ исторические
+    сообщения как «новые».
+
+    Тест: переключиться → подождать 4 цикла watcher → проверить, что
+    не пришло ни одного сообщения с заголовком сессии (#N или /N).
+    """
+    projects = await _fetch_project_list(telegram_client)
+    original = _find_current_project(projects)
+    other = _find_other_project(projects, original.name)
+
+    if other is None:
+        pytest.skip(
+            "В PROJECTS_ROOT_DIR только один проект — некуда переключаться"
+        )
+
+    try:
+        # 1. Переключаемся на другой проект
+        await telegram_client.send_command(f"/p{other.number}")
+        await telegram_client.wait_for_matching_response(
+            "Переключено на проект", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+        # 2. Сбрасываем буфер — нас интересуют только сообщения ПОСЛЕ switch
+        telegram_client._reset_response_state()
+
+        # 3. Ждём несколько циклов watcher (polling interval = 2 сек)
+        await asyncio.sleep(WATCHER_SETTLE_SECONDS)
+
+        # 4. Проверяем: ни одного сообщения с заголовком сессии не должно прийти.
+        # Формат заголовка: "#N ..." (ответ текущей) или "/N ..." (ответ чужой).
+        session_header_pattern = re.compile(r"^[#/](\d+)\b")
+        ghost_messages = [
+            f"Сессия #{m.group(1)}: {resp[:120]}"
+            for resp in telegram_client._all_responses
+            if (m := session_header_pattern.match(resp))
+        ]
+
+        assert not ghost_messages, (
+            f"После переключения на проект '{other.name}' watcher "
+            f"отправил исторические сообщения:\n"
+            + "\n".join(ghost_messages)
+        )
+    finally:
+        # Возвращаемся на исходный проект
+        await telegram_client.send_command(f"/p{original.number}")
+        await telegram_client.wait_for_regex_response(
+            r"(?:Переключено на проект|Уже работаю в проекте)",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )

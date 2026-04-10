@@ -92,9 +92,8 @@ PROJECT_CURRENT_MARKER = "\u25cf"
 # Шаблоны сообщений для команды переключения проектов
 EMPTY_PROJECTS_TEMPLATE = "Проекты не найдены в папке {root}"
 INVALID_PROJECT_NUMBER_TEMPLATE = "Проект #{number} не найден"
-PROJECT_SWITCH_SUCCESS_TEMPLATE = (
-    "Переключено на проект: {name}\nОстановлено процессов: {count}"
-)
+PROJECT_SWITCH_SUCCESS_TEMPLATE = "Переключено на проект: {name}"
+PROJECT_SWITCH_PENDING_TEMPLATE = "Непрочитанных сообщений: {count}"
 PROJECT_SWITCH_ERROR_TEMPLATE = "Ошибка переключения: {error}"
 PROJECT_ALREADY_ACTIVE_TEMPLATE = "Уже работаю в проекте: {name}"
 
@@ -703,10 +702,34 @@ def _format_switch_result_message(
     if result.already_active:
         return PROJECT_ALREADY_ACTIVE_TEMPLATE.format(name=project_name)
     if result.success:
-        return PROJECT_SWITCH_SUCCESS_TEMPLATE.format(
-            name=project_name, count=result.stopped_processes_count,
-        )
+        text = PROJECT_SWITCH_SUCCESS_TEMPLATE.format(name=project_name)
+        if result.pending_messages_count > 0:
+            text += "\n" + PROJECT_SWITCH_PENDING_TEMPLATE.format(
+                count=result.pending_messages_count,
+            )
+        return text
     return PROJECT_SWITCH_ERROR_TEMPLATE.format(error=result.error_message)
+
+
+async def _deliver_pending_messages(
+    chat_id: int, pending_messages: list,
+) -> None:
+    """Доставляет пропущенные сообщения из буфера после переключения проекта."""
+    for pending in pending_messages:
+        try:
+            day_number = await daily_session_registry.register_session(
+                pending.session_id
+            )
+        except Exception:
+            logger.error(
+                "Ошибка регистрации сессии %s при доставке буфера",
+                pending.session_id, exc_info=True,
+            )
+            continue
+
+        await send_response(
+            chat_id, pending.text, day_number, is_final=True,
+        )
 
 
 async def handle_switch_project(
@@ -730,6 +753,10 @@ async def handle_switch_project(
     result = await project_manager.switch_project(target_project.absolute_path)
     response_text = _format_switch_result_message(result, target_project.name)
     await _send_telegram_message(chat_id, response_text, parse_mode=None)
+
+    # Доставка пропущенных сообщений после переключения
+    if result.success and result.pending_messages_count > 0:
+        await _deliver_pending_messages(chat_id, result.pending_messages)
 
 
 async def handle_switch_session(
