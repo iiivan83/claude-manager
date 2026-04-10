@@ -61,7 +61,7 @@
 
 ### `def _encode_project_path(project_dir: str) -> str`
 
-Кодирует путь к проекту в формат, который Claude Code использует для имён папок: слеши и пробелы заменяются дефисами.
+Повторяет алгоритм `sanitizePath()` из Claude Code CLI (исходник: `claude-code-sourcecode/utils/sessionStoragePortable.ts:311`): все символы, кроме букв и цифр, заменяются на дефис. Это внешний контракт — любое отклонение от реального алгоритма Claude Code CLI приводит к тому, что бот ищет несуществующую папку сессий.
 
 **Аргументы:**
 - `project_dir` (str) — абсолютный путь к проекту. Например: `"/Users/ivan/Desktop/my project"`
@@ -133,9 +133,8 @@
 
 ### _encode_project_path
 
-1. **Заменить слеши на дефисы** — каждый символ `/` в пути заменяется на `-`
-2. **Заменить пробелы на дефисы** — каждый пробел в пути заменяется на `-`
-3. **Вернуть результат** — закодированная строка. Путь `/Users/ivan/Desktop/my project` превращается в `-Users-ivan-Desktop-my-project`
+1. **Применить регулярное выражение** — применить регулярное выражение `[^a-zA-Z0-9]` к пути и заменить все совпадения на `-`. Регулярка скомпилирована в константу модуля `SANITIZE_PATH_PATTERN` с комментарием-ссылкой на источник в Claude Code CLI.
+2. **Вернуть результат** — закодированная строка. Путь `/Users/ivan/Desktop/my project` превращается в `-Users-ivan-Desktop-my-project`
 
 ### _read_session_file
 
@@ -180,6 +179,9 @@
 - **dataclasses** (стандартная библиотека) — `@dataclass` — для определения класса `SessionInfo`
 
 Зависимость от модулей проекта — только config (слой 0). session_reader сам не импортирует config напрямую, но потребители передают `config.WORKING_DIR` через аргумент `project_dir`.
+
+**Внешние контракты:**
+- Алгоритм формирования имени папки сессий — `sanitizePath()` из Claude Code CLI (`claude-code-sourcecode/utils/sessionStoragePortable.ts:311`). Любое изменение этой функции в Claude Code требует обновления `_encode_project_path` и регрессионных тестов.
 
 ## Обработка ошибок
 

@@ -1,0 +1,88 @@
+{
+  "pipeline": "apply-root-cause-fixes",
+  "created_at": "2026-04-10T17:44:00",
+  "report_file": "dev/docs/logs/root-cause-reports/10-04_16-02_session-reader-path-encoding.md",
+  "steps": [
+    {
+      "phase": "phase-0",
+      "start_time": "2026-04-10T17:44:00",
+      "end_time": "2026-04-10T17:44:30",
+      "success": true,
+      "comment": "Отчёт распарсен, извлечено 10 рекомендаций: 1 ARCH + 2 DOC + 5 CODE + 2 SKILL"
+    },
+    {
+      "phase": "phase-1",
+      "start_time": "2026-04-10T17:44:30",
+      "end_time": "2026-04-10T17:48:00",
+      "success": true,
+      "comment": "Верификация: 10 всего, 7 ОДОБРЕНО, 3 ОДОБРЕНО С ЗАМЕЧАНИЯМИ, 0 ОТКЛОНЕНО",
+      "details": {
+        "approved": ["R1", "R2", "R3", "R4", "R6", "R9", "R10"],
+        "approved_with_notes": {
+          "R5": "Для кейса с кириллицей сначала запустить regex в Python и зафиксировать реальный вывод",
+          "R7": "Обязательны subprocess.run(timeout=30), tmp_path для изоляции, очистка в finally",
+          "R8": "Строгий порядок: сначала R4 → перезапустить бота → убедиться что warning перестали → чистить лог"
+        },
+        "rejected": []
+      }
+    },
+    {
+      "phase": "phase-2",
+      "start_time": "2026-04-10T17:48:00",
+      "end_time": "2026-04-10T18:06:00",
+      "success": true,
+      "comment": "Применение 10 исправлений агентами завершено, все успешно",
+      "details": {
+        "wave_1_parallel": {
+          "R4": "SUCCESS — фикс _encode_project_path через SANITIZE_PATH_PATTERN на session_reader.py:45-48, 63-69",
+          "R5+R6": "SUCCESS — 6 новых тестов (5 в TestEncodeProjectPath + 1 в TestBuildSessionsPath), 10 passed за 0.22s",
+          "R1": "SUCCESS — принцип добавлен в CLAUDE.md:195 после пункта stream-json",
+          "R2": "SUCCESS — session_reader_spec.md исправлен в 3 местах (описание, алгоритм, зависимости)",
+          "R3": "SUCCESS — постскриптум добавлен в конец 15-47_switch-bot-working-dir.md",
+          "R7": "SUCCESS — test_claude_cli_contract.py создан, passed за 5.66s с реальным Claude CLI, skipped за 0.01s без него"
+        },
+        "wave_2_parallel": {
+          "R9": "SUCCESS — spec-module/SKILL.md дополнен разделом и подпунктом 1.6",
+          "R10": "SUCCESS — review-code/SKILL.md дополнен чек-пунктом в Проходе 3"
+        },
+        "wave_3_sequential": {
+          "bot_restart": "SUCCESS — LaunchAgent перезапущен, новый PID 32358",
+          "warning_check": "PASSED — warning «Папка сессий не найдена» исчез, корневой баг починен",
+          "R8": "SUCCESS — error.log очищен через truncate (301 МБ → 0 B)"
+        },
+        "observation": "Обнажился вторичный warning «Нет timestamp в файле сессии» для 8 файлов в новой правильной папке. Это отдельная проблема из раздела «Дополнительные наблюдения» отчёта, не входит в R1-R10."
+      }
+    },
+    {
+      "phase": "phase-3",
+      "start_time": "2026-04-10T18:06:00",
+      "end_time": "2026-04-10T18:08:00",
+      "success": true,
+      "comment": "Верификация результатов: все 10 изменений применены, 37/37 юнит-тестов + 1/1 интеграционный тест зелёные",
+      "details": {
+        "unit_tests": "tests/test_session_reader.py — 37 passed за 0.05s",
+        "integration_test": "tests/integration/test_claude_cli_contract.py — 1 passed за 5.86s с реальным Claude CLI",
+        "modified_files": [
+          "CLAUDE.md (R1)",
+          ".claude/skills/review-code/SKILL.md (R10)",
+          ".claude/skills/spec-module/SKILL.md (R9)",
+          "dev/docs/specs/realised/session_reader_spec.md (R2)",
+          "src/claude_manager/session_reader.py (R4)",
+          "tests/test_session_reader.py (R5+R6)",
+          "dev/docs/session-reports/10-04/15-47_switch-bot-working-dir.md (R3)"
+        ],
+        "new_files": [
+          "tests/integration/test_claude_cli_contract.py (R7)"
+        ],
+        "runtime_verification": "Корневой warning «Папка сессий не найдена» исчез после R4. Бот перезапущен (PID 32358). Error.log очищен от 301 МБ до 0 B (R8)."
+      }
+    },
+    {
+      "phase": "phase-4",
+      "start_time": "2026-04-10T18:08:00",
+      "end_time": null,
+      "success": null,
+      "comment": "Документирование, коммит, архивация отчёта"
+    }
+  ]
+}

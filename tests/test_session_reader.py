@@ -82,6 +82,33 @@ class TestEncodeProjectPath:
         result = _encode_project_path("/")
         assert result == "-"
 
+    def test_path_with_underscores(self) -> None:
+        """Регрессионный тест: подчёркивание заменяется на дефис (наш упавший случай)."""
+        result = _encode_project_path(
+            "/Users/ivan/Desktop/claude-sandbox/claude_manager"
+        )
+        assert result == "-Users-ivan-Desktop-claude-sandbox-claude-manager"
+
+    def test_path_with_dots(self) -> None:
+        """Точки заменяются на дефис, два дефиса подряд допустимы."""
+        result = _encode_project_path("/Users/ivan/Desktop/project/.claude/skills")
+        assert result == "-Users-ivan-Desktop-project--claude-skills"
+
+    def test_path_with_mixed_special_chars(self) -> None:
+        """Пробел и подчёркивание одновременно заменяются на дефис."""
+        result = _encode_project_path("/Users/ivan/My Project_v2/src")
+        assert result == "-Users-ivan-My-Project-v2-src"
+
+    def test_path_with_digits(self) -> None:
+        """Цифры сохраняются, не заменяются."""
+        result = _encode_project_path("/Users/user1/project2024")
+        assert result == "-Users-user1-project2024"
+
+    def test_path_with_cyrillic(self) -> None:
+        """Фиксирует ASCII-поведение регулярки: кириллица превращается в дефисы. Unicode-логика Claude Code — тема для отдельного issue."""
+        result = _encode_project_path("/Users/ivan/Проект")
+        assert result == "-Users-ivan-------"
+
 
 # --- Юнит-тесты _build_sessions_path ---
 
@@ -96,6 +123,21 @@ class TestBuildSessionsPath:
         expected_suffix = ".claude/projects/-Users-ivan-Desktop-claude-manager"
         assert result.startswith(home)
         assert result.endswith(expected_suffix)
+
+    def test_builds_path_with_underscore(self) -> None:
+        """Путь с подчёркиванием — итоговая папка содержит дефис вместо подчёркивания."""
+        result = _build_sessions_path(
+            "/Users/ivan/Desktop/claude-sandbox/claude_manager"
+        )
+        home = os.path.expanduser("~")
+        expected_suffix = (
+            ".claude/projects/-Users-ivan-Desktop-claude-sandbox-claude-manager"
+        )
+        assert result.startswith(home)
+        assert result.endswith(expected_suffix)
+        # Явная защита от регрессии: в итоговом пути не должно быть подчёркиваний
+        # из исходной части пути проекта
+        assert "claude_manager" not in result
 
 
 # --- Юнит-тесты _clean_preview ---

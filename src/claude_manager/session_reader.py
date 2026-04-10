@@ -42,6 +42,11 @@ XML_TAG_PATTERN = re.compile(r"<[^>]+>")
 # Регулярное выражение для замены множественных пробелов на один
 WHITESPACE_PATTERN = re.compile(r"\s+")
 
+# Регулярное выражение для санитации пути проекта — заменяет всё,
+# что не буква и не цифра, на дефис. Повторяет sanitizePath() из
+# Claude Code CLI (см. claude-code-sourcecode/utils/sessionStoragePortable.ts:311).
+SANITIZE_PATH_PATTERN = re.compile(r"[^a-zA-Z0-9]")
+
 # Минимальная длина сообщения, чтобы считать его «настоящим»
 MIN_MESSAGE_LENGTH = 2
 
@@ -56,8 +61,12 @@ class SessionInfo:
 
 
 def _encode_project_path(project_dir: str) -> str:
-    """Кодирует путь проекта в формат имён папок Claude Code."""
-    return project_dir.replace("/", "-").replace(" ", "-")
+    """Кодирует путь проекта в формат имён папок Claude Code.
+
+    Повторяет алгоритм sanitizePath() из Claude Code CLI: заменяет
+    все не-буквенно-цифровые символы на дефис.
+    """
+    return SANITIZE_PATH_PATTERN.sub("-", project_dir)
 
 
 def _build_sessions_path(project_dir: str) -> str:
