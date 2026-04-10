@@ -31,6 +31,7 @@ from claude_manager import (
     daily_session_registry,
     message_splitter,
     process_manager,
+    project_manager,
     session_manager,
     session_reader,
     session_watcher,
@@ -73,6 +74,7 @@ BOT_COMMANDS = [
     ("sessions", "Список сессий"),
     ("all", "Мониторинг всех сессий"),
     ("stop", "Остановить Claude"),
+    ("projects", "Список проектов для переключения"),
 ]
 
 # Сообщение при попытке написать в режиме /all
@@ -83,6 +85,18 @@ MONITORING_MODE_MESSAGE = (
 
 # Количество секунд в одном дне (для расчёта возраста файлов)
 SECONDS_PER_DAY = 86400
+
+# Маркер, которым в списке проектов помечается текущий активный проект (кружок)
+PROJECT_CURRENT_MARKER = "\u25cf"
+
+# Шаблоны сообщений для команды переключения проектов
+EMPTY_PROJECTS_TEMPLATE = "Проекты не найдены в папке {root}"
+INVALID_PROJECT_NUMBER_TEMPLATE = "Проект #{number} не найден"
+PROJECT_SWITCH_SUCCESS_TEMPLATE = (
+    "Переключено на проект: {name}\nОстановлено процессов: {count}"
+)
+PROJECT_SWITCH_ERROR_TEMPLATE = "Ошибка переключения: {error}"
+PROJECT_ALREADY_ACTIVE_TEMPLATE = "Уже работаю в проекте: {name}"
 
 # --- Внутреннее состояние ---
 
@@ -393,6 +407,15 @@ async def _send_to_claude_and_respond(chat_id: int, text: str) -> None:
             chat_id, "Процесс Claude не найден. Попробуйте /new",
             parse_mode=None,
         )
+    except process_manager.ProcessManagerError as error:
+        logger.warning(
+            "Процесс занят (chat_id=%d): %s", chat_id, error,
+        )
+        await _send_telegram_message(
+            chat_id,
+            "Claude ещё обрабатывает предыдущее сообщение. Подождите или /stop",
+            parse_mode=None,
+        )
     except Exception:
         logger.error(
             "Ошибка при взаимодействии с Claude (chat_id=%d)", chat_id,
@@ -633,6 +656,82 @@ async def handle_all(
     )
 
 
+def _format_project_line(project: project_manager.ProjectInfo, number: int) -> str:
+    """Форматирует одну строку списка проектов с номером и маркером текущего."""
+    marker = PROJECT_CURRENT_MARKER + " " if project.is_current else ""
+    return f"{marker}/p{number} {project.name}"
+
+
+async def handle_projects(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик команды /projects — показывает список доступных проектов."""
+    if not _check_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+    projects = await project_manager.scan_available_projects()
+
+    if not projects:
+        message = EMPTY_PROJECTS_TEMPLATE.format(root=config.PROJECTS_ROOT_DIR)
+        await _send_telegram_message(chat_id, message, parse_mode=None)
+        return
+
+    # Каждая строка — кликабельная команда /pN. parse_mode=None сохраняет кликабельность
+    lines = [
+        _format_project_line(project, number)
+        for number, project in enumerate(projects, start=1)
+    ]
+    text = "\n".join(lines)
+    await _send_telegram_message(chat_id, text, parse_mode=None)
+
+
+async def _resolve_project_by_number(
+    project_number: int,
+) -> project_manager.ProjectInfo | None:
+    """Находит проект по порядковому номеру в отсортированном списке."""
+    projects = await project_manager.scan_available_projects()
+    if project_number < 1 or project_number > len(projects):
+        return None
+    return projects[project_number - 1]
+
+
+def _format_switch_result_message(
+    result: project_manager.SwitchResult, project_name: str
+) -> str:
+    """Формирует текст ответа пользователю по результату переключения проекта."""
+    if result.already_active:
+        return PROJECT_ALREADY_ACTIVE_TEMPLATE.format(name=project_name)
+    if result.success:
+        return PROJECT_SWITCH_SUCCESS_TEMPLATE.format(
+            name=project_name, count=result.stopped_processes_count,
+        )
+    return PROJECT_SWITCH_ERROR_TEMPLATE.format(error=result.error_message)
+
+
+async def handle_switch_project(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик команды /pN — переключает бот на проект по номеру."""
+    if not _check_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+    # Отбрасываем префикс "/p" и парсим число. Регулярное выражение в хендлере
+    # гарантирует, что текст имеет вид /p<digits> — ошибки int() быть не может
+    project_number = int(update.message.text[2:])
+
+    target_project = await _resolve_project_by_number(project_number)
+    if target_project is None:
+        message = INVALID_PROJECT_NUMBER_TEMPLATE.format(number=project_number)
+        await _send_telegram_message(chat_id, message, parse_mode=None)
+        return
+
+    result = await project_manager.switch_project(target_project.absolute_path)
+    response_text = _format_switch_result_message(result, target_project.name)
+    await _send_telegram_message(chat_id, response_text, parse_mode=None)
+
+
 async def handle_switch_session(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -761,8 +860,14 @@ def _register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("sessions", handle_sessions))
     application.add_handler(CommandHandler("stop", handle_stop))
     application.add_handler(CommandHandler("all", handle_all))
+    application.add_handler(CommandHandler("projects", handle_projects))
     application.add_handler(
         MessageHandler(filters.Regex(r"^/\d+$"), handle_switch_session)
+    )
+    # Обработчик /pN — переключение проекта. Должен быть зарегистрирован
+    # до общего TEXT-обработчика, чтобы не перехватывался handle_message
+    application.add_handler(
+        MessageHandler(filters.Regex(r"^/p\d+$"), handle_switch_project)
     )
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)

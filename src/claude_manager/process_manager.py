@@ -8,6 +8,7 @@
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -99,18 +100,12 @@ _busy_flags: dict[str, bool] = {}
 # События отмены для прерывания ретраев через /stop
 _stop_events: dict[str, asyncio.Event] = {}
 
-# Счётчик для генерации временных session_id
-_temp_session_counter: int = 0
-
-
 # --- Внутренние функции ---
 
 
 def _generate_temp_session_id() -> str:
     """Генерирует уникальный временный идентификатор сессии."""
-    global _temp_session_counter
-    _temp_session_counter += 1
-    return f"{TEMP_SESSION_PREFIX}{_temp_session_counter:04d}"
+    return f"{TEMP_SESSION_PREFIX}{uuid.uuid4().hex[:12]}"
 
 
 def _extract_progress_text(event: dict) -> str | None:
@@ -122,7 +117,7 @@ def _extract_progress_text(event: dict) -> str | None:
 
     for block in content_blocks:
         if block.get("type") == "thinking":
-            return block.get("text")
+            return block.get("thinking")
 
     return None
 
@@ -176,6 +171,18 @@ async def _handle_progress_event(
     return last_progress_time
 
 
+async def _read_stderr(claude_process: ClaudeProcess) -> str:
+    """Читает stderr процесса Claude — там может быть причина падения."""
+    stderr_max_length = 500
+    try:
+        if claude_process.process.stderr is None:
+            return ""
+        raw = await claude_process.process.stderr.read(stderr_max_length)
+        return raw.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
 async def _process_events(
     claude_process: ClaudeProcess,
     session_id: str,
@@ -205,13 +212,19 @@ async def _process_events(
             got_result = True
 
     if not got_result:
+        # Читаем stderr — там может быть реальная причина падения Claude CLI
+        stderr_text = await _read_stderr(claude_process)
+        stderr_info = f" stderr: {stderr_text}" if stderr_text else ""
         logger.warning(
-            "Процесс Claude завершился без события result: session_id=%s",
-            session_id,
+            "Процесс Claude завершился без события result: session_id=%s%s",
+            session_id, stderr_info,
         )
+        # Если есть текст ошибки из stderr — показываем его пользователю
+        if stderr_text:
+            result_text = stderr_text
 
     return SendResult(
-        text=result_text if got_result else "",
+        text=result_text if got_result else result_text,
         session_id=final_session_id,
         is_error=is_error or not got_result,
         retries_used=0,
@@ -471,6 +484,26 @@ async def stop_process(session_id: str) -> StopResult:
     )
 
     return StopResult(was_running=was_running, was_retrying=was_retrying)
+
+
+async def stop_all_processes() -> int:
+    """Останавливает все запущенные процессы Claude и возвращает количество остановленных."""
+    # Копируем ключи в список, чтобы итерация не конфликтовала с модификацией _processes
+    session_ids = list(_processes.keys())
+    stopped_count = 0
+
+    for session_id in session_ids:
+        try:
+            await stop_process(session_id)
+            stopped_count += 1
+        except Exception:
+            # Ошибка при остановке одного процесса не должна прерывать остановку остальных
+            logger.error(
+                "Ошибка при остановке процесса %s", session_id, exc_info=True,
+            )
+
+    logger.info("Остановлено процессов Claude: %d", stopped_count)
+    return stopped_count
 
 
 def is_busy(session_id: str) -> bool:

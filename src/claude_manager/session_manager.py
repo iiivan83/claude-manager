@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,9 +26,6 @@ BINDINGS_TEMP_SUFFIX = ".tmp"
 # Префикс временных session_id (для новых сессий до получения реального ID)
 TEMP_SESSION_PREFIX = "_new_"
 
-# Ширина числовой части временного session_id (количество цифр с нулями)
-TEMP_SESSION_ID_WIDTH = 4
-
 # Внутреннее состояние: привязки {chat_id: session_id}
 _bindings: dict[int, str] = {}
 
@@ -36,10 +34,6 @@ _lock = asyncio.Lock()
 
 # Путь к файлу привязок (заполняется при load_bindings)
 _bindings_path: Path | None = None
-
-# Счётчик для генерации временных session_id
-_temp_counter: int = 0
-
 
 @dataclass
 class SwitchResult:
@@ -60,10 +54,8 @@ class NewSessionResult:
 
 
 def _generate_temp_session_id() -> str:
-    """Генерирует уникальный временный ID вида _new_XXXX."""
-    global _temp_counter
-    _temp_counter += 1
-    return f"{TEMP_SESSION_PREFIX}{_temp_counter:0{TEMP_SESSION_ID_WIDTH}d}"
+    """Генерирует уникальный временный ID вида _new_<uuid>."""
+    return f"{TEMP_SESSION_PREFIX}{uuid.uuid4().hex[:12]}"
 
 
 async def _save_bindings() -> None:
@@ -230,3 +222,20 @@ async def load_bindings() -> None:
 def get_all_bindings() -> dict[int, str]:
     """Возвращает копию всех привязок {chat_id: session_id}."""
     return dict(_bindings)
+
+
+async def reset_state() -> None:
+    """Сбрасывает привязки и путь к файлу, перезагружает данные из нового WORKING_DIR."""
+    global _bindings, _bindings_path
+
+    # Очищаем состояние под блокировкой, чтобы не конфликтовать с параллельными операциями.
+    # load_bindings будет вызвана ниже без блокировки — она сама не использует _lock,
+    # а save_bindings внутри неё не вызывается (load только читает).
+    async with _lock:
+        _bindings = {}
+        # Сбрасываем кэшированный путь — иначе load_bindings продолжит читать старый файл
+        _bindings_path = None
+
+    # Повторно загружаем привязки — функция пересчитает _bindings_path из текущего config.WORKING_DIR
+    await load_bindings()
+    logger.info("Состояние session_manager сброшено и перезагружено")

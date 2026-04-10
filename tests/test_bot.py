@@ -20,10 +20,16 @@ from claude_manager import (
 )
 from claude_manager.bot import (
     BOT_COMMANDS,
+    EMPTY_PROJECTS_TEMPLATE,
     EMPTY_RESPONSE_TEXT,
     IMAGE_EXTENSIONS,
+    INVALID_PROJECT_NUMBER_TEMPLATE,
     MONITORING_MODE_MESSAGE,
     NO_RESPONSE_MARKER,
+    PROJECT_ALREADY_ACTIVE_TEMPLATE,
+    PROJECT_CURRENT_MARKER,
+    PROJECT_SWITCH_ERROR_TEMPLATE,
+    PROJECT_SWITCH_SUCCESS_TEMPLATE,
     RECEIVED_FILES_DIR,
     RECEIVED_FILES_MAX_AGE_DAYS,
     SECONDS_PER_DAY,
@@ -41,14 +47,17 @@ from claude_manager.bot import (
     handle_message,
     handle_new,
     handle_photo,
+    handle_projects,
     handle_sessions,
     handle_stop,
+    handle_switch_project,
     handle_switch_session,
     post_init,
     send_response,
     send_watcher_message,
     setup_bot,
 )
+from claude_manager import project_manager
 import claude_manager.bot as bot_module
 import claude_manager.config as config_module
 from claude_manager.process_manager import (
@@ -267,7 +276,7 @@ class TestHandleNew:
     ) -> None:
         """Команда /new создаёт сессию и отправляет подтверждение."""
         mock_create_session.return_value = NewSessionResult(
-            session_id="_new_0001", day_number=1
+            session_id="_new_abc123def456", day_number=1
         )
 
         update = _make_update(text="/new")
@@ -1062,3 +1071,250 @@ class TestFindSessionByNumber:
         result = await _find_session_by_number(5)
         assert result == TEST_SESSION_ID
         mock_register.assert_called()
+
+
+# --- Тесты команды /projects ---
+
+
+def _make_project_info(
+    name: str, path: str = "/tmp/fake", is_current: bool = False
+) -> project_manager.ProjectInfo:
+    """Вспомогательная функция для создания ProjectInfo в тестах."""
+    return project_manager.ProjectInfo(
+        name=name,
+        absolute_path=path,
+        is_current=is_current,
+    )
+
+
+class TestHandleProjects:
+    """Тесты обработчика команды /projects."""
+
+    @pytest.mark.asyncio()
+    async def test_access_denied_for_unauthorized(self) -> None:
+        """Неавторизованный пользователь не получает список проектов."""
+        update = _make_update(user_id=DENIED_USER_ID)
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "scan_available_projects", new_callable=AsyncMock
+        ) as mock_scan:
+            await handle_projects(update, context)
+            mock_scan.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_empty_list_message(self) -> None:
+        """Пустой список проектов → отправляется сообщение EMPTY_PROJECTS_TEMPLATE."""
+        update = _make_update()
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=[]),
+        ), patch.object(config_module, "PROJECTS_ROOT_DIR", "/fake/root"):
+            await handle_projects(update, context)
+
+        sent = bot_module._application.bot.send_message.call_args
+        assert "/fake/root" in sent.args[1]
+
+    @pytest.mark.asyncio()
+    async def test_shows_all_projects(self) -> None:
+        """Список проектов отображается со всеми именами и командами /pN."""
+        projects = [
+            _make_project_info("alpha"),
+            _make_project_info("beta"),
+            _make_project_info("gamma"),
+        ]
+        update = _make_update()
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ):
+            await handle_projects(update, context)
+
+        sent_text = bot_module._application.bot.send_message.call_args.args[1]
+        assert "/p1" in sent_text
+        assert "alpha" in sent_text
+        assert "/p2" in sent_text
+        assert "beta" in sent_text
+        assert "/p3" in sent_text
+        assert "gamma" in sent_text
+
+    @pytest.mark.asyncio()
+    async def test_marks_current_project(self) -> None:
+        """Текущий проект помечается маркером."""
+        projects = [
+            _make_project_info("alpha"),
+            _make_project_info("beta", is_current=True),
+        ]
+        update = _make_update()
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ):
+            await handle_projects(update, context)
+
+        sent_text = bot_module._application.bot.send_message.call_args.args[1]
+        # Маркер появляется только в строке с beta
+        lines = sent_text.split("\n")
+        beta_line = next(line for line in lines if "beta" in line)
+        alpha_line = next(line for line in lines if "alpha" in line)
+        assert PROJECT_CURRENT_MARKER in beta_line
+        assert PROJECT_CURRENT_MARKER not in alpha_line
+
+    @pytest.mark.asyncio()
+    async def test_sends_as_plain_text(self) -> None:
+        """Список отправляется с parse_mode=None для кликабельности команд."""
+        projects = [_make_project_info("alpha")]
+        update = _make_update()
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ):
+            await handle_projects(update, context)
+
+        call_kwargs = bot_module._application.bot.send_message.call_args.kwargs
+        assert call_kwargs.get("parse_mode") is None
+
+
+# --- Тесты команды /pN ---
+
+
+class TestHandleSwitchProject:
+    """Тесты обработчика команды /pN для переключения проектов."""
+
+    @pytest.mark.asyncio()
+    async def test_access_denied_for_unauthorized(self) -> None:
+        """Неавторизованный пользователь не может переключить проект."""
+        update = _make_update(text="/p1", user_id=DENIED_USER_ID)
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "switch_project", new_callable=AsyncMock
+        ) as mock_switch:
+            await handle_switch_project(update, context)
+            mock_switch.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_valid_number_calls_switch(self) -> None:
+        """Валидный номер вызывает project_manager.switch_project с правильным путём."""
+        projects = [_make_project_info("alpha", path="/fake/alpha")]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=False,
+            old_path="/fake/old", new_path="/fake/alpha",
+            stopped_processes_count=2, error_message="",
+        )
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ) as mock_switch:
+            await handle_switch_project(update, context)
+
+        mock_switch.assert_awaited_once_with("/fake/alpha")
+
+    @pytest.mark.asyncio()
+    async def test_invalid_number_shows_error(self) -> None:
+        """Номер вне диапазона — отправляется INVALID_PROJECT_NUMBER_TEMPLATE."""
+        projects = [_make_project_info("alpha")]
+        update = _make_update(text="/p99")
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ):
+            await handle_switch_project(update, context)
+
+        sent = bot_module._application.bot.send_message.call_args.args[1]
+        assert "99" in sent
+
+    @pytest.mark.asyncio()
+    async def test_already_active_shows_message(self) -> None:
+        """already_active=True → сообщение PROJECT_ALREADY_ACTIVE_TEMPLATE."""
+        projects = [_make_project_info("alpha", path="/fake/alpha", is_current=True)]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=True,
+            old_path="/fake/alpha", new_path="/fake/alpha",
+            stopped_processes_count=0, error_message="",
+        )
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ):
+            await handle_switch_project(update, context)
+
+        sent = bot_module._application.bot.send_message.call_args.args[1]
+        assert "alpha" in sent
+        assert "уже" in sent.lower() or "Уже" in sent
+
+    @pytest.mark.asyncio()
+    async def test_success_message_includes_name_and_count(self) -> None:
+        """Успешное переключение → сообщение с именем проекта и количеством остановленных."""
+        projects = [_make_project_info("beta", path="/fake/beta")]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=False,
+            old_path="/fake/alpha", new_path="/fake/beta",
+            stopped_processes_count=5, error_message="",
+        )
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ):
+            await handle_switch_project(update, context)
+
+        sent = bot_module._application.bot.send_message.call_args.args[1]
+        assert "beta" in sent
+        assert "5" in sent
+
+    @pytest.mark.asyncio()
+    async def test_error_shows_error_message(self) -> None:
+        """success=False → сообщение с причиной ошибки."""
+        projects = [_make_project_info("beta", path="/fake/beta")]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+
+        switch_result = project_manager.SwitchResult(
+            success=False, already_active=False,
+            old_path="/fake/alpha", new_path="/fake/beta",
+            stopped_processes_count=0,
+            error_message="Нет прав на чтение папки",
+        )
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ):
+            await handle_switch_project(update, context)
+
+        sent = bot_module._application.bot.send_message.call_args.args[1]
+        assert "Нет прав" in sent

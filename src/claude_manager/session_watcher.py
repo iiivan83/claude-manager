@@ -237,6 +237,15 @@ async def resume_session(session_id: str) -> None:
     )
 
 
+def reset_state() -> None:
+    """Очищает счётчики обработанных сообщений и список приостановленных сессий."""
+    # Используем .clear() вместо присваивания — ссылки на словари остаются валидными,
+    # это безопасно для модулей, которые могли сохранить ссылку
+    _seen_message_counts.clear()
+    _paused_sessions.clear()
+    logger.info("Состояние session_watcher сброшено для переключения проекта")
+
+
 def update_session_id(old_session_id: str, new_session_id: str) -> None:
     """Переносит внутреннее состояние со старого session_id на новый."""
     if old_session_id not in _seen_message_counts and old_session_id not in _paused_sessions:

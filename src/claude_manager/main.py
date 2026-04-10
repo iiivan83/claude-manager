@@ -4,13 +4,14 @@
 восстанавливает сохранённое состояние сессий и запускает Telegram-опрос.
 """
 
+import asyncio
 import fcntl
 import io
 import logging
 import os
 import sys
 
-from claude_manager import bot, config
+from claude_manager import bot, config, project_manager
 from claude_manager.config import ConfigError
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,23 @@ def _run_bot() -> None:
         )
 
 
+def _restore_last_selected_project() -> None:
+    """Пытается восстановить последний выбранный проект и обновить config.WORKING_DIR."""
+    try:
+        last_project = asyncio.run(project_manager.load_last_selected_project())
+    except Exception:
+        logger.warning(
+            "Не удалось восстановить последний выбранный проект, "
+            "используется значение из .env",
+            exc_info=True,
+        )
+        return
+
+    if last_project is not None:
+        config.WORKING_DIR = last_project
+        logger.info("Восстановлен последний проект: %s", last_project)
+
+
 def main() -> None:
     """Главная функция — точка входа приложения."""
     _setup_logging()
@@ -94,6 +112,10 @@ def main() -> None:
     except ConfigError as error:
         logger.error("Ошибка конфигурации: %s", error)
         sys.exit(1)
+
+    # После загрузки .env пытаемся восстановить последний выбранный проект.
+    # Если файл есть и путь валиден — обновляем WORKING_DIR. Иначе остаёмся на .env.
+    _restore_last_selected_project()
 
     lock_file = _acquire_lock()
     if lock_file is None:

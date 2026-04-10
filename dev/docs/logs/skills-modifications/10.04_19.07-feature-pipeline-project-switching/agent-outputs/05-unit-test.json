@@ -1,0 +1,15 @@
+{
+  "agent": "feature-unit-test",
+  "status": "success",
+  "timestamp": "2026-04-10T19:55:30+05:00",
+  "result": {
+    "total_tests": 459,
+    "passed": 459,
+    "failed": 0,
+    "skipped": 0,
+    "failures": [],
+    "fix_cycles_used": 0,
+    "needs_rollback": false,
+    "notes": "Прогон всех тестов проекта (включая юнит, модульные и интеграционные): 459 passed, 0 failed, 0 skipped. До фичи было 384 теста — добавлено 75 новых. Из 75 новых: 23 на project_manager, 8 на config (PROJECTS_ROOT_DIR), 5 на process_manager (stop_all_processes), 3 на session_manager (reset_state), 4 на daily_session_registry (reset_state), 3 на session_watcher (reset_state), 11 на bot (handle_projects + handle_switch_project), 3 на main (_restore_last_selected_project), 5 в интеграционных. Затраты времени на прогон — около 16 секунд. Есть 3 предупреждения о deprecated retry_after в существующих тестах — не связаны с фичей."
+  }
+}

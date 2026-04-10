@@ -206,3 +206,20 @@ async def load_registry() -> None:
         _loaded_from_disk = False
 
     _ensure_today_registry()
+
+
+async def reset_state() -> None:
+    """Сбрасывает реестр и путь к файлу, перезагружает данные из нового WORKING_DIR."""
+    global _registry, _registry_path, _loaded_from_disk
+
+    # Сбрасываем состояние под блокировкой.
+    # Флаг _loaded_from_disk критично сбросить в False: иначе _save_registry
+    # продолжит считать, что данные корректны, и запишет пустой реестр в новый файл.
+    async with _lock:
+        _registry = {}
+        _registry_path = None
+        _loaded_from_disk = False
+
+    # Повторно загружаем реестр — пересчитает _registry_path и установит _loaded_from_disk
+    await load_registry()
+    logger.info("Состояние daily_session_registry сброшено и перезагружено")

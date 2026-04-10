@@ -8,8 +8,10 @@ from unittest.mock import patch
 import pytest
 
 from claude_manager.config import (
+    DEFAULT_PROJECTS_ROOT,
     ConfigError,
     _parse_allowed_user_ids,
+    _resolve_projects_root,
     _resolve_working_dir,
     load_config,
 )
@@ -31,6 +33,7 @@ def _make_env(
     token: str | None = FAKE_BOT_TOKEN,
     user_ids: str | None = FAKE_USER_ID,
     working_dir: str | None = None,
+    projects_root: str | None = None,
 ) -> dict[str, str]:
     """Собирает словарь переменных окружения для теста."""
     env = {}
@@ -40,6 +43,8 @@ def _make_env(
         env["ALLOWED_USER_IDS"] = user_ids
     if working_dir is not None:
         env["CLAUDE_WORKING_DIR"] = working_dir
+    if projects_root is not None:
+        env["PROJECTS_ROOT_DIR"] = projects_root
     return env
 
 
@@ -238,5 +243,81 @@ class TestConfigErrors:
         try:
             with pytest.raises(ConfigError, match="несуществующую директорию"):
                 _resolve_working_dir(temp_path)
+        finally:
+            os.unlink(temp_path)
+
+
+# --- Тесты новой переменной PROJECTS_ROOT_DIR ---
+
+
+class TestResolveProjectsRoot:
+    """Тесты определения корневой папки проектов."""
+
+    def test_absolute_path(self) -> None:
+        """Абсолютный путь к существующей директории принимается как есть."""
+        assert _resolve_projects_root("/tmp") == "/tmp"
+
+    def test_none_returns_default(self) -> None:
+        """None — возвращается значение по умолчанию (если оно существует на машине)."""
+        # На тестовой машине DEFAULT_PROJECTS_ROOT может не существовать — проверяем через patch
+        with patch("claude_manager.config.os.path.isdir", return_value=True):
+            result = _resolve_projects_root(None)
+            assert result == os.path.abspath(DEFAULT_PROJECTS_ROOT)
+
+    def test_empty_returns_default(self) -> None:
+        """Пустая строка — возвращается значение по умолчанию."""
+        with patch("claude_manager.config.os.path.isdir", return_value=True):
+            result = _resolve_projects_root("")
+            assert result == os.path.abspath(DEFAULT_PROJECTS_ROOT)
+
+    def test_nonexistent_raises_error(self) -> None:
+        """Несуществующая директория — ConfigError с понятным сообщением."""
+        nonexistent_path = "/path/that/definitely/does/not/exist"
+        with pytest.raises(ConfigError, match="несуществующую директорию"):
+            _resolve_projects_root(nonexistent_path)
+
+
+class TestLoadConfigProjectsRoot:
+    """Тесты интеграции PROJECTS_ROOT_DIR в load_config."""
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_projects_root_from_env(self, mock_dotenv: object) -> None:
+        """Значение PROJECTS_ROOT_DIR читается из переменной окружения."""
+        env = _make_env(working_dir="/tmp", projects_root="/tmp")
+        with patch.dict(os.environ, env, clear=True):
+            load_config()
+            assert config.PROJECTS_ROOT_DIR == "/tmp"
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_projects_root_default_when_missing(self, mock_dotenv: object) -> None:
+        """Без PROJECTS_ROOT_DIR используется значение по умолчанию."""
+        env = _make_env(working_dir="/tmp")
+        with patch.dict(os.environ, env, clear=True), \
+             patch("claude_manager.config.os.path.isdir", return_value=True):
+            load_config()
+            # Путь совпадает с default после нормализации
+            assert config.PROJECTS_ROOT_DIR == os.path.abspath(DEFAULT_PROJECTS_ROOT)
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_projects_root_nonexistent_raises(self, mock_dotenv: object) -> None:
+        """Явно указанный несуществующий путь PROJECTS_ROOT_DIR — ConfigError."""
+        env = _make_env(
+            working_dir="/tmp",
+            projects_root="/path/that/definitely/does/not/exist",
+        )
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ConfigError, match="PROJECTS_ROOT_DIR"):
+                load_config()
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_projects_root_is_file_not_directory(self, mock_dotenv: object) -> None:
+        """Путь к файлу вместо директории — ConfigError."""
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as temp_file:
+            temp_path = temp_file.name
+        try:
+            env = _make_env(working_dir="/tmp", projects_root=temp_path)
+            with patch.dict(os.environ, env, clear=True):
+                with pytest.raises(ConfigError, match="PROJECTS_ROOT_DIR"):
+                    load_config()
         finally:
             os.unlink(temp_path)

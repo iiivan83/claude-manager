@@ -18,6 +18,7 @@ from claude_manager.daily_session_registry import (
     get_session_id_by_number,
     load_registry,
     register_session,
+    reset_state,
     update_session_id,
 )
 
@@ -401,3 +402,65 @@ class TestErrors:
         # Оригинальный файл не повреждён (ни write_text, ни os.replace не вызывались)
         saved_content = registry_file.read_text("utf-8")
         assert saved_content == original_content
+
+
+class TestResetState:
+    """Тесты сброса состояния daily_session_registry при переключении проекта."""
+
+    @pytest.mark.asyncio()
+    async def test_reset_clears_registry(self, tmp_path: Path) -> None:
+        """После reset_state реестр сброшен и перезагружен из текущего WORKING_DIR."""
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+            await register_session("old-session")
+            assert len(await get_all_today_sessions()) >= 1
+
+            await reset_state()
+            # Файл существует — реестр перезагрузится с той же сессией
+            sessions = await get_all_today_sessions()
+            assert "old-session" in sessions.values()
+
+    @pytest.mark.asyncio()
+    async def test_reset_reloads_from_new_path(self, tmp_path: Path) -> None:
+        """reset_state после смены WORKING_DIR читает новый файл реестра."""
+        project_a = tmp_path / "project_a"
+        project_b = tmp_path / "project_b"
+        project_a.mkdir()
+        project_b.mkdir()
+
+        with patch("claude_manager.config.WORKING_DIR", str(project_a)):
+            await register_session("session-in-a")
+
+        with patch("claude_manager.config.WORKING_DIR", str(project_b)):
+            await reset_state()
+            sessions = await get_all_today_sessions()
+            assert "session-in-a" not in sessions.values()
+
+    @pytest.mark.asyncio()
+    async def test_reset_preserves_save_capability(self, tmp_path: Path) -> None:
+        """После reset_state можно снова регистрировать сессии — _loaded_from_disk восстановлен."""
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+            await reset_state()
+            # Должно корректно зарегистрировать сессию и записать файл
+            await register_session("after-reset")
+            registry_file = tmp_path / REGISTRY_FILENAME
+            assert registry_file.exists()
+
+    @pytest.mark.asyncio()
+    async def test_reset_resets_internal_path(self, tmp_path: Path) -> None:
+        """После reset_state путь к файлу пересчитывается из нового WORKING_DIR."""
+        project_a = tmp_path / "project_a"
+        project_b = tmp_path / "project_b"
+        project_a.mkdir()
+        project_b.mkdir()
+
+        with patch("claude_manager.config.WORKING_DIR", str(project_a)):
+            await load_registry()
+
+        with patch("claude_manager.config.WORKING_DIR", str(project_b)):
+            await reset_state()
+            await register_session("new-in-b")
+
+            registry_in_b = project_b / REGISTRY_FILENAME
+            assert registry_in_b.exists()
+            content_b = json.loads(registry_in_b.read_text("utf-8"))
+            assert "new-in-b" in str(content_b)

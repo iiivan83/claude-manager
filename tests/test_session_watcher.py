@@ -1214,3 +1214,38 @@ class TestErrorHandling:
 
         # callback не вызван — ошибка произошла до вызова callback
         mock_callback.assert_not_called()
+
+
+class TestResetState:
+    """Тесты сброса состояния watcher при переключении проекта."""
+
+    def test_reset_clears_seen_counts(self) -> None:
+        """После reset_state словарь _seen_message_counts пуст."""
+        session_watcher._seen_message_counts.clear()
+        session_watcher._seen_message_counts["sess-1"] = 5
+        session_watcher._seen_message_counts["sess-2"] = 10
+
+        session_watcher.reset_state()
+
+        assert len(session_watcher._seen_message_counts) == 0
+
+    def test_reset_clears_paused_sessions(self) -> None:
+        """После reset_state set _paused_sessions пуст."""
+        session_watcher._paused_sessions.clear()
+        session_watcher._paused_sessions.add("sess-paused-1")
+        session_watcher._paused_sessions.add("sess-paused-2")
+
+        session_watcher.reset_state()
+
+        assert len(session_watcher._paused_sessions) == 0
+
+    def test_reset_state_keeps_dict_identity(self) -> None:
+        """reset_state использует clear(), а не пересоздание — ссылки остаются валидными."""
+        original_counts = session_watcher._seen_message_counts
+        original_paused = session_watcher._paused_sessions
+
+        session_watcher.reset_state()
+
+        # Те же объекты в памяти — значит clear(), а не новый dict/set
+        assert session_watcher._seen_message_counts is original_counts
+        assert session_watcher._paused_sessions is original_paused

@@ -7,14 +7,16 @@
 import fcntl
 import logging
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from claude_manager import config
 from claude_manager.config import ConfigError
 from claude_manager.main import (
     LOCK_PATH,
     _acquire_lock,
+    _restore_last_selected_project,
     _run_bot,
     _setup_logging,
     main,
@@ -270,4 +272,58 @@ class TestEdgeCases:
             assert second_lock is None
 
             first_lock.close()
+
+
+# --- Тесты восстановления последнего выбранного проекта ---
+
+
+class TestRestoreLastSelectedProject:
+    """Тесты функции _restore_last_selected_project."""
+
+    def test_updates_working_dir_on_valid_last_project(self, tmp_path) -> None:
+        """Если load_last_selected_project вернул путь — config.WORKING_DIR обновляется."""
+        target_path = str(tmp_path / "some_project")
+
+        original_working_dir = config.WORKING_DIR
+        try:
+            with patch(
+                "claude_manager.main.project_manager.load_last_selected_project",
+                new=AsyncMock(return_value=target_path),
+            ):
+                _restore_last_selected_project()
+
+            assert config.WORKING_DIR == target_path
+        finally:
+            config.WORKING_DIR = original_working_dir
+
+    def test_keeps_working_dir_when_no_last_project(self, tmp_path) -> None:
+        """Если последний проект не сохранён (None) — WORKING_DIR остаётся как был."""
+        original_working_dir = config.WORKING_DIR
+        config.WORKING_DIR = str(tmp_path)
+        try:
+            with patch(
+                "claude_manager.main.project_manager.load_last_selected_project",
+                new=AsyncMock(return_value=None),
+            ):
+                _restore_last_selected_project()
+
+            assert config.WORKING_DIR == str(tmp_path)
+        finally:
+            config.WORKING_DIR = original_working_dir
+
+    def test_continues_on_load_exception(self, tmp_path) -> None:
+        """При ошибке в load_last_selected_project main не падает, WORKING_DIR не меняется."""
+        original_working_dir = config.WORKING_DIR
+        config.WORKING_DIR = str(tmp_path)
+        try:
+            with patch(
+                "claude_manager.main.project_manager.load_last_selected_project",
+                new=AsyncMock(side_effect=RuntimeError("bang")),
+            ):
+                # Не должно упасть
+                _restore_last_selected_project()
+
+            assert config.WORKING_DIR == str(tmp_path)
+        finally:
+            config.WORKING_DIR = original_working_dir
 

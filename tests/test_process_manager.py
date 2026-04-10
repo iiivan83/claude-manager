@@ -25,6 +25,7 @@ from claude_manager.process_manager import (
     has_process,
     is_busy,
     send_message,
+    stop_all_processes,
     stop_process,
     update_session_id,
 )
@@ -40,12 +41,10 @@ def reset_module_state():
     pm_module._processes.clear()
     pm_module._busy_flags.clear()
     pm_module._stop_events.clear()
-    pm_module._temp_session_counter = 0
     yield
     pm_module._processes.clear()
     pm_module._busy_flags.clear()
     pm_module._stop_events.clear()
-    pm_module._temp_session_counter = 0
 
 
 def _make_mock_subprocess(pid: int = 42) -> MagicMock:
@@ -88,15 +87,17 @@ def _make_claude_process(
 # --- Юнит-тесты: _generate_temp_session_id ---
 
 
-def test_generate_temp_session_id_sequential():
-    """Временные ID генерируются последовательно."""
+def test_generate_temp_session_id_unique():
+    """Временные ID уникальны (UUID, не счётчик)."""
     first = _generate_temp_session_id()
     second = _generate_temp_session_id()
     third = _generate_temp_session_id()
 
-    assert first == "_new_0001"
-    assert second == "_new_0002"
-    assert third == "_new_0003"
+    assert first.startswith("_new_")
+    assert second.startswith("_new_")
+    assert third.startswith("_new_")
+    # Все три уникальны
+    assert len({first, second, third}) == 3
 
 
 # --- Юнит-тесты: _extract_result_text ---
@@ -153,7 +154,7 @@ def test_extract_progress_text_thinking():
         "message": {
             "role": "assistant",
             "content": [
-                {"type": "thinking", "text": "Сначала прочитаю файл..."},
+                {"type": "thinking", "thinking": "Сначала прочитаю файл..."},
             ],
         },
     }
@@ -263,7 +264,7 @@ async def test_create_process_with_temp_id_starts_without_resume(mock_start):
     """Процесс с временным ID (_new_XXXX) запускается без --resume."""
     mock_process = _make_claude_process()
     mock_start.return_value = mock_process
-    temp_id = "_new_0042"
+    temp_id = "_new_test0042abc"
 
     session_id = await create_process(session_id=temp_id)
 
@@ -336,7 +337,7 @@ async def test_send_message_with_progress(mock_start):
             "message": {
                 "role": "assistant",
                 "content": [
-                    {"type": "thinking", "text": "Анализирую файл..."},
+                    {"type": "thinking", "thinking": "Анализирую файл..."},
                 ],
             },
             "session_id": "abc-123",
@@ -555,7 +556,7 @@ async def test_progress_throttle_blocks_fast_updates(mock_start):
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "content": [{"type": "thinking", "text": "Первая мысль"}],
+                "content": [{"type": "thinking", "thinking": "Первая мысль"}],
             },
             "session_id": "abc-123",
         },
@@ -563,7 +564,7 @@ async def test_progress_throttle_blocks_fast_updates(mock_start):
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "content": [{"type": "thinking", "text": "Вторая мысль"}],
+                "content": [{"type": "thinking", "thinking": "Вторая мысль"}],
             },
             "session_id": "abc-123",
         },
@@ -598,7 +599,7 @@ async def test_progress_throttle_allows_after_interval(mock_start):
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "content": [{"type": "thinking", "text": "Первая мысль"}],
+                "content": [{"type": "thinking", "thinking": "Первая мысль"}],
             },
             "session_id": "abc-123",
         },
@@ -606,7 +607,7 @@ async def test_progress_throttle_allows_after_interval(mock_start):
             "type": "assistant",
             "message": {
                 "role": "assistant",
-                "content": [{"type": "thinking", "text": "Вторая мысль"}],
+                "content": [{"type": "thinking", "thinking": "Вторая мысль"}],
             },
             "session_id": "abc-123",
         },
@@ -624,15 +625,10 @@ async def test_progress_throttle_allows_after_interval(mock_start):
     session_id = await create_process(session_id=None)
     progress_mock = AsyncMock()
 
-    # Подменяем time.monotonic, чтобы имитировать прошедшие 31 секунду
-    # _should_send_progress(0.0) -> True (первый раз)
-    # time.monotonic() при обновлении last_progress_time -> 1000.0
-    # _should_send_progress(1000.0) -> проверяет monotonic() - 1000.0 >= 30
-    #   -> monotonic() возвращает 1031.0 -> True
-    # time.monotonic() при обновлении last_progress_time -> 1031.0
-    monotonic_values = iter([1000.0, 1031.0, 1031.0])
-
-    with patch("claude_manager.process_manager.time.monotonic", side_effect=monotonic_values):
+    # Патчим _should_send_progress напрямую (всегда True), а не time.monotonic.
+    # Причина: asyncio.wait_for (добавленный в claude_runner) тоже вызывает
+    # time.monotonic() внутри, поэтому глобальный патч time.monotonic ломает asyncio.
+    with patch.object(pm_module, "_should_send_progress", return_value=True):
         await send_message(session_id, "Привет", progress_callback=progress_mock)
 
     # Оба обновления должны быть отправлены
@@ -936,3 +932,81 @@ async def test_is_busy_during_request(mock_start):
         await send_message(session_id, "Привет")
 
     assert busy_checked is True
+
+
+# --- Тесты stop_all_processes ---
+
+
+class TestStopAllProcesses:
+    """Тесты массовой остановки всех процессов Claude."""
+
+    @pytest.mark.asyncio()
+    async def test_empty_returns_zero(self) -> None:
+        """Пустой список процессов — возвращает 0."""
+        result = await stop_all_processes()
+        assert result == 0
+
+    @pytest.mark.asyncio()
+    async def test_single_process_stopped(self) -> None:
+        """Один процесс — остановлен, возвращает 1, процесс удалён из _processes."""
+        mock_process = _make_claude_process()
+        pm_module._processes["sess-1"] = mock_process
+        pm_module._busy_flags["sess-1"] = False
+        pm_module._stop_events["sess-1"] = asyncio.Event()
+
+        result = await stop_all_processes()
+
+        assert result == 1
+        assert "sess-1" not in pm_module._processes
+
+    @pytest.mark.asyncio()
+    async def test_multiple_processes_all_stopped(self) -> None:
+        """Несколько процессов — все остановлены, возвращает правильный count."""
+        for session_id in ["sess-1", "sess-2", "sess-3"]:
+            pm_module._processes[session_id] = _make_claude_process()
+            pm_module._busy_flags[session_id] = False
+            pm_module._stop_events[session_id] = asyncio.Event()
+
+        result = await stop_all_processes()
+
+        assert result == 3
+        assert len(pm_module._processes) == 0
+        assert len(pm_module._busy_flags) == 0
+        assert len(pm_module._stop_events) == 0
+
+    @pytest.mark.asyncio()
+    async def test_error_in_one_does_not_block_others(self) -> None:
+        """Если stop_process одного процесса бросает, остальные всё равно останавливаются."""
+        # Первый процесс будет падать на terminate
+        bad_process = _make_claude_process(pid=1)
+        bad_process.process.terminate = MagicMock(side_effect=RuntimeError("boom"))
+        # terminate через await wait_for вызывает ожидание — упростим: пусть wait тоже падает
+        bad_process.process.wait = AsyncMock(side_effect=RuntimeError("boom"))
+
+        good_process = _make_claude_process(pid=2)
+        pm_module._processes["sess-bad"] = bad_process
+        pm_module._busy_flags["sess-bad"] = False
+        pm_module._stop_events["sess-bad"] = asyncio.Event()
+        pm_module._processes["sess-good"] = good_process
+        pm_module._busy_flags["sess-good"] = False
+        pm_module._stop_events["sess-good"] = asyncio.Event()
+
+        result = await stop_all_processes()
+
+        # Хороший процесс должен быть остановлен в любом случае
+        assert "sess-good" not in pm_module._processes
+        # Результат — минимум 1 успешно остановленный
+        assert result >= 1
+
+    @pytest.mark.asyncio()
+    async def test_busy_process_stopped_correctly(self) -> None:
+        """Процесс, помеченный как занятый, тоже корректно останавливается."""
+        mock_process = _make_claude_process()
+        pm_module._processes["sess-busy"] = mock_process
+        pm_module._busy_flags["sess-busy"] = True
+        pm_module._stop_events["sess-busy"] = asyncio.Event()
+
+        result = await stop_all_processes()
+
+        assert result == 1
+        assert "sess-busy" not in pm_module._processes

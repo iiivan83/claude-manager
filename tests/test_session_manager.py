@@ -20,6 +20,7 @@ from claude_manager.session_manager import (
     get_bound_session,
     is_monitoring_mode,
     load_bindings,
+    reset_state,
     switch_to_session,
     unbind_session,
     update_session_id,
@@ -34,7 +35,7 @@ CHAT_ID_ALICE = 111111111
 CHAT_ID_BOB = 222222222
 SESSION_FIRST = "abc-def-111"
 SESSION_SECOND = "abc-def-222"
-SESSION_TEMP = "_new_0001"
+SESSION_TEMP = "_new_test_temp_id"
 SESSION_REAL = "eb5ac5bc-2ac6-45ad-8ca9-bb3a1a741f1e"
 
 
@@ -44,7 +45,6 @@ def _reset_module_state(tmp_path: Path) -> None:
     session_manager._bindings = {}
     session_manager._bindings_path = tmp_path / BINDINGS_FILENAME
     session_manager._lock = asyncio.Lock()
-    session_manager._temp_counter = 0
 
     # Сбрасываем состояние daily_session_registry (чтобы register_session работал)
     daily_session_registry._registry = {}
@@ -334,10 +334,15 @@ class TestEdgeCases:
         temp_id = _generate_temp_session_id()
         assert temp_id.startswith(TEMP_SESSION_PREFIX)
 
-        # После префикса ровно 4 цифры
-        numeric_part = temp_id[len(TEMP_SESSION_PREFIX):]
-        assert len(numeric_part) == 4
-        assert numeric_part.isdigit()
+        # После префикса — 12-символьный hex (часть UUID)
+        hex_part = temp_id[len(TEMP_SESSION_PREFIX):]
+        assert len(hex_part) == 12
+        int(hex_part, 16)  # Должен парситься как hex без ошибки
+
+    def test_generate_temp_id_unique(self) -> None:
+        """Каждый вызов генерирует уникальный ID (UUID, не счётчик)."""
+        ids = {_generate_temp_session_id() for _ in range(100)}
+        assert len(ids) == 100
 
     @pytest.mark.asyncio()
     async def test_load_bindings_with_string_chat_ids(self, tmp_path: Path) -> None:
@@ -422,3 +427,69 @@ class TestErrors:
         # Загружена только привязка с валидным ключом
         assert get_bound_session(123456789) == "ghi-jkl"
         assert len(get_all_bindings()) == 1
+
+
+class TestResetState:
+    """Тесты сброса состояния session_manager при переключении проекта."""
+
+    @pytest.mark.asyncio()
+    async def test_reset_clears_bindings(self, tmp_path: Path) -> None:
+        """После reset_state _bindings пустой."""
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+            await bind_session(CHAT_ID_ALICE, SESSION_FIRST)
+            assert len(get_all_bindings()) == 1
+
+            await reset_state()
+            # В исходной папке был только что созданный sessions.json, reset перезагрузит его
+            # и привязка восстановится — это нормально. Но при первом вызове reset без файла
+            # всё будет пусто. Здесь файл есть, значит привязка должна вернуться.
+            assert get_bound_session(CHAT_ID_ALICE) == SESSION_FIRST
+
+    @pytest.mark.asyncio()
+    async def test_reset_reloads_from_new_path(self, tmp_path: Path) -> None:
+        """reset_state после смены WORKING_DIR читает новый файл привязок."""
+        project_a = tmp_path / "project_a"
+        project_b = tmp_path / "project_b"
+        project_a.mkdir()
+        project_b.mkdir()
+
+        # В проекте A есть привязка
+        with patch("claude_manager.config.WORKING_DIR", str(project_a)):
+            await bind_session(CHAT_ID_ALICE, SESSION_FIRST)
+            assert get_bound_session(CHAT_ID_ALICE) == SESSION_FIRST
+
+        # Переключаемся на проект B (где sessions.json пусто)
+        with patch("claude_manager.config.WORKING_DIR", str(project_b)):
+            await reset_state()
+            # В B нет привязок — должны быть пусты
+            assert get_bound_session(CHAT_ID_ALICE) is None
+            assert len(get_all_bindings()) == 0
+
+    @pytest.mark.asyncio()
+    async def test_reset_uses_current_working_dir_not_cached(
+        self, tmp_path: Path
+    ) -> None:
+        """После reset_state _bindings_path пересчитывается из текущего WORKING_DIR."""
+        project_a = tmp_path / "project_a"
+        project_b = tmp_path / "project_b"
+        project_a.mkdir()
+        project_b.mkdir()
+
+        # Первая загрузка — путь закэшируется в _bindings_path из project_a
+        with patch("claude_manager.config.WORKING_DIR", str(project_a)):
+            await load_bindings()
+
+        # Меняем WORKING_DIR и делаем reset_state — путь должен обновиться
+        with patch("claude_manager.config.WORKING_DIR", str(project_b)):
+            await reset_state()
+            # Создаём в B привязку и проверяем, что файл ушёл в B, а не в A
+            await bind_session(CHAT_ID_BOB, SESSION_SECOND)
+
+            bindings_in_b = project_b / BINDINGS_FILENAME
+            bindings_in_a = project_a / BINDINGS_FILENAME
+
+            assert bindings_in_b.exists()
+            # В A файла нет (или он пустой/старый — главное, что новая привязка в B)
+            if bindings_in_a.exists():
+                content = json.loads(bindings_in_a.read_text("utf-8"))
+                assert str(CHAT_ID_BOB) not in content

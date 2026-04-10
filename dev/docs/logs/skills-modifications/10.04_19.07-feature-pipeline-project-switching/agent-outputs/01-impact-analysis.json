@@ -1,0 +1,356 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-10T19:15:00+05:00",
+  "result": {
+    "affected_files": [
+      {
+        "path": "src/claude_manager/project_manager.py",
+        "type": "create",
+        "reason": "Новый модуль: сканирование доступных проектов, атомарное переключение, загрузка последнего выбранного проекта при старте. Центральная точка всей фичи."
+      },
+      {
+        "path": "src/claude_manager/config.py",
+        "type": "modify",
+        "reason": "Добавить новую переменную окружения PROJECTS_ROOT_DIR (опциональная, default /Users/ivan/Desktop/claude-sandbox) и константу LAST_PROJECT_FILE (путь ~/.claude-manager-current-project). Расширить load_config и _resolve_working_dir."
+      },
+      {
+        "path": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "reason": "Добавить функцию stop_all_processes() — проходит по всем запущенным процессам Claude (_processes dict) и вызывает для каждого существующую stop_process(). Возвращает количество остановленных."
+      },
+      {
+        "path": "src/claude_manager/session_manager.py",
+        "type": "modify",
+        "reason": "Добавить функцию reset_state() — очищает _bindings dict, сбрасывает _bindings_path в None, повторно вызывает load_bindings(). Это критично: _bindings_path кэшируется при первой загрузке и без сброса не обновится после смены config.WORKING_DIR."
+      },
+      {
+        "path": "src/claude_manager/daily_session_registry.py",
+        "type": "modify",
+        "reason": "Добавить функцию reset_state() — очищает _registry dict, сбрасывает _registry_path в None, _loaded_from_disk в False, повторно вызывает load_registry(). Аналогично session_manager — путь кэшируется."
+      },
+      {
+        "path": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "reason": "Добавить функцию reset_state() — очищает _seen_message_counts и _paused_sessions. Watcher читает config.WORKING_DIR на каждой итерации, так что сама переменная обновится автоматически, но внутренние счётчики относятся к сессиям старого проекта и должны быть очищены."
+      },
+      {
+        "path": "src/claude_manager/bot.py",
+        "type": "modify",
+        "reason": "Добавить handle_projects (команда /projects) и handle_switch_project (обработчик /pN). Регистрация хендлеров в _register_handlers. Добавить пункт ('projects', 'Список проектов') в BOT_COMMANDS для меню подсказок Telegram."
+      },
+      {
+        "path": "src/claude_manager/main.py",
+        "type": "modify",
+        "reason": "После config.load_config() вызвать project_manager.load_last_selected_project(). Если возвращает валидный путь — обновить config.WORKING_DIR. Логировать итоговый выбор."
+      },
+      {
+        "path": ".env.example",
+        "type": "modify",
+        "reason": "Добавить комментарий и пример переменной PROJECTS_ROOT_DIR (закомментированный default)."
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "type": "create",
+        "reason": "Новый файл юнит-тестов для модуля project_manager: scan_available_projects (фильтры, пустая папка, ошибки прав), switch_project (валидация, path traversal, happy path, уже в проекте, откат при ошибке), load_last_selected_project (нет файла, повреждённый файл, невалидный путь, валидный путь)."
+      },
+      {
+        "path": "tests/test_config.py",
+        "type": "modify",
+        "reason": "Добавить тесты на новую переменную PROJECTS_ROOT_DIR: default-значение, валидация существования, некорректный путь."
+      },
+      {
+        "path": "tests/test_process_manager.py",
+        "type": "modify",
+        "reason": "Добавить тесты на функцию stop_all_processes: нулевой список процессов, один процесс, несколько процессов, процесс в состоянии занят."
+      },
+      {
+        "path": "tests/test_session_manager.py",
+        "type": "modify",
+        "reason": "Добавить тесты на функцию reset_state: сброс привязок, повторная загрузка из нового пути, обработка ошибок загрузки."
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "type": "modify",
+        "reason": "Добавить тесты на функцию reset_state: сброс реестра, повторная загрузка, сброс _loaded_from_disk."
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "type": "modify",
+        "reason": "Добавить тесты на функцию reset_state: очистка _seen_message_counts и _paused_sessions."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "type": "modify",
+        "reason": "Добавить тесты на handle_projects (доступ, пустой список, заполненный список, отметка текущего) и handle_switch_project (валидный номер, невалидный номер, ошибка переключения, already_active, доступ)."
+      },
+      {
+        "path": "tests/test_main.py",
+        "type": "modify",
+        "reason": "Добавить тест: main() вызывает project_manager.load_last_selected_project после load_config и обновляет WORKING_DIR при успехе."
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "type": "create",
+        "reason": "Новый интеграционный тест: полный цикл переключения между двумя временными директориями. Проверка что sessions.json и daily_sessions.json перезагружаются, что процессы останавливаются, что счётчики watcher сбрасываются."
+      },
+      {
+        "path": "dev/docs/specs/project_manager_spec.md",
+        "type": "create",
+        "reason": "Новая спецификация модуля project_manager по формату из dev/docs/specs/realised/ (разделы: назначение, обслуживаемые сценарии, публичный API, алгоритм работы, зависимости, обработка ошибок, тест-план)."
+      },
+      {
+        "path": "CLAUDE.md",
+        "type": "modify",
+        "reason": "Обновить раздел про конфигурацию: добавить PROJECTS_ROOT_DIR. Обновить структуру проекта: добавить project_manager.py. Обновить описание команд бота."
+      },
+      {
+        "path": "dev/docs/brd/brd-user-journeys.md",
+        "type": "modify",
+        "reason": "Добавить новый CJM-11: Переключение между проектами. Формат: 'Что делает пользователь', 'Что происходит внутри', 'Что видит пользователь', 'Что может пойти не так'."
+      }
+    ],
+    "affected_functions": [
+      {
+        "file": "src/claude_manager/config.py",
+        "function": "load_config",
+        "impact": "Добавить чтение переменной окружения PROJECTS_ROOT_DIR, записать в новую константу модуля PROJECTS_ROOT_DIR. Default — /Users/ivan/Desktop/claude-sandbox, если переменная не задана. Валидация: директория должна существовать."
+      },
+      {
+        "file": "src/claude_manager/config.py",
+        "function": "_resolve_working_dir (или новая _resolve_projects_root)",
+        "impact": "Логика валидации PROJECTS_ROOT_DIR идентична _resolve_working_dir — можно либо параметризовать существующую, либо добавить новую вспомогательную функцию. Решение оставить на этапе спецификации."
+      },
+      {
+        "file": "src/claude_manager/session_manager.py",
+        "function": "_bindings (модульное состояние)",
+        "impact": "Должно быть сброшено в пустой dict при reset_state. Критично: без этого привязки старого проекта останутся и будут применяться в новом."
+      },
+      {
+        "file": "src/claude_manager/session_manager.py",
+        "function": "_bindings_path (модульное состояние)",
+        "impact": "Должен быть сброшен в None. Без этого повторный вызов load_bindings будет использовать старый путь — файл sessions.json будет читаться из старого проекта и записываться туда же."
+      },
+      {
+        "file": "src/claude_manager/session_manager.py",
+        "function": "load_bindings",
+        "impact": "Функция остаётся как есть. reset_state вызывает её повторно после сброса _bindings_path — она пересчитает путь из текущего config.WORKING_DIR."
+      },
+      {
+        "file": "src/claude_manager/daily_session_registry.py",
+        "function": "_registry, _registry_path, _loaded_from_disk (модульное состояние)",
+        "impact": "Все три переменные должны быть сброшены. Особенно важен _loaded_from_disk: функция _save_registry проверяет этот флаг и отказывается писать, если состояние не было загружено. Без правильного сброса новое состояние не запишется."
+      },
+      {
+        "file": "src/claude_manager/daily_session_registry.py",
+        "function": "load_registry",
+        "impact": "Вызывается повторно из reset_state после сброса состояния. Пересчитывает _registry_path и загружает файл нового проекта."
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "function": "_seen_message_counts, _paused_sessions (модульное состояние)",
+        "impact": "Должны быть сброшены — счётчики относятся к сессиям старого проекта. При первой итерации после сброса watcher сделает initial scan нового проекта и заполнит их заново."
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "_processes, _busy_flags, _stop_events (модульное состояние)",
+        "impact": "Новая функция stop_all_processes пройдёт по всем ключам _processes и вызовет stop_process для каждого. Существующая stop_process уже корректно обрабатывает занятые процессы через _stop_events."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_register_handlers",
+        "impact": "Добавить CommandHandler('projects', handle_projects) и MessageHandler(filters.Regex(r'^/p\\d+$'), handle_switch_project). Важно: регистрация /pN должна идти ПОСЛЕ существующего regex /N (handle_switch_session), т.к. оба используют MessageHandler с Regex — но они не пересекаются (один ^/\\d+$, другой ^/p\\d+$)."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "BOT_COMMANDS",
+        "impact": "Добавить элемент ('projects', 'Список проектов для переключения'). Это обновит меню подсказок Telegram при старте бота через set_my_commands."
+      },
+      {
+        "file": "src/claude_manager/main.py",
+        "function": "main",
+        "impact": "После config.load_config() добавить строки: try: project_manager.load_last_selected_project() / except: pass. Логировать итоговый WORKING_DIR после всех манипуляций."
+      }
+    ],
+    "affected_tests": [
+      {
+        "path": "tests/test_config.py",
+        "action": "update",
+        "reason": "Добавить тесты на новую переменную PROJECTS_ROOT_DIR (успешная загрузка, default, несуществующий путь)."
+      },
+      {
+        "path": "tests/test_process_manager.py",
+        "action": "update",
+        "reason": "Добавить тесты на stop_all_processes. Существующие тесты остальных функций не затрагиваются."
+      },
+      {
+        "path": "tests/test_session_manager.py",
+        "action": "update",
+        "reason": "Добавить тесты на reset_state. Существующие тесты bind_session/switch_to_session/и т.д. не затрагиваются — они мокают config.WORKING_DIR через patch и не зависят от кэширования _bindings_path."
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "action": "update",
+        "reason": "Добавить тесты на reset_state. Существующие тесты мокают config.WORKING_DIR и работают с тестовыми tmp_path — не затрагиваются."
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "action": "update",
+        "reason": "Добавить тесты на reset_state. Существующие тесты мокают модуль config целиком через mock_config — не затрагиваются."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "action": "update",
+        "reason": "Добавить тесты на handle_projects и handle_switch_project. Существующая фикстура _setup_config сохраняет/восстанавливает WORKING_DIR — новые тесты работают в той же парадигме."
+      },
+      {
+        "path": "tests/test_main.py",
+        "action": "update",
+        "reason": "Добавить тест на загрузку последнего проекта при старте main()."
+      },
+      {
+        "path": "tests/test_claude_runner.py",
+        "action": "keep",
+        "reason": "claude_runner использует config.WORKING_DIR через runtime lookup (config.WORKING_DIR при каждом вызове) — смена значения работает без изменений. Тесты не затрагиваются."
+      },
+      {
+        "path": "tests/test_session_reader.py",
+        "action": "keep",
+        "reason": "session_reader принимает project_dir как аргумент, не читает config напрямую. Не затрагивается."
+      },
+      {
+        "path": "tests/integration/test_session_lifecycle.py",
+        "action": "keep",
+        "reason": "Тесты работают с одним проектом, не проверяют переключение. Не затрагиваются."
+      },
+      {
+        "path": "tests/integration/test_concurrent_access.py",
+        "action": "keep",
+        "reason": "Не затрагивается — тестирует конкурентный доступ к файлам в одном проекте."
+      },
+      {
+        "path": "tests/integration/test_message_path.py",
+        "action": "keep",
+        "reason": "Не затрагивается — тестирует путь сообщения в рамках одного проекта."
+      },
+      {
+        "path": "tests/integration/test_watcher_handler_coordination.py",
+        "action": "keep",
+        "reason": "Не затрагивается — тестирует координацию watcher/handler в одном проекте."
+      },
+      {
+        "path": "tests/e2e/test_session_flow.py",
+        "action": "keep",
+        "reason": "E2E тест сессий не трогает переключение проектов. Можно добавить отдельный E2E сценарий для /projects — это описано в new_tests_needed."
+      }
+    ],
+    "risk_zones": [
+      {
+        "area": "Кэширование _bindings_path в session_manager",
+        "risk_level": "high",
+        "reason": "Переменная инициализируется один раз при load_bindings. При смене config.WORKING_DIR без явного сброса _bindings_path приведёт к тому, что sessions.json нового проекта не будет использоваться — записи пойдут в старый файл. Решение: reset_state обязательно сбрасывает _bindings_path = None перед повторным load_bindings."
+      },
+      {
+        "area": "Кэширование _registry_path и флага _loaded_from_disk в daily_session_registry",
+        "risk_level": "high",
+        "reason": "Аналогично session_manager. Дополнительно: _loaded_from_disk — это защитный флаг, который блокирует запись в файл если загрузка не удалась. Если не сбросить правильно, _save_registry будет тихо ничего не делать. Решение: сбросить _loaded_from_disk в False перед повторной загрузкой, позволить load_registry самой установить его."
+      },
+      {
+        "area": "Race condition: send_message в процессе vs stop_all_processes",
+        "risk_level": "medium",
+        "reason": "Если пользователь отправил сообщение и Claude сейчас его обрабатывает, а мы вызываем stop_all_processes, то stop_process должна корректно прервать работу. Существующая stop_process уже умеет это через _stop_events. Риск снижается за счёт того, что переключение — это редкая операция, инициированная пользователем."
+      },
+      {
+        "area": "Race condition: watcher читает сессии vs reset_state очищает счётчики",
+        "risk_level": "medium",
+        "reason": "Watcher работает в фоне (asyncio task, 2 сек интервал). Если reset_state вызывается в момент, когда watcher читает _seen_message_counts, может возникнуть неконсистентное состояние. Решение: очистить внутренние словари — пересборка произойдёт на следующей итерации. В худшем случае одна итерация будет с частично старыми данными, но через 2 секунды всё восстановится."
+      },
+      {
+        "area": "Параллельные клики /p1 и /p2 от одного пользователя",
+        "risk_level": "medium",
+        "reason": "Если пользователь быстро кликнул две разные команды, они могут выполниться параллельно и состояние станет неконсистентным. Решение: asyncio.Lock внутри project_manager.switch_project — гарантирует последовательность."
+      },
+      {
+        "area": "Ошибка в середине переключения (частичное состояние)",
+        "risk_level": "high",
+        "reason": "Если stop_all_processes прошёл, но load_bindings упал (например, файл повреждён), бот останется с очищенным состоянием и без привязок. Решение: трёхфазная схема switch_project — (1) валидация, (2) сброс с сохранением старого WORKING_DIR в локальной переменной, (3) при любой ошибке во второй фазе попытаться восстановить старое состояние и вернуть error_message пользователю."
+      },
+      {
+        "area": "Символические ссылки в PROJECTS_ROOT_DIR",
+        "risk_level": "low",
+        "reason": "Если в папке есть символическая ссылка на внешнюю директорию, os.path.isdir вернёт True. Потенциальный обход защиты path traversal если realpath идёт во внешний каталог. Решение: в валидации switch_project использовать os.path.realpath и сравнивать с realpath корневой папки. Если это вне корня — отказать."
+      },
+      {
+        "area": "PROJECTS_ROOT_DIR удалён после старта бота",
+        "risk_level": "low",
+        "reason": "При старте папка существует, потом её удалили. Команда /projects упадёт с ошибкой. Решение: обработать OSError в scan_available_projects, вернуть пустой список или понятную ошибку."
+      },
+      {
+        "area": "Запуск бота через LaunchAgent с отсутствующим файлом ~/.claude-manager-current-project",
+        "risk_level": "low",
+        "reason": "При первом запуске файла нет, fallback на .env. Если файл есть, но путь невалиден (папка удалена) — тоже fallback. Главное — не упасть при старте."
+      },
+      {
+        "area": "Содержимое _processes после stop_all_processes",
+        "risk_level": "low",
+        "reason": "Существующая stop_process удаляет процесс из _processes через pop. После stop_all_processes словарь должен быть пустой. Нужен тест, проверяющий это."
+      },
+      {
+        "area": "Фильтрация содержимого PROJECTS_ROOT_DIR",
+        "risk_level": "low",
+        "reason": "В папке /Users/ivan/Desktop/claude-sandbox много не-проектов: .DS_Store, .zip архивы, .html файлы, дубликаты. Нужна аккуратная фильтрация: только директории, имя не начинается с точки, опционально — исключение символических ссылок. Риск невелик, но без фильтрации список будет захламлён."
+      }
+    ],
+    "spec_conflicts": [],
+    "new_tests_needed": [
+      "test_project_manager.py::test_scan_available_projects_filters_files — фильтрует .zip, .html, .DS_Store",
+      "test_project_manager.py::test_scan_available_projects_filters_hidden — исключает папки начинающиеся с точки",
+      "test_project_manager.py::test_scan_available_projects_empty_root — возвращает пустой список при пустой папке",
+      "test_project_manager.py::test_scan_available_projects_permission_error — корректно обрабатывает PermissionError",
+      "test_project_manager.py::test_scan_available_projects_root_not_exists — возвращает пустой список или ошибку",
+      "test_project_manager.py::test_scan_available_projects_marks_current — помечает is_current=True для текущего проекта",
+      "test_project_manager.py::test_switch_project_happy_path — успешное переключение на валидный проект",
+      "test_project_manager.py::test_switch_project_already_active — переключение на текущий проект возвращает already_active",
+      "test_project_manager.py::test_switch_project_path_traversal — защита от /etc/passwd через ../..",
+      "test_project_manager.py::test_switch_project_not_directory — отказ при указании на файл",
+      "test_project_manager.py::test_switch_project_not_in_root — отказ если путь вне PROJECTS_ROOT_DIR",
+      "test_project_manager.py::test_switch_project_nonexistent — отказ если папка не существует",
+      "test_project_manager.py::test_switch_project_stops_all_processes — вызывает stop_all_processes и передаёт count",
+      "test_project_manager.py::test_switch_project_resets_state — вызывает reset_state на всех state-модулях",
+      "test_project_manager.py::test_switch_project_saves_last — записывает путь в LAST_PROJECT_FILE",
+      "test_project_manager.py::test_switch_project_rollback_on_error — при ошибке восстанавливает старый WORKING_DIR",
+      "test_project_manager.py::test_switch_project_concurrent_calls — asyncio.Lock гарантирует последовательность",
+      "test_project_manager.py::test_load_last_selected_project_no_file — возвращает None если файла нет",
+      "test_project_manager.py::test_load_last_selected_project_corrupted_file — возвращает None и логирует warning",
+      "test_project_manager.py::test_load_last_selected_project_invalid_path — возвращает None если путь невалиден",
+      "test_project_manager.py::test_load_last_selected_project_valid — возвращает путь",
+      "test_project_manager.py::test_get_current_project_path — возвращает config.WORKING_DIR",
+      "test_process_manager.py::test_stop_all_processes_empty — нулевой список",
+      "test_process_manager.py::test_stop_all_processes_single — один процесс",
+      "test_process_manager.py::test_stop_all_processes_multiple — три процесса",
+      "test_process_manager.py::test_stop_all_processes_busy_process — процесс в состоянии занят корректно останавливается",
+      "test_process_manager.py::test_stop_all_processes_returns_count — возвращает количество остановленных",
+      "test_session_manager.py::test_reset_state_clears_bindings — очищает _bindings",
+      "test_session_manager.py::test_reset_state_resets_path — сбрасывает _bindings_path в None",
+      "test_session_manager.py::test_reset_state_reloads_from_new_path — после сброса load_bindings читает новый путь",
+      "test_daily_session_registry.py::test_reset_state_clears_registry — очищает _registry",
+      "test_daily_session_registry.py::test_reset_state_resets_path — сбрасывает _registry_path в None",
+      "test_daily_session_registry.py::test_reset_state_resets_loaded_flag — сбрасывает _loaded_from_disk",
+      "test_daily_session_registry.py::test_reset_state_reloads_from_new_path — после сброса load_registry читает новый путь",
+      "test_session_watcher.py::test_reset_state_clears_seen_counts — очищает _seen_message_counts",
+      "test_session_watcher.py::test_reset_state_clears_paused — очищает _paused_sessions",
+      "test_bot.py::test_handle_projects_access_denied — блокирует неавторизованного пользователя",
+      "test_bot.py::test_handle_projects_empty_list — сообщение 'Проекты не найдены' при пустом списке",
+      "test_bot.py::test_handle_projects_shows_list — показывает список с кликабельными командами",
+      "test_bot.py::test_handle_projects_marks_current — помечает текущий проект маркером",
+      "test_bot.py::test_handle_switch_project_access_denied — блокирует неавторизованного",
+      "test_bot.py::test_handle_switch_project_valid_number — вызывает project_manager.switch_project",
+      "test_bot.py::test_handle_switch_project_invalid_number — сообщает об ошибке несуществующего номера",
+      "test_bot.py::test_handle_switch_project_already_active — сообщает 'уже в проекте'",
+      "test_bot.py::test_handle_switch_project_error — сообщает о причине ошибки переключения",
+      "test_bot.py::test_handle_switch_project_success_message — формат сообщения об успехе включает имя и количество остановленных процессов",
+      "test_main.py::test_main_loads_last_project_after_config — main вызывает load_last_selected_project",
+      "tests/integration/test_project_switching.py::test_full_switch_cycle — полный цикл: создать проекты A и B во tmp_path, запустить сессию в A, переключиться на B, запустить сессию там, вернуться в A, проверить что привязки и реестр перезагрузились"
+    ]
+  }
+}
