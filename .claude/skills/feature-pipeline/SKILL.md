@@ -193,7 +193,7 @@ description: >-
 ### Фаза 10 — Финальная проверка и коммит
 
 1. Запиши шаг в `orchestrator-log.json` (ДО запуска агента)
-2. Запусти агента `agents/feature-finalizer.md` (через Agent tool)
+2. Запусти агента `agents/feature-finalizer.md` (через Agent tool). Если финализатор правит файлы внутри `.claude/skills/` из CLI-подпроцесса, он использует штатные шаблоны X.1/X.2 из корневого `CLAUDE.md` (раздел «Запись в `.claude/skills/` из CLI-подпроцессов»). Подробности — в `agents/feature-finalizer.md`.
 2. Агент использует `scripts/final-check.sh`
 3. **Финальная петля качества** (максимум 3 итерации):
    - Полный прогон всех тестов

@@ -160,6 +160,54 @@
 
 ---
 
+## 03-change-applier.json
+
+Результат работы `change-applier` — отчёт о применении плана изменений к рабочей копии скилла. Оркестратор читает только этот файл, а не исходники — именно это и спасает его контекст от раздувания.
+
+```json
+{
+  "target_skill": "имя-скилла",
+  "applied_at": "ISO-8601",
+  "plan_source": "agent-outputs/02-change-planner.json",
+  "workspace_path": "eval-workspace/new-version/имя-скилла/",
+  "applied_changes": 24,
+  "failed_changes": 2,
+  "touched_files": [
+    "SKILL.md",
+    "scripts/stage_4_verify_download.py",
+    "agents/verifier.md"
+  ],
+  "bytes_written": 48350,
+  "lines_added": 1520,
+  "lines_removed": 12,
+  "errors": [
+    {
+      "change_index": 5,
+      "action": "modify",
+      "section": "SKILL.md → Этап 2",
+      "error_message": "old_string не найден в файле — фрагмент из before_summary не совпадает с текущим содержимым"
+    }
+  ]
+}
+```
+
+**Поля:**
+- **target_skill** — имя скилла, к которому применялся план. Должно совпадать с `target_skill` из исходного плана `02-change-planner.json` — иначе это сбой входных данных
+- **plan_source** — путь к файлу плана, из которого брались изменения
+- **workspace_path** — путь к рабочей копии скилла (`eval-workspace/new-version/{имя-скилла}/`), за пределы которой агент не выходит ни при каких условиях
+- **applied_changes** — сколько пунктов из массива `changes` применено успешно
+- **failed_changes** — сколько пунктов провалилось. Детали каждого — в массиве `errors`
+- **touched_files** — список файлов (относительно `workspace_path`), которые агент реально изменил или создал
+- **bytes_written** — суммарный объём записанных данных в байтах. Нужен для грубой оценки масштаба применения и для сравнения «было/стало» при отладке
+- **lines_added** — сколько строк добавлено суммарно по всем Write и Edit
+- **lines_removed** — сколько строк удалено
+- **errors[].change_index** — индекс провалившегося пункта в массиве `changes` исходного плана
+- **errors[].action** — тип действия (`modify`, `add`, `remove`, `rewrite`), которое не получилось применить
+- **errors[].section** — секция или файл, где произошла ошибка (копируется из поля `section` исходного пункта плана)
+- **errors[].error_message** — понятное описание причины («old_string не найден», «файл вне workspace_path», «файл не существует», «не удалось распарсить JSON» и т.д.)
+
+---
+
 ## 03-conflict-checker.json
 
 Результат работы `conflict-checker` — найденные конфликты.
