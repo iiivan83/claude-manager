@@ -41,7 +41,6 @@ def _reset_module_state(tmp_path: Path) -> None:
     session_manager._bindings = {}
     session_manager._bindings_path = tmp_path / BINDINGS_FILENAME
     session_manager._lock = asyncio.Lock()
-    session_manager._temp_counter = 0
 
 
 # --- Тесты: параллельная регистрация сессий ---

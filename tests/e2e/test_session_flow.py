@@ -7,6 +7,10 @@
 
 Используется wait_for_matching_response — ищет нужный ответ среди всех сообщений
 от бота, пропуская посторонние (watcher-сообщения от терминальных сессий).
+
+Символы статуса в заголовках:
+  ⏳ (\\u23f3) — промежуточное сообщение (thinking, прогресс)
+  ✅ (\\u2705) — финальный ответ Claude
 """
 
 import asyncio
@@ -257,4 +261,84 @@ async def test_flow05_new_session_no_ghost_responses(
         f"Утечка ответов из чужих сессий! Создана сессия #{num}, "
         f"но пришли ответы от других:\n"
         + "\n".join(ghost_responses)
+    )
+
+
+# --- FLOW-06: Промежуточные thinking-сообщения ---
+
+
+async def test_flow06_thinking_messages_arrive(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """При обработке запроса бот отправляет промежуточное ⏳ перед финальным ✅ [Claude].
+
+    Баг (до исправления): thinking-события от Claude CLI содержат поле "thinking",
+    а код читал поле "text" — промежуточные сообщения никогда не доходили.
+    """
+    # 1. Создаём сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # 2. Отправляем достаточно сложный запрос, чтобы Claude сгенерировал thinking-блок.
+    # Запрос на анализ заставит Claude сначала «подумать», а потом ответить.
+    await telegram_client.send_message(
+        "Прочитай файл src/claude_manager/config.py и перечисли все переменные окружения"
+    )
+
+    # 3. Ждём финальный ответ (✅) — он придёт последним
+    response = await telegram_client.wait_for_matching_response(
+        "\u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+    assert f"#{num}" in response
+
+    # 4. Проверяем: среди ВСЕХ ответов от бота должно быть хотя бы одно
+    # промежуточное сообщение с ⏳ (thinking/progress) от нашей сессии
+    thinking_messages = [
+        resp for resp in telegram_client._all_responses
+        if f"#{num}" in resp and "\u23f3" in resp
+    ]
+
+    assert len(thinking_messages) >= 1, (
+        f"Не получено ни одного промежуточного ⏳ от сессии #{num}. "
+        f"Все ответы ({len(telegram_client._all_responses)}): "
+        + " | ".join(r[:80] for r in telegram_client._all_responses)
+    )
+
+
+# --- FLOW-07: Занятая сессия отклоняет второе сообщение ---
+
+
+async def test_flow07_busy_session_rejects_second_message(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Если Claude обрабатывает запрос, второе сообщение получает "ещё обрабатывает".
+
+    Баг (до исправления): второе сообщение получало невнятное
+    "Произошла ошибка", а не понятное "ещё обрабатывает".
+    """
+    # 1. Создаём сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # 2. Отправляем долгий запрос Claude [Claude]
+    await telegram_client.send_message(
+        "Прочитай файл src/claude_manager/bot.py и посчитай количество функций. "
+        "Выведи число."
+    )
+
+    # 3. Сразу шлём второе сообщение — Claude ещё думает над первым
+    await asyncio.sleep(1)
+    await telegram_client.send_message("А это второй запрос")
+
+    # 4. Ожидаем сообщение об ошибке «ещё обрабатывает»
+    response = await telegram_client.wait_for_matching_response(
+        "обрабатывает", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+    assert "обрабатыва" in response.lower()
+
+    # 5. Дожидаемся финального ответа от первого запроса
+    response = await telegram_client.wait_for_matching_response(
+        "\u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
     )

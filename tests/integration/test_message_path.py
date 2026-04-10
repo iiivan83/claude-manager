@@ -33,7 +33,6 @@ def _reset_process_manager_state() -> None:
     process_manager._processes.clear()
     process_manager._busy_flags.clear()
     process_manager._stop_events.clear()
-    process_manager._temp_session_counter = 0
 
 
 def _make_fake_process(responses: list[dict]) -> MagicMock:
@@ -258,7 +257,7 @@ class TestProgressCallback:
                 "session_id": SESSION_ID,
                 "message": {
                     "content": [
-                        {"type": "thinking", "text": "Размышляю над задачей..."},
+                        {"type": "thinking", "thinking": "Размышляю над задачей..."},
                     ],
                 },
             },

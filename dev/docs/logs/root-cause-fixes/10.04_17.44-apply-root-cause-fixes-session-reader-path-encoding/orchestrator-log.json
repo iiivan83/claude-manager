@@ -80,9 +80,24 @@
     {
       "phase": "phase-4",
       "start_time": "2026-04-10T18:08:00",
-      "end_time": null,
-      "success": null,
-      "comment": "Документирование, коммит, архивация отчёта"
+      "end_time": "2026-04-10T18:10:00",
+      "success": true,
+      "comment": "Отчёт архивирован в realized/, коммит afaaf45 создан, session-report запущен",
+      "details": {
+        "archived_report": "dev/docs/logs/root-cause-reports/realized/10-04_16-02_session-reader-path-encoding.md",
+        "commit_hash": "afaaf45",
+        "commit_message": "fix(session_reader): воспроизведение реального алгоритма sanitizePath из Claude CLI",
+        "commit_stats": "10 files changed, 721 insertions(+), 6 deletions(-)"
+      }
+    },
+    {
+      "phase": "completed",
+      "end_time": "2026-04-10T18:10:00",
+      "total_recommendations": 10,
+      "accepted": 10,
+      "rejected": 0,
+      "applied_successfully": 10,
+      "errors": 0
     }
   ]
 }

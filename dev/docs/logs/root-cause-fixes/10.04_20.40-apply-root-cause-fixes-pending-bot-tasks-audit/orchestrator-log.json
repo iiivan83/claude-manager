@@ -87,6 +87,68 @@
         "tests": "460/460 PASSED за 17.09 сек (pytest tests/ --ignore=tests/e2e). Включая регрессионный тест test_permission_mode_first_line_claude_cli_2_1_96, тесты _acquire_lock, _setup_logging, switch_project и все зависимые модули (bot, session_watcher)."
       },
       "comment": "Верификация результата чистая. Готов к Фазе 4."
+    },
+    {
+      "phase": "phase-4",
+      "start_time": "2026-04-10T20:59:12+0500",
+      "end_time": "2026-04-10T21:02:44+0500",
+      "success": true,
+      "commits": [
+        {
+          "sha": "611af6e",
+          "subject": "fix(session_reader): обход служебной строки permission-mode без timestamp",
+          "files": ["src/claude_manager/session_reader.py", "tests/test_session_reader.py"],
+          "recommendation": 1
+        },
+        {
+          "sha": "41eb911",
+          "subject": "fix(claude_runner): буфер 16 MB против LimitOverrunError и таймаут readline 300 сек",
+          "files": ["src/claude_manager/claude_runner.py", "tests/test_claude_runner.py"],
+          "recommendation": 2
+        },
+        {
+          "sha": "535e69a",
+          "subject": "fix(main): безопасный lock-файл и ротация error.log",
+          "files": ["src/claude_manager/main.py"],
+          "recommendations": [4, 5]
+        },
+        {
+          "sha": "e9109b5",
+          "subject": "fix(watch_and_restart): проверка LaunchAgent перед стартом бота",
+          "files": ["watch_and_restart.sh"],
+          "recommendation": 7
+        },
+        {
+          "sha": "fb6e6e6",
+          "subject": "refactor(project_manager): декомпозиция switch_project на подфункции",
+          "files": ["src/claude_manager/project_manager.py"],
+          "recommendation": 14
+        },
+        {
+          "sha": "ff510d2",
+          "subject": "docs(stream-json): регрессия permission-mode и буфер StreamReader + архив отчёта",
+          "files": [
+            "dev/docs/claude-cli-stream-json-protocol.md",
+            "dev/docs/logs/root-cause-reports/realized/10-04_20-26_pending-bot-tasks-audit.md",
+            "dev/docs/logs/root-cause-fixes/10.04_20.40-apply-root-cause-fixes-pending-bot-tasks-audit/orchestrator-log.json"
+          ],
+          "recommendations": [8, 9]
+        }
+      ],
+      "archived_report": "dev/docs/logs/root-cause-reports/realized/10-04_20-26_pending-bot-tasks-audit.md",
+      "comment": "Шесть отдельных коммитов по логическим группам. Все затронутые файлы добавлены точечно через git add <файл>, не -A. Исходный root-cause отчёт перемещён в realized/."
+    },
+    {
+      "phase": "completed",
+      "end_time": "2026-04-10T21:02:44+0500",
+      "total_recommendations": 15,
+      "accepted": 8,
+      "accepted_with_notes": 3,
+      "rejected": 6,
+      "applied_successfully": 9,
+      "manual_postcondition": 1,
+      "errors": 0,
+      "commits_created": 6
     }
   ]
 }
