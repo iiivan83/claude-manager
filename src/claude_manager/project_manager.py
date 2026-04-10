@@ -201,71 +201,108 @@ async def _rollback_switch(old_path: str) -> None:
         )
 
 
+def _make_error_result(
+    old_path: str, target_path: str, error_message: str,
+) -> SwitchResult:
+    """Собирает SwitchResult для любой неудачи переключения — единый формат ошибки."""
+    return SwitchResult(
+        success=False,
+        already_active=False,
+        old_path=old_path,
+        new_path=target_path,
+        stopped_processes_count=0,
+        error_message=error_message,
+    )
+
+
+def _make_success_result(
+    old_path: str,
+    target_path: str,
+    stopped_count: int,
+    already_active: bool,
+) -> SwitchResult:
+    """Собирает SwitchResult для успешного переключения или no-op (уже активен)."""
+    return SwitchResult(
+        success=True,
+        already_active=already_active,
+        old_path=old_path,
+        new_path=target_path,
+        stopped_processes_count=stopped_count,
+        error_message="",
+    )
+
+
+def _precheck_switch(
+    target_path: str, old_path: str,
+) -> SwitchResult | None:
+    """Проверяет путь и ловит случай «уже активен». Возвращает готовый результат или None, если надо реально переключаться."""
+    try:
+        _validate_target_path(target_path)
+    except ProjectSwitchError as error:
+        logger.warning("Отклонено переключение на %s: %s", target_path, error)
+        return _make_error_result(old_path, target_path, str(error))
+
+    # Уже в этом проекте — no-op, без остановки процессов и сброса состояния
+    if _paths_point_to_same_dir(target_path, old_path):
+        return _make_success_result(
+            old_path, target_path, stopped_count=0, already_active=True,
+        )
+    return None
+
+
+async def _try_switch_with_rollback(
+    target_path: str, old_path: str,
+) -> tuple[int | None, SwitchResult | None]:
+    """Выполняет переключение с откатом при ошибке. Возвращает (stopped_count, None) или (None, error_result)."""
+    try:
+        stopped_count = await _perform_switch(target_path)
+    except Exception as error:
+        logger.error(
+            "Ошибка при переключении проекта на %s: %s",
+            target_path, error, exc_info=True,
+        )
+        await _rollback_switch(old_path)
+        error_result = _make_error_result(
+            old_path, target_path, f"Ошибка переключения: {error}",
+        )
+        return None, error_result
+    return stopped_count, None
+
+
+async def _finalize_successful_switch(
+    old_path: str, target_path: str, stopped_count: int,
+) -> SwitchResult:
+    """Сохраняет путь в файл последнего проекта, пишет лог и собирает успешный результат."""
+    # Ошибка save_selected_project не отменяет успешное переключение — она логируется внутри
+    await save_selected_project(target_path)
+    logger.info(
+        "Переключение проекта выполнено: %s -> %s (остановлено процессов=%d)",
+        old_path, target_path, stopped_count,
+    )
+    return _make_success_result(
+        old_path, target_path, stopped_count, already_active=False,
+    )
+
+
 async def switch_project(target_path: str) -> SwitchResult:
     """Атомарно переключает бота на другой проект. Возвращает результат переключения."""
     async with _switch_lock:
         old_path = config.WORKING_DIR
 
-        # Валидация отдельным блоком — при ошибке ничего не меняли
-        try:
-            _validate_target_path(target_path)
-        except ProjectSwitchError as error:
-            logger.warning(
-                "Отклонено переключение на %s: %s", target_path, error,
-            )
-            return SwitchResult(
-                success=False,
-                already_active=False,
-                old_path=old_path,
-                new_path=target_path,
-                stopped_processes_count=0,
-                error_message=str(error),
-            )
+        # Валидация и проверка «уже активен» — при ошибке или no-op выходим без сайд-эффектов
+        early_result = _precheck_switch(target_path, old_path)
+        if early_result is not None:
+            return early_result
 
-        # Проверка: уже в этом проекте — no-op
-        if _paths_point_to_same_dir(target_path, old_path):
-            return SwitchResult(
-                success=True,
-                already_active=True,
-                old_path=old_path,
-                new_path=target_path,
-                stopped_processes_count=0,
-                error_message="",
-            )
-
-        # Основное переключение с транзакционной семантикой
-        try:
-            stopped_count = await _perform_switch(target_path)
-        except Exception as error:
-            logger.error(
-                "Ошибка при переключении проекта на %s: %s",
-                target_path, error, exc_info=True,
-            )
-            await _rollback_switch(old_path)
-            return SwitchResult(
-                success=False,
-                already_active=False,
-                old_path=old_path,
-                new_path=target_path,
-                stopped_processes_count=0,
-                error_message=f"Ошибка переключения: {error}",
-            )
-
-        # Сохраняем выбор в файл — отдельный блок, его ошибка не отменяет переключение
-        await save_selected_project(target_path)
-
-        logger.info(
-            "Переключение проекта выполнено: %s -> %s (остановлено процессов=%d)",
-            old_path, target_path, stopped_count,
+        # Основное переключение с транзакционной семантикой — при сбое делаем rollback
+        stopped_count, error_result = await _try_switch_with_rollback(
+            target_path, old_path,
         )
+        if error_result is not None:
+            return error_result
 
-        return SwitchResult(
-            success=True,
-            already_active=False,
-            old_path=old_path,
-            new_path=target_path,
-            stopped_processes_count=stopped_count,
-            error_message="",
+        return await _finalize_successful_switch(
+            old_path, target_path, stopped_count or 0,
         )
 
 
