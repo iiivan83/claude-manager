@@ -171,17 +171,23 @@ async def _read_session_file(file_path: str) -> SessionInfo | None:
     if not parsed_lines:
         return None
 
-    first_line = parsed_lines[0]
-
     # session_id: из JSON или из имени файла
     file_basename = os.path.basename(file_path)
     file_name_without_extension = file_basename.removesuffix(".jsonl")
-    session_id = first_line.get("sessionId", file_name_without_extension)
+    session_id = parsed_lines[0].get("sessionId", file_name_without_extension)
 
-    # timestamp: обязателен для определения времени создания
-    timestamp = first_line.get("timestamp")
+    # timestamp: обязателен для определения времени создания.
+    # Claude CLI начиная с 2.1.96 пишет первой строкой служебные события
+    # (permission-mode, file-history-snapshot) без поля timestamp — поэтому
+    # ищем первую строку, где timestamp реально присутствует, а не жёстко
+    # берём parsed_lines[0].
+    timestamp = None
+    for line in parsed_lines:
+        if line.get("timestamp"):
+            timestamp = line["timestamp"]
+            break
     if not timestamp:
-        logger.warning("Нет timestamp в файле сессии: %s", file_path)
+        logger.warning("Нет timestamp ни в одной строке файла сессии: %s", file_path)
         return None
 
     raw_message = _extract_first_user_message(parsed_lines)

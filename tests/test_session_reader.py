@@ -517,3 +517,48 @@ class TestReadSessionFile:
 
         assert result is not None
         assert result.session_id == "abc-def-123"
+
+    @pytest.mark.asyncio
+    async def test_permission_mode_first_line_claude_cli_2_1_96(
+        self, tmp_path: Path
+    ) -> None:
+        """Регрессия Claude CLI 2.1.96: первая строка — permission-mode без timestamp.
+
+        Начиная с Claude CLI 2.1.96 файлы сессий начинаются со служебного
+        события permission-mode, у которого нет поля timestamp. Старый код
+        падал на parsed_lines[0].get("timestamp") и отбрасывал такие файлы,
+        из-за чего session_watcher переставал видеть живые сессии и бот
+        тихо переставал слать сообщения в Telegram.
+
+        Фикстура повторяет реальный файл
+        031bc262-3927-43c4-88e1-1c4ba6a82b61.jsonl из ~/.claude/projects/.
+        """
+        file_path = tmp_path / "031bc262-3927-43c4-88e1-1c4ba6a82b61.jsonl"
+        _write_jsonl_file(file_path, [
+            {
+                "type": "permission-mode",
+                "permissionMode": "default",
+                "sessionId": "031bc262-3927-43c4-88e1-1c4ba6a82b61",
+            },
+            {
+                "parentUuid": None,
+                "isSidechain": False,
+                "type": "system",
+                "subtype": "bridge_status",
+                "sessionId": "031bc262-3927-43c4-88e1-1c4ba6a82b61",
+                "timestamp": "2026-04-10T13:12:04.310Z",
+                "isMeta": False,
+            },
+            {
+                "type": "file-history-snapshot",
+                "messageId": "b2ac2be1-a344-4dbd-8733-b6c24695a27b",
+            },
+            _make_user_message("Давай починем бота"),
+        ])
+
+        result = await _read_session_file(str(file_path))
+
+        assert result is not None
+        assert result.session_id == "031bc262-3927-43c4-88e1-1c4ba6a82b61"
+        assert result.created_at == "2026-04-10T13:12:04.310Z"
+        assert result.preview == "Давай починем бота"
