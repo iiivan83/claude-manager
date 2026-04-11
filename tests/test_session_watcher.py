@@ -335,6 +335,7 @@ class TestDetectNewMessages:
     """Тесты обнаружения новых сообщений и вызова callback."""
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -343,6 +344,7 @@ class TestDetectNewMessages:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
@@ -350,6 +352,7 @@ class TestDetectNewMessages:
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
         mock_get_current_session.return_value = "session-1"
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         session_watcher._callback = mock_callback
         session_watcher._get_current_session = mock_get_current_session
@@ -384,6 +387,7 @@ class TestDetectNewMessages:
         )
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -392,6 +396,7 @@ class TestDetectNewMessages:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
@@ -399,6 +404,7 @@ class TestDetectNewMessages:
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
         mock_get_current_session.return_value = "session-1"
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         session_watcher._callback = mock_callback
         session_watcher._get_current_session = mock_get_current_session
@@ -428,6 +434,7 @@ class TestDetectNewMessages:
         assert is_final_arg is False
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -436,6 +443,7 @@ class TestDetectNewMessages:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
@@ -443,6 +451,7 @@ class TestDetectNewMessages:
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
         mock_get_current_session.return_value = "session-1"
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         session_watcher._callback = mock_callback
         session_watcher._get_current_session = mock_get_current_session
@@ -508,6 +517,7 @@ class TestDetectNewMessages:
         mock_callback.assert_not_called()
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -516,12 +526,14 @@ class TestDetectNewMessages:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
         """Callback получает правильный дневной номер сессии."""
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         session_watcher._callback = mock_callback
         session_watcher._get_current_session = mock_get_current_session
@@ -547,6 +559,7 @@ class TestDetectNewMessages:
         assert day_number_arg == 3
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -555,12 +568,14 @@ class TestDetectNewMessages:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
         """Callback получает is_current_session=True для текущей сессии."""
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
         # Текущая сессия — session-1
         mock_get_current_session.return_value = "session-1"
 
@@ -587,6 +602,7 @@ class TestDetectNewMessages:
         assert is_current_arg is True
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -595,12 +611,14 @@ class TestDetectNewMessages:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
         """Callback получает is_current_session=False для чужой сессии."""
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
         # Текущая сессия пользователя — session-2, а обновление в session-1
         mock_get_current_session.return_value = "session-2"
 
@@ -625,6 +643,92 @@ class TestDetectNewMessages:
         call_args = mock_callback.call_args
         is_current_arg = call_args[0][4]
         assert is_current_arg is False
+
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
+    @patch("claude_manager.session_watcher.config")
+    @patch("claude_manager.session_watcher.daily_session_registry")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_sends_only_to_session_owner(
+        self,
+        mock_reader,
+        mock_registry,
+        mock_config,
+        mock_session_manager,
+        mock_callback,
+        mock_get_current_session,
+    ) -> None:
+        """Если у сессии есть владелец — callback вызван ровно 1 раз для него."""
+        owner_chat_id = 99999
+        mock_config.WORKING_DIR = "/fake/project"
+        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID, 77777, owner_chat_id}
+        mock_session_manager.get_chat_id_for_session.return_value = owner_chat_id
+
+        session_watcher._callback = mock_callback
+        session_watcher._get_current_session = mock_get_current_session
+        session_watcher._seen_message_counts = {"session-1": 1}
+
+        messages = [
+            _make_system_message(),
+            _make_assistant_message("Ответ владельцу"),
+        ]
+
+        mock_reader.get_recent_sessions = AsyncMock(
+            return_value=[_FakeSessionInfo("session-1")]
+        )
+        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
+        mock_reader.get_session_messages = AsyncMock(return_value=messages)
+        mock_registry.register_session = AsyncMock(return_value=1)
+
+        await session_watcher._poll_sessions()
+
+        # callback вызван ровно 1 раз — только для владельца
+        mock_callback.assert_called_once()
+        call_chat_id = mock_callback.call_args[0][0]
+        assert call_chat_id == owner_chat_id
+
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
+    @patch("claude_manager.session_watcher.config")
+    @patch("claude_manager.session_watcher.daily_session_registry")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_fallback_to_all_users_when_no_owner(
+        self,
+        mock_reader,
+        mock_registry,
+        mock_config,
+        mock_session_manager,
+        mock_callback,
+        mock_get_current_session,
+    ) -> None:
+        """Нет владельца — fallback на всех из ALLOWED_USER_IDS."""
+        mock_config.WORKING_DIR = "/fake/project"
+        mock_config.ALLOWED_USER_IDS = {111, 222}
+        # Владелец не найден — сессия создана вне бота
+        mock_session_manager.get_chat_id_for_session.return_value = None
+
+        session_watcher._callback = mock_callback
+        session_watcher._get_current_session = mock_get_current_session
+        session_watcher._seen_message_counts = {"session-1": 1}
+
+        messages = [
+            _make_system_message(),
+            _make_assistant_message("Ответ всем"),
+        ]
+
+        mock_reader.get_recent_sessions = AsyncMock(
+            return_value=[_FakeSessionInfo("session-1")]
+        )
+        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
+        mock_reader.get_session_messages = AsyncMock(return_value=messages)
+        mock_registry.register_session = AsyncMock(return_value=1)
+
+        await session_watcher._poll_sessions()
+
+        # callback вызван 2 раза — по одному для каждого ID из ALLOWED_USER_IDS
+        assert mock_callback.call_count == 2
+        called_chat_ids = {call[0][0] for call in mock_callback.call_args_list}
+        assert called_chat_ids == {111, 222}
 
 
 # --- Юнит-тесты pause/resume ---
@@ -696,6 +800,7 @@ class TestPauseResume:
         assert "session-1" not in session_watcher._paused_sessions
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -704,12 +809,14 @@ class TestPauseResume:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
         """Пауза одной сессии не влияет на мониторинг других."""
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         session_watcher._callback = mock_callback
         session_watcher._get_current_session = mock_get_current_session
@@ -891,6 +998,7 @@ class TestEdgeCases:
         assert "session-1" not in session_watcher._seen_message_counts
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -899,12 +1007,14 @@ class TestEdgeCases:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
         """Несколько новых сообщений Claude за один цикл."""
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         session_watcher._callback = mock_callback
         session_watcher._get_current_session = mock_get_current_session
@@ -1034,6 +1144,7 @@ class TestErrorHandling:
     """Тесты обработки ошибок и устойчивости мониторинга."""
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -1042,10 +1153,12 @@ class TestErrorHandling:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
     ) -> None:
         """Ошибка в callback не останавливает мониторинг."""
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         # callback выбрасывает ошибку
         failing_callback = AsyncMock(
@@ -1084,6 +1197,7 @@ class TestErrorHandling:
         assert failing_callback.call_count == 2
 
     @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
     @patch("claude_manager.session_watcher.config")
     @patch("claude_manager.session_watcher.daily_session_registry")
     @patch("claude_manager.session_watcher.session_reader")
@@ -1092,12 +1206,14 @@ class TestErrorHandling:
         mock_reader,
         mock_registry,
         mock_config,
+        mock_session_manager,
         mock_callback,
         mock_get_current_session,
     ) -> None:
         """Ошибка чтения файла не останавливает мониторинг."""
         mock_config.WORKING_DIR = "/fake/project"
         mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
 
         session_watcher._callback = mock_callback
         session_watcher._get_current_session = mock_get_current_session

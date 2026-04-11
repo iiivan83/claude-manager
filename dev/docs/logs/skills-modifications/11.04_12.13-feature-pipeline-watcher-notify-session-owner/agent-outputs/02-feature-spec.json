@@ -1,0 +1,38 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-11T12:18:00+03:00",
+  "result": {
+    "approach_summary": "Добавить функцию обратного поиска get_chat_id_for_session() в session_manager.py (чтение словаря _bindings в обратном направлении: session_id -> chat_id). В session_watcher.py заменить цикл по config.ALLOWED_USER_IDS на определение владельца сессии через эту функцию. Если владелец найден — отправка только ему. Если нет (сессия создана вне бота) — fallback на текущий цикл по ALLOWED_USER_IDS.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/session_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Между функциями get_bound_session (строки 109-111) и is_monitoring_mode (строки 114-116) нет функции обратного поиска. Существует только прямой поиск: get_bound_session(chat_id) -> str | None (строка 109-111), который читает _bindings[chat_id]. Обратного направления (session_id -> chat_id) нет.",
+          "becomes": "Добавить новую функцию после get_bound_session (после строки 111, перед is_monitoring_mode):\n\n```python\ndef get_chat_id_for_session(session_id: str) -> int | None:\n    \"\"\"Возвращает chat_id владельца сессии или None, если сессия не привязана.\"\"\"\n    for chat_id, bound_session_id in _bindings.items():\n        if bound_session_id == session_id:\n            return chat_id\n    return None\n```\n\nФункция итерирует _bindings.items() и возвращает первый chat_id, у которого значение совпадает с переданным session_id. Если совпадений нет — возвращает None. Только чтение, без побочных эффектов, без захвата Lock (аналогично get_bound_session).",
+          "reason": "Watcher-у нужен обратный поиск session_id -> chat_id, чтобы определить владельца сессии и отправить уведомление только ему, а не всем пользователям из ALLOWED_USER_IDS."
+        }
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Строка 13 — импорты модулей:\n```python\nfrom claude_manager import config, daily_session_registry, session_reader\n```\nМодуль session_manager не импортируется.",
+          "becomes": "Добавить session_manager в импорт:\n```python\nfrom claude_manager import config, daily_session_registry, session_manager, session_reader\n```",
+          "reason": "Для вызова session_manager.get_chat_id_for_session() нужен импорт модуля. Циклической зависимости нет — session_manager не импортирует session_watcher. Порядок инициализации безопасен: session_manager.load_bindings() вызывается в post_init до session_watcher.start(), значит _bindings уже заполнен к моменту первого вызова."
+        }
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Строки 174-190 — цикл рассылки всем разрешённым пользователям:\n```python\n        # Отправляем сообщение каждому разрешённому пользователю\n        for chat_id in config.ALLOWED_USER_IDS:\n            current_session = await _get_current_session(chat_id)\n            is_current = current_session == session_id\n\n            try:\n                await _callback(\n                    chat_id, session_id, day_number, text,\n                    is_current, is_final,\n                )\n            except Exception:\n                logger.error(\n                    \"Ошибка при отправке сообщения из сессии %s: %s\",\n                    session_id,\n                    session_id,\n                    exc_info=True,\n                )\n```",
+          "becomes": "Заменить цикл на определение владельца с fallback:\n```python\n        # Определяем владельца сессии (кто создал или подключился к ней)\n        owner_chat_id = session_manager.get_chat_id_for_session(session_id)\n\n        # Если владелец найден — отправляем только ему.\n        # Если нет (сессия создана вне бота) — fallback на всех из ALLOWED_USER_IDS.\n        target_chat_ids = [owner_chat_id] if owner_chat_id is not None else list(config.ALLOWED_USER_IDS)\n\n        for chat_id in target_chat_ids:\n            current_session = await _get_current_session(chat_id)\n            is_current = current_session == session_id\n\n            try:\n                await _callback(\n                    chat_id, session_id, day_number, text,\n                    is_current, is_final,\n                )\n            except Exception:\n                logger.error(\n                    \"Ошибка при отправке сообщения из сессии %s: %s\",\n                    session_id,\n                    session_id,\n                    exc_info=True,\n                )\n```\n\nЛогика: вызов session_manager.get_chat_id_for_session(session_id) возвращает chat_id владельца или None. Если владелец есть — target_chat_ids = [owner_chat_id] (один элемент). Если None — target_chat_ids = list(config.ALLOWED_USER_IDS) (все, как было раньше). Дальше цикл работает точно так же, только по другому списку получателей.",
+          "reason": "Устранить дублирование уведомлений. Сейчас каждый ответ Claude отправляется ВСЕМ пользователям из ALLOWED_USER_IDS, даже если сессию создал только один из них. После изменения уведомление получит только владелец сессии. Для сессий без владельца (созданных из терминала, не через бот) сохраняется текущее поведение — рассылка всем."
+        }
+      }
+    ]
+  }
+}

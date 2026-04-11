@@ -111,6 +111,14 @@ def get_bound_session(chat_id: int) -> str | None:
     return _bindings.get(chat_id)
 
 
+def get_chat_id_for_session(session_id: str) -> int | None:
+    """Возвращает chat_id владельца сессии или None, если сессия не привязана."""
+    for chat_id, bound_session_id in _bindings.items():
+        if bound_session_id == session_id:
+            return chat_id
+    return None
+
+
 def is_monitoring_mode(chat_id: int) -> bool:
     """Проверяет, находится ли чат в режиме /all мониторинга."""
     return chat_id not in _bindings

@@ -18,6 +18,7 @@ from claude_manager.session_manager import (
     create_new_session,
     get_all_bindings,
     get_bound_session,
+    get_chat_id_for_session,
     is_monitoring_mode,
     load_bindings,
     reset_state,
@@ -119,6 +120,36 @@ class TestGetBoundSession:
     def test_get_bound_session_returns_none_for_unbound(self) -> None:
         """Для непривязанного чата возвращается None."""
         assert get_bound_session(999999999) is None
+
+
+class TestGetChatIdForSession:
+    """Тесты обратного поиска: session_id -> chat_id."""
+
+    @pytest.mark.asyncio()
+    async def test_returns_chat_id_when_session_bound(self) -> None:
+        """Привязка существует — возвращает правильный chat_id."""
+        await bind_session(CHAT_ID_ALICE, SESSION_FIRST)
+        assert get_chat_id_for_session(SESSION_FIRST) == CHAT_ID_ALICE
+
+    def test_returns_none_when_session_not_bound(self) -> None:
+        """Привязки нет — возвращает None."""
+        assert get_chat_id_for_session("nonexistent") is None
+
+    @pytest.mark.asyncio()
+    async def test_returns_chat_id_for_shared_session(self) -> None:
+        """Два чата на одну сессию — возвращает один из них (не None)."""
+        await bind_session(CHAT_ID_ALICE, SESSION_FIRST)
+        await bind_session(CHAT_ID_BOB, SESSION_FIRST)
+
+        result = get_chat_id_for_session(SESSION_FIRST)
+        assert result in {CHAT_ID_ALICE, CHAT_ID_BOB}
+
+    @pytest.mark.asyncio()
+    async def test_returns_none_after_unbind(self) -> None:
+        """После unbind обратный поиск не находит удалённую привязку."""
+        await bind_session(CHAT_ID_ALICE, SESSION_FIRST)
+        await unbind_session(CHAT_ID_ALICE)
+        assert get_chat_id_for_session(SESSION_FIRST) is None
 
 
 class TestIsMonitoringMode:

@@ -1,0 +1,24 @@
+{
+  "feature_name": "watcher-notify-session-owner",
+  "scale": "small",
+  "current_phase": 8,
+  "phases": {
+    "0": { "status": "completed", "fix_cycles": 0 },
+    "1": { "status": "completed", "fix_cycles": 0 },
+    "2": { "status": "completed", "fix_cycles": 0 },
+    "3": { "status": "completed", "fix_cycles": 0 },
+    "3.5": { "status": "completed", "fix_cycles": 0 },
+    "4": { "status": "completed", "fix_cycles": 0 },
+    "5": { "status": "completed", "fix_cycles": 0 },
+    "6": { "status": "skipped", "fix_cycles": 0 },
+    "7": { "status": "skipped", "fix_cycles": 0 },
+    "8": { "status": "pending", "fix_cycles": 0 },
+    "9": { "status": "pending", "fix_cycles": 0 },
+    "10": { "status": "pending", "fix_cycles": 0 }
+  },
+  "rollbacks_to_spec": 0,
+  "rollback_feedback": [],
+  "backup_branches": [],
+  "created_at": "2026-04-11T12:13:00+03:00",
+  "updated_at": "2026-04-11T12:14:00+03:00"
+}

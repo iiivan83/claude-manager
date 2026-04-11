@@ -10,7 +10,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from claude_manager import config, daily_session_registry, session_reader
+from claude_manager import config, daily_session_registry, session_manager, session_reader
 
 logger = logging.getLogger(__name__)
 
@@ -171,8 +171,14 @@ async def _check_session(session_id: str) -> None:
             )
             continue
 
-        # Отправляем сообщение каждому разрешённому пользователю
-        for chat_id in config.ALLOWED_USER_IDS:
+        # Определяем владельца сессии (кто создал или подключился к ней)
+        owner_chat_id = session_manager.get_chat_id_for_session(session_id)
+
+        # Если владелец найден — отправляем только ему.
+        # Если нет (сессия создана вне бота) — fallback на всех из ALLOWED_USER_IDS.
+        target_chat_ids = [owner_chat_id] if owner_chat_id is not None else list(config.ALLOWED_USER_IDS)
+
+        for chat_id in target_chat_ids:
             current_session = await _get_current_session(chat_id)
             is_current = current_session == session_id
 

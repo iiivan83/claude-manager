@@ -10,7 +10,7 @@
 - **session-reports/** — отчёты по рабочим сессиям, сгруппированы по дате (`DD-MM/`)
 - **logs/** — логи работы пайплайнов: root-cause отчёты и артефакты тестирования
 - **changelog/** — история изменений проекта
-  - [changelog/2026-04.md](changelog/2026-04.md) — апрель 2026: asyncio.Lock в process_manager
+  - [changelog/2026-04.md](changelog/2026-04.md) — апрель 2026: asyncio.Lock в process_manager, watcher уведомляет только владельца сессии
 - **claude-md-updates/** — лог изменений CLAUDE.md (пока пусто)
 
 ## BRD и пользовательские пути

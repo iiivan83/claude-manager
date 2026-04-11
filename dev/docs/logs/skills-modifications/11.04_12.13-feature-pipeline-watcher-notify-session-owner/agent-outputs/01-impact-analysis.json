@@ -1,0 +1,152 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-11T12:15:00+03:00",
+  "result": {
+    "affected_files": [
+      {
+        "path": "src/claude_manager/session_manager.py",
+        "type": "modify",
+        "reason": "Добавить функцию get_chat_id_for_session(session_id) -> int | None — обратный поиск по _bindings (словарь chat_id -> session_id). Функция итерирует _bindings.items() и возвращает первый chat_id, у которого значение совпадает с переданным session_id. Если совпадений нет — возвращает None. Только чтение, без побочных эффектов, без захвата Lock."
+      },
+      {
+        "path": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "reason": "1) Добавить import session_manager (сейчас его нет — watcher импортирует только config, daily_session_registry, session_reader). 2) В функции _check_session() заменить цикл for chat_id in config.ALLOWED_USER_IDS (строки 174-190) на логику: определить владельца через session_manager.get_chat_id_for_session(session_id), если найден — отправить только ему, если None — fallback на текущий цикл по config.ALLOWED_USER_IDS."
+      },
+      {
+        "path": "tests/test_session_manager.py",
+        "type": "modify",
+        "reason": "Добавить тесты для новой функции get_chat_id_for_session: владелец найден, владелец не найден, несколько чатов привязаны к одной сессии (возвращает первый найденный)."
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "type": "modify",
+        "reason": "Обновить существующие тесты _check_session/_poll_sessions — все они мокают config.ALLOWED_USER_IDS и ожидают цикл по нему. Нужно добавить мок session_manager.get_chat_id_for_session. Добавить новые тесты для обоих сценариев: владелец найден (callback вызван один раз для владельца) и fallback (владелец не найден, callback вызван для всех ALLOWED_USER_IDS)."
+      }
+    ],
+    "affected_functions": [
+      {
+        "file": "src/claude_manager/session_manager.py",
+        "function": "get_chat_id_for_session (новая)",
+        "impact": "Новая публичная функция. Выполняет обратный поиск по словарю _bindings: перебирает пары (chat_id, session_id) и возвращает chat_id при совпадении. Не требует Lock — только чтение из словаря. Не меняет существующие интерфейсы."
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "function": "_check_session",
+        "impact": "Ключевое изменение. Сейчас строки 174-190 содержат цикл for chat_id in config.ALLOWED_USER_IDS, который отправляет каждое новое сообщение ВСЕМ пользователям. Нужно заменить на: 1) вызов session_manager.get_chat_id_for_session(session_id), 2) если вернул chat_id — отправить только ему (один вызов callback), 3) если вернул None — оставить текущий цикл по ALLOWED_USER_IDS как fallback. Внутренняя логика определения is_current (через _get_current_session) и вызов callback остаются без изменений."
+      }
+    ],
+    "affected_tests": [
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_detects_new_assistant_message",
+        "action": "update",
+        "reason": "Тест мокает config.ALLOWED_USER_IDS = {TEST_CHAT_ID} и ожидает callback с TEST_CHAT_ID. После изменений нужно добавить мок session_manager.get_chat_id_for_session, который вернёт TEST_CHAT_ID — тогда поведение теста не изменится."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_active_session_marks_messages_as_intermediate",
+        "action": "update",
+        "reason": "Аналогично: добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_completed_exchange_marks_last_as_final",
+        "action": "update",
+        "reason": "Аналогично: добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_ignores_new_user_message",
+        "action": "keep",
+        "reason": "Тест проверяет, что callback не вызван при user-сообщении. Новая логика не влияет — _check_session выходит до определения владельца, если нет новых assistant-текстов."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_callback_receives_correct_day_number",
+        "action": "update",
+        "reason": "Добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_callback_receives_is_current_session_true",
+        "action": "update",
+        "reason": "Добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_callback_receives_is_current_session_false",
+        "action": "update",
+        "reason": "Добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestPauseResume::test_paused_session_other_sessions_monitored",
+        "action": "update",
+        "reason": "Добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestEdgeCases::test_multiple_new_messages_in_one_cycle",
+        "action": "update",
+        "reason": "Добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestEdgeCases::test_empty_response_not_sent",
+        "action": "keep",
+        "reason": "Тест проверяет, что callback не вызван при пустом ответе. Пустой ответ фильтруется до определения владельца."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestEdgeCases::test_no_response_requested_not_sent",
+        "action": "keep",
+        "reason": "Аналогично: служебный ответ фильтруется до определения владельца."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestStart::test_start_initializes_seen_counts",
+        "action": "keep",
+        "reason": "Тест проверяет инициализацию счётчиков при start(). Отправка сообщений не происходит — callback не вызван."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestErrorHandling::test_callback_exception_does_not_stop_monitoring",
+        "action": "update",
+        "reason": "Добавить мок session_manager.get_chat_id_for_session."
+      },
+      {
+        "path": "tests/integration/test_watcher_handler_coordination.py",
+        "action": "update",
+        "reason": "Интеграционный тест мокает config.ALLOWED_USER_IDS и вызывает _check_session. Нужно добавить мок session_manager.get_chat_id_for_session или патч импорта session_manager в session_watcher."
+      },
+      {
+        "path": "tests/test_session_manager.py",
+        "action": "update",
+        "reason": "Добавить новый класс TestGetChatIdForSession с тестами новой функции."
+      }
+    ],
+    "risk_zones": [
+      {
+        "area": "Новая зависимость session_watcher -> session_manager",
+        "risk_level": "medium",
+        "reason": "Сейчас session_watcher не импортирует session_manager напрямую. Добавление импорта создаёт новую зависимость между модулями. По архитектуре (CLAUDE.md: 'Мониторинг — session_watcher') это допустимо: watcher — слой мониторинга, session_manager — слой бизнес-логики. Watcher уже неявно зависит от session_manager через callback _get_current_session, который вызывает session_manager.get_bound_session. Прямой импорт не создаёт циклической зависимости (session_manager не импортирует session_watcher). Однако нужно убедиться, что порядок инициализации модулей при старте бота не нарушится — session_manager.load_bindings() вызывается в post_init до session_watcher.start(), значит _bindings уже заполнен."
+      },
+      {
+        "area": "Гонка между обновлением _bindings и чтением в get_chat_id_for_session",
+        "risk_level": "low",
+        "reason": "Функция get_chat_id_for_session будет читать _bindings без Lock. В Python dict.items() итерация по словарю thread-safe на уровне GIL, а в asyncio (single-thread event loop) проблем с конкурентным доступом нет — все операции кооперативно-многозадачные. Функция get_bound_session уже работает аналогично (чтение без Lock), значит паттерн устоявшийся."
+      },
+      {
+        "area": "Несколько чатов привязаны к одной сессии",
+        "risk_level": "low",
+        "reason": "Теоретически несколько chat_id могут быть привязаны к одной session_id (тест test_multiple_chats_same_session в test_session_manager.py это подтверждает). Функция get_chat_id_for_session вернёт только ПЕРВЫЙ найденный chat_id. В реальности бот рассчитан на одного пользователя (config.py строка 131: предупреждение), поэтому практический риск минимален. Но в документации функции нужно явно описать это поведение."
+      },
+      {
+        "area": "Массовое обновление тестов session_watcher",
+        "risk_level": "medium",
+        "reason": "Около 9 тестов в test_session_watcher.py нужно обновить — добавить мок session_manager. При неаккуратном обновлении можно случайно сломать покрытие или пропустить тест. Рекомендация: добавить мок session_manager как fixture или как дополнительный @patch-декоратор, и в каждом тесте настроить return_value."
+      }
+    ],
+    "spec_conflicts": [
+      "Спецификация session_watcher_spec.md (раздел 'Алгоритм работы → _check_session', пункт 7) описывает: 'Получить chat_id через session_manager.get_chat_ids() — все chat_id, подписанные на обновления'. Функции get_chat_ids() в session_manager не существует — это предварительная спецификация (сам файл содержит пометку 'Интерфейс зависимости предварительный'). В реализации вместо неё используется цикл по config.ALLOWED_USER_IDS. Планируемое изменение (get_chat_id_for_session) заменяет оба подхода и расходится со спецификацией — спецификацию нужно обновить.",
+      "Спецификация session_manager_spec.md не содержит функции get_chat_id_for_session в публичном API. После реализации нужно добавить описание новой функции в спецификацию."
+    ],
+    "new_tests_needed": [
+      "test_session_manager.py :: TestGetChatIdForSession :: test_returns_chat_id_when_bound — привязка есть, функция возвращает правильный chat_id",
+      "test_session_manager.py :: TestGetChatIdForSession :: test_returns_none_when_not_bound — привязки нет, функция возвращает None",
+      "test_session_manager.py :: TestGetChatIdForSession :: test_returns_first_chat_id_for_shared_session — несколько чатов привязаны к одной сессии, функция возвращает один из них (не None)",
+      "test_session_watcher.py :: TestDetectNewMessages :: test_sends_only_to_session_owner — session_manager.get_chat_id_for_session возвращает конкретный chat_id, callback вызван ровно 1 раз с этим chat_id (а не с каждым из ALLOWED_USER_IDS)",
+      "test_session_watcher.py :: TestDetectNewMessages :: test_fallback_to_all_users_when_no_owner — session_manager.get_chat_id_for_session возвращает None, callback вызван для каждого chat_id из ALLOWED_USER_IDS (текущее поведение сохранено)",
+      "test_session_watcher.py :: TestDetectNewMessages :: test_fallback_with_multiple_allowed_ids — ALLOWED_USER_IDS содержит 3 ID, владелец не найден, callback вызван 3 раза (по одному для каждого ID)"
+    ]
+  }
+}

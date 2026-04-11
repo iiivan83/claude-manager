@@ -1,0 +1,85 @@
+{
+  "agent": "feature-test-plan",
+  "status": "success",
+  "timestamp": "2026-04-11T12:22:00+03:00",
+  "result": {
+    "test_framework": "pytest + pytest-asyncio (asyncio_mode=auto) + pytest-mock",
+    "scale": "small",
+    "tests_to_update": [
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_detects_new_assistant_message",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager') в декораторы. В параметрах — mock_session_manager. Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID (владелец найден — callback вызывается для него, поведение теста не меняется)."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_active_session_marks_messages_as_intermediate",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_completed_exchange_marks_last_as_final",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_callback_receives_correct_day_number",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_callback_receives_is_current_session_true",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_callback_receives_is_current_session_false",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestPauseResume::test_paused_session_other_sessions_monitored",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID. Тест проверяет, что callback вызван только для session-2 (session-1 на паузе) — поведение сохраняется, просто источник chat_id теперь session_manager вместо ALLOWED_USER_IDS."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestEdgeCases::test_multiple_new_messages_in_one_cycle",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID. Тест проверяет 3 вызова callback — поведение не меняется."
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestErrorHandling::test_callback_exception_does_not_stop_monitoring",
+        "changes": "Добавить @patch('claude_manager.session_watcher.session_manager'). Настроить mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID. Тест проверяет, что ошибка callback не останавливает обработку — ожидаемое количество вызовов (2) сохраняется."
+      }
+    ],
+    "tests_to_add": [
+      {
+        "path": "tests/test_session_manager.py::TestGetChatIdForSession::test_returns_chat_id_when_session_bound",
+        "description": "Привязка существует (bind_session Alice -> session-1). Вызов get_chat_id_for_session('session-1') возвращает CHAT_ID_ALICE.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_manager.py::TestGetChatIdForSession::test_returns_none_when_session_not_bound",
+        "description": "Привязок нет или сессия не совпадает ни с одной. Вызов get_chat_id_for_session('nonexistent') возвращает None.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_manager.py::TestGetChatIdForSession::test_returns_chat_id_for_shared_session",
+        "description": "Несколько чатов привязаны к одной сессии (Alice и Bob -> session-1). Вызов get_chat_id_for_session('session-1') возвращает один из chat_id (не None). Проверяем, что результат in {CHAT_ID_ALICE, CHAT_ID_BOB}.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_manager.py::TestGetChatIdForSession::test_returns_none_after_unbind",
+        "description": "Привязка была, потом unbind_session. Вызов get_chat_id_for_session возвращает None — обратный поиск не находит удалённую привязку.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_sends_only_to_session_owner",
+        "description": "session_manager.get_chat_id_for_session возвращает конкретный OWNER_CHAT_ID. ALLOWED_USER_IDS содержит 3 ID (включая OWNER_CHAT_ID). Callback вызван ровно 1 раз, первый аргумент — OWNER_CHAT_ID.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_fallback_to_all_users_when_no_owner",
+        "description": "session_manager.get_chat_id_for_session возвращает None (сессия создана вне бота). ALLOWED_USER_IDS содержит 2 ID. Callback вызван 2 раза — по одному для каждого ID из ALLOWED_USER_IDS.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py::TestDetectNewMessages::test_fallback_with_three_allowed_ids",
+        "description": "session_manager.get_chat_id_for_session возвращает None. ALLOWED_USER_IDS содержит 3 ID. Callback вызван 3 раза. Проверяем, что set chat_id из всех вызовов == set ALLOWED_USER_IDS.",
+        "level": "unit"
+      }
+    ],
+    "tests_to_delete": []
+  }
+}

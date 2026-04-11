@@ -1,0 +1,25 @@
+{
+  "agent": "feature-intake",
+  "status": "success",
+  "timestamp": "2026-04-11T12:13:00+03:00",
+  "result": {
+    "task_title": "Watcher: отправка уведомлений только владельцу сессии",
+    "task_description": "В session_watcher.py функция _check_session() рассылает каждый новый ответ Claude ВСЕМ пользователям из config.ALLOWED_USER_IDS (строки 174-190). Нужно заменить этот цикл на отправку только тому chat_id, который создал или подключился к данной сессии. Для обратного поиска session_id → chat_id добавить функцию get_chat_id_for_session() в session_manager.py. Если владелец не найден (сессия создана вне бота), сохранить текущее поведение как fallback — отправлять всем из ALLOWED_USER_IDS.",
+    "goal": "Устранить дублирование сообщений при наличии нескольких ID в ALLOWED_USER_IDS. Watcher должен отправлять уведомления о новых сообщениях Claude только тому пользователю, который является владельцем сессии.",
+    "expected_result": "1) В session_manager.py появляется функция get_chat_id_for_session(session_id) -> int | None — обратный поиск по _bindings. 2) В session_watcher.py функция _check_session() вместо цикла по config.ALLOWED_USER_IDS определяет владельца сессии через get_chat_id_for_session() и отправляет только ему. 3) Если владелец не найден — fallback на текущее поведение (отправка всем из ALLOWED_USER_IDS). 4) Все существующие тесты проходят, новые юнит-тесты покрывают оба сценария (владелец найден / fallback).",
+    "constraints": [
+      "Не ломать существующие публичные интерфейсы session_manager и session_watcher",
+      "Сохранить fallback на ALLOWED_USER_IDS для сессий без владельца (созданных вне бота)",
+      "Функция get_chat_id_for_session — только чтение из _bindings, без побочных эффектов",
+      "Не менять поведение паузы/возобновления сессий (pause_session, resume_session)",
+      "Не менять формат sessions.json на диске"
+    ],
+    "scale": "small",
+    "scale_reasoning": "Изменения затрагивают ровно 2 файла (session_watcher.py и session_manager.py). Добавляется одна новая функция-чтение в session_manager (без изменения существующих интерфейсов). В watcher меняется один цикл на условную логику с fallback. Зависимость session_watcher → session_manager уже существует неявно (через _get_current_session callback). Межмодульные контракты не ломаются, структурных изменений нет.",
+    "skipped_phases": [
+      "6 — интеграционные тесты (small-масштаб, изменение изолировано внутри двух модулей)",
+      "7 — E2E тесты (small-масштаб, не затрагивает пользовательские сценарии на уровне Telegram)"
+    ],
+    "pipeline_log_dir": "dev/docs/logs/skills-modifications/11.04_12.13-feature-pipeline-watcher-notify-session-owner"
+  }
+}
