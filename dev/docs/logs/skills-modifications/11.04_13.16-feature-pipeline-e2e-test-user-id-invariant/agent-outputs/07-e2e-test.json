@@ -1,0 +1,131 @@
+{
+  "agent": "feature-e2e-test",
+  "status": "partial",
+  "timestamp": "2026-04-11T13:42:00+03:00",
+  "result": {
+    "total_tests": 0,
+    "passed": 0,
+    "failed": 0,
+    "skipped": 0,
+    "fix_cycles_used": 0,
+    "needs_rollback": false,
+    "reason_partial": "E2E тесты требуют запущенного бота с новым кодом + E2E_TEST_USER_ID в .env. Бот работает на старом коде (PID 80557). Тест-сценарии созданы для ручного запуска после перезапуска бота.",
+    "e2e_test_plan_all_pipelines": {
+      "prerequisites": [
+        "Добавить E2E_TEST_USER_ID=<telethon_user_id> в .env",
+        "Перезапустить бота (./watch_and_restart.sh или launchctl)",
+        "Убедиться что Telethon авторизован (python tests/e2e/check_connection.py test)"
+      ],
+      "pipeline_1_verification": {
+        "description": "Верификация точечных фиксов (уже реализованных)",
+        "scenarios": [
+          {
+            "id": "P1-1",
+            "name": "Runtime-guard при множественных user ID",
+            "type": "log_check",
+            "steps": "Установить ALLOWED_USER_IDS с двумя ID, запустить бота, проверить warning в логах",
+            "expected": "В логах: 'В ALLOWED_USER_IDS указано 2 ID. Бот рассчитан на одного пользователя...'",
+            "automated": false,
+            "reason": "Проверяется чтением логов, не через Telegram"
+          },
+          {
+            "id": "P1-2",
+            "name": "asyncio.Lock предотвращает race condition",
+            "type": "concurrent_messages",
+            "steps": "Отправить 3 сообщения быстро подряд в одну сессию через Telethon",
+            "expected": "Каждое сообщение обрабатывается последовательно, нет дублирования ответов",
+            "automated": true,
+            "test_file": "tests/e2e/test_session_flow.py"
+          },
+          {
+            "id": "P1-3",
+            "name": "Отсутствие фантомных _new_* записей",
+            "type": "log_check",
+            "steps": "Проверить логи бота на отсутствие предупреждений о _new_* файлах",
+            "expected": "Нет warning о несуществующих сессиях с префиксом _new_",
+            "automated": false
+          }
+        ]
+      },
+      "pipeline_2_verification": {
+        "description": "Верификация watcher ownership + E2E изоляции",
+        "scenarios": [
+          {
+            "id": "P2-1",
+            "name": "Watcher уведомляет только владельца сессии",
+            "type": "e2e_telethon",
+            "steps": "1) Отправить сообщение боту от основного аккаунта, 2) Дождаться ответа Claude, 3) Проверить что ответ пришёл ТОЛЬКО основному аккаунту",
+            "expected": "E2E-аккаунт НЕ получает уведомления о сессиях основного пользователя",
+            "automated": true,
+            "test_file": "tests/e2e/test_session_flow.py"
+          },
+          {
+            "id": "P2-2",
+            "name": "E2E_TEST_USER_ID проходит авторизацию",
+            "type": "e2e_telethon",
+            "steps": "Отправить сообщение боту от Telethon-аккаунта (E2E_TEST_USER_ID)",
+            "expected": "Бот принимает сообщение и отвечает (не блокирует как неавторизованного)",
+            "automated": true,
+            "test_file": "tests/e2e/test_session_flow.py"
+          },
+          {
+            "id": "P2-3",
+            "name": "E2E-аккаунт не получает broadcast",
+            "type": "e2e_telethon",
+            "steps": "1) Создать сессию от основного аккаунта, 2) Подождать уведомление watcher, 3) Проверить что E2E-аккаунт НЕ получил broadcast",
+            "expected": "Telethon-клиент не получает сообщений о чужих сессиях",
+            "automated": true,
+            "test_file": "tests/e2e/test_session_flow.py"
+          }
+        ]
+      },
+      "pipeline_3_verification": {
+        "description": "Верификация документации и скиллов (проверка содержимого файлов)",
+        "scenarios": [
+          {
+            "id": "P3-1",
+            "name": "CLAUDE.md содержит раздел Однопользовательский инвариант",
+            "type": "file_check",
+            "command": "grep -c 'Однопользовательский инвариант' CLAUDE.md",
+            "expected": "Результат >= 1"
+          },
+          {
+            "id": "P3-2",
+            "name": "CLAUDE.md содержит раздел E2E тестирование и изоляция",
+            "type": "file_check",
+            "command": "grep -c 'E2E тестирование и изоляция' CLAUDE.md",
+            "expected": "Результат >= 1"
+          },
+          {
+            "id": "P3-3",
+            "name": "BRD содержит предупреждение про ALLOWED_USER_IDS",
+            "type": "file_check",
+            "command": "grep -c 'добавление ID другого человека не поддерживается' dev/docs/brd/brd-user-journeys.md",
+            "expected": "Результат >= 1"
+          },
+          {
+            "id": "P3-4",
+            "name": "Скилл test-e2e обновлён",
+            "type": "file_check",
+            "command": "grep -c 'E2E_TEST_USER_ID' .claude/skills/test-e2e/SKILL.md",
+            "expected": "Результат >= 1"
+          },
+          {
+            "id": "P3-5",
+            "name": "Скилл validate-brd обновлён",
+            "type": "file_check",
+            "command": "grep -c 'Архитектурные ограничения vs конфигурация' .claude/skills/validate-brd/SKILL.md",
+            "expected": "Результат >= 1"
+          },
+          {
+            "id": "P3-6",
+            "name": "Скилл review-code обновлён",
+            "type": "file_check",
+            "command": "grep -c 'Изоляция состояния' .claude/skills/review-code/SKILL.md",
+            "expected": "Результат >= 1"
+          }
+        ]
+      }
+    }
+  }
+}

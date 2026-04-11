@@ -321,3 +321,108 @@ class TestLoadConfigProjectsRoot:
                     load_config()
         finally:
             os.unlink(temp_path)
+
+
+# --- Тесты предупреждения о нескольких user ID ---
+
+
+class TestMultipleUserIdsWarning:
+    """Тесты предупреждения в лог при нескольких ID в белом списке."""
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_single_user_id_no_warning(
+        self, mock_dotenv: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """При одном ID — warning НЕ выводится."""
+        env = _make_env(user_ids=FAKE_USER_ID, working_dir="/tmp")
+        with patch.dict(os.environ, env, clear=True):
+            with caplog.at_level("WARNING", logger="claude_manager.config"):
+                load_config()
+            assert not any(
+                "В ALLOWED_USER_IDS указано" in record.message
+                for record in caplog.records
+            )
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_multiple_user_ids_triggers_warning(
+        self, mock_dotenv: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """При двух+ ID — warning выводится с количеством и текстом о дублировании."""
+        ids_string = f"{FAKE_USER_ID},{FAKE_USER_ID_2}"
+        env = _make_env(user_ids=ids_string, working_dir="/tmp")
+        with patch.dict(os.environ, env, clear=True):
+            with caplog.at_level("WARNING", logger="claude_manager.config"):
+                load_config()
+            warning_records = [
+                record
+                for record in caplog.records
+                if "В ALLOWED_USER_IDS указано" in record.message
+            ]
+            assert len(warning_records) == 1
+            warning_message = warning_records[0].message
+            assert "2 ID" in warning_message
+            assert "дублирование сообщений" in warning_message
+            assert "конфликты состояния" in warning_message
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_three_user_ids_shows_correct_count(
+        self, mock_dotenv: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """При трёх ID — warning содержит число 3."""
+        ids_string = f"{FAKE_USER_ID},{FAKE_USER_ID_2},{FAKE_USER_ID_3}"
+        env = _make_env(user_ids=ids_string, working_dir="/tmp")
+        with patch.dict(os.environ, env, clear=True):
+            with caplog.at_level("WARNING", logger="claude_manager.config"):
+                load_config()
+            warning_records = [
+                record
+                for record in caplog.records
+                if "В ALLOWED_USER_IDS указано" in record.message
+            ]
+            assert len(warning_records) == 1
+            assert "3 ID" in warning_records[0].message
+
+
+# --- Тесты E2E_TEST_USER_ID ---
+
+
+class TestE2eTestUserId:
+    """Тесты загрузки E2E_TEST_USER_ID из переменных окружения."""
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_e2e_user_id_loaded_from_env(self, mock_dotenv: object) -> None:
+        """E2E_TEST_USER_ID загружается как int из переменной окружения."""
+        env = _make_env(working_dir="/tmp")
+        env["E2E_TEST_USER_ID"] = "99999"
+        with patch.dict(os.environ, env, clear=True):
+            load_config()
+            assert config.E2E_TEST_USER_ID == 99999
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_e2e_user_id_none_when_missing(self, mock_dotenv: object) -> None:
+        """Без переменной E2E_TEST_USER_ID — значение None, без ошибки."""
+        env = _make_env(working_dir="/tmp")
+        with patch.dict(os.environ, env, clear=True):
+            load_config()
+            assert config.E2E_TEST_USER_ID is None
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_e2e_user_id_not_in_allowed_ids(self, mock_dotenv: object) -> None:
+        """E2E_TEST_USER_ID НЕ добавляется в ALLOWED_USER_IDS."""
+        env = _make_env(working_dir="/tmp")
+        env["E2E_TEST_USER_ID"] = "99999"
+        with patch.dict(os.environ, env, clear=True):
+            load_config()
+            assert 99999 not in config.ALLOWED_USER_IDS
+            assert config.E2E_TEST_USER_ID == 99999
+
+    @patch("claude_manager.config.load_dotenv")
+    def test_e2e_user_id_invalid_raises_config_error(
+        self, mock_dotenv: object
+    ) -> None:
+        """Нечисловое значение E2E_TEST_USER_ID вызывает ConfigError."""
+        env = _make_env(working_dir="/tmp")
+        env["E2E_TEST_USER_ID"] = "not-a-number"
+        with patch.dict(os.environ, env, clear=True):
+            with pytest.raises(ConfigError, match="нечисловое значение"):
+                load_config()

@@ -176,7 +176,14 @@ async def _check_session(session_id: str) -> None:
 
         # Если владелец найден — отправляем только ему.
         # Если нет (сессия создана вне бота) — fallback на всех из ALLOWED_USER_IDS.
-        target_chat_ids = [owner_chat_id] if owner_chat_id is not None else list(config.ALLOWED_USER_IDS)
+        if owner_chat_id is not None:
+            target_chat_ids = [owner_chat_id]
+        else:
+            # Fallback: рассылка всем из белого списка, кроме E2E тестового аккаунта
+            target_chat_ids = [
+                cid for cid in config.ALLOWED_USER_IDS
+                if cid != config.E2E_TEST_USER_ID
+            ]
 
         for chat_id in target_chat_ids:
             current_session = await _get_current_session(chat_id)

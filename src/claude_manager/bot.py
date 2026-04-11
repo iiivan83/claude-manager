@@ -111,6 +111,8 @@ def _check_access(update: Update) -> bool:
     user_id = update.effective_user.id
     if user_id in config.ALLOWED_USER_IDS:
         return True
+    if config.E2E_TEST_USER_ID is not None and user_id == config.E2E_TEST_USER_ID:
+        return True
     logger.warning("Неавторизованный доступ: user_id=%d", user_id)
     return False
 
@@ -505,6 +507,8 @@ async def post_init(application: Application) -> None:
     # Если реестр дневных сессий не загрузился — сообщаем пользователю
     if not daily_session_registry.is_registry_loaded():
         for chat_id in config.ALLOWED_USER_IDS:
+            if chat_id == config.E2E_TEST_USER_ID:
+                continue
             await _send_telegram_message(
                 chat_id,
                 "Не удалось загрузить реестр дневных сессий после 10 попыток. "

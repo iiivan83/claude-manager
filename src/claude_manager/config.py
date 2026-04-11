@@ -17,6 +17,7 @@ _ENV_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
 _ENV_ALLOWED_IDS = "ALLOWED_USER_IDS"
 _ENV_WORKING_DIR = "CLAUDE_WORKING_DIR"
 _ENV_PROJECTS_ROOT = "PROJECTS_ROOT_DIR"
+_ENV_E2E_TEST_USER_ID = "E2E_TEST_USER_ID"
 
 # Значение PROJECTS_ROOT_DIR по умолчанию — папка, где у пользователя лежат проекты.
 # Используется, если переменная окружения не задана. Бот ищет проекты здесь для команды /projects.
@@ -36,6 +37,7 @@ BOT_TOKEN: str = ""
 ALLOWED_USER_IDS: set[int] = set()
 WORKING_DIR: str = ""
 PROJECTS_ROOT_DIR: str = ""
+E2E_TEST_USER_ID: int | None = None
 
 
 class ConfigError(Exception):
@@ -99,7 +101,7 @@ def _resolve_projects_root(raw_value: str | None) -> str:
 
 def load_config() -> None:
     """Загружает настройки из .env и записывает их в константы модуля."""
-    global BOT_TOKEN, ALLOWED_USER_IDS, WORKING_DIR, PROJECTS_ROOT_DIR
+    global BOT_TOKEN, ALLOWED_USER_IDS, WORKING_DIR, PROJECTS_ROOT_DIR, E2E_TEST_USER_ID
 
     # override=True — значения из .env перезаписывают системные переменные
     load_dotenv(override=True)
@@ -125,6 +127,35 @@ def load_config() -> None:
     ALLOWED_USER_IDS = allowed_ids
     WORKING_DIR = working_dir
     PROJECTS_ROOT_DIR = projects_root
+
+    # E2E_TEST_USER_ID — необязательная переменная для изоляции тестового аккаунта
+    raw_e2e_id = os.environ.get(_ENV_E2E_TEST_USER_ID, "")
+    if raw_e2e_id.strip():
+        try:
+            E2E_TEST_USER_ID = int(raw_e2e_id.strip())
+        except ValueError:
+            raise ConfigError(
+                f"{_ENV_E2E_TEST_USER_ID} содержит нечисловое значение: '{raw_e2e_id}'"
+            )
+        logger.info("E2E тестовый аккаунт настроен: user_id=%d", E2E_TEST_USER_ID)
+        if E2E_TEST_USER_ID in allowed_ids:
+            logger.warning(
+                "E2E_TEST_USER_ID (%d) совпадает с одним из ALLOWED_USER_IDS — "
+                "это нарушает изоляцию тестового аккаунта. "
+                "Уберите этот ID из ALLOWED_USER_IDS",
+                E2E_TEST_USER_ID,
+            )
+    else:
+        E2E_TEST_USER_ID = None
+
+    if len(allowed_ids) > 1:
+        logger.warning(
+            "В ALLOWED_USER_IDS указано %d ID. Бот рассчитан на одного пользователя — "
+            "несколько ID поддерживаются только для одного человека с разных устройств. "
+            "Добавление ID другого человека может вызвать дублирование сообщений "
+            "и конфликты состояния",
+            len(allowed_ids),
+        )
 
     logger.info(
         "Конфигурация загружена: рабочая директория=%s, корень проектов=%s, "

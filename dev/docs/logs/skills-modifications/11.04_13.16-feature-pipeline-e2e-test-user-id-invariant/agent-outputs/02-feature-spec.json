@@ -1,0 +1,101 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-11T13:20:00+03:00",
+  "result": {
+    "approach_summary": "Добавляем E2E_TEST_USER_ID как отдельную необязательную переменную конфигурации (НЕ в ALLOWED_USER_IDS). Бот проверяет этот ID в _check_access отдельно. Watcher и _post_init фильтруют E2E ID из broadcast/служебных рассылок. Документация и скиллы обновляются со ссылкой на однопользовательский инвариант.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/config.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Константы: BOT_TOKEN, ALLOWED_USER_IDS, WORKING_DIR, PROJECTS_ROOT_DIR. load_config() парсит 4 переменные из .env",
+          "becomes": "Добавляется: (1) _ENV_E2E_TEST_USER_ID = 'E2E_TEST_USER_ID', (2) E2E_TEST_USER_ID: int | None = None как константа модуля, (3) В load_config(): парсинг E2E_TEST_USER_ID из os.environ — если задан, преобразуем в int (невалидное значение → ConfigError); если не задан → None. Логирование при загрузке. НЕ добавляем в ALLOWED_USER_IDS.",
+          "reason": "Отдельная переменная для изоляции E2E тестового аккаунта. Не добавляется в ALLOWED_USER_IDS, чтобы не триггерить warning о множественных пользователях и сохранить семантическое разделение."
+        }
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "_check_access проверяет только user_id in config.ALLOWED_USER_IDS. post_init рассылает служебные уведомления всем из config.ALLOWED_USER_IDS.",
+          "becomes": "(1) _check_access: после проверки ALLOWED_USER_IDS добавить проверку config.E2E_TEST_USER_ID is not None and user_id == config.E2E_TEST_USER_ID → return True. (2) post_init: в цикле строки 507 фильтровать — пропускать chat_id == config.E2E_TEST_USER_ID.",
+          "reason": "E2E-аккаунт должен проходить авторизацию для отправки сообщений боту, но НЕ должен получать служебные уведомления (он не реальный пользователь)."
+        }
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Строка 179: target_chat_ids = [owner_chat_id] if owner_chat_id is not None else list(config.ALLOWED_USER_IDS)",
+          "becomes": "Строка 179: fallback формирует список из ALLOWED_USER_IDS, но фильтрует E2E_TEST_USER_ID. Результат: target_chat_ids = [owner_chat_id] if owner_chat_id is not None else [cid for cid in config.ALLOWED_USER_IDS if cid != config.E2E_TEST_USER_ID]",
+          "reason": "E2E-аккаунт не должен получать broadcast-уведомления о сессиях без владельца. Он получает уведомления только как owner (если сам создал сессию)."
+        }
+      },
+      {
+        "file": ".env.example",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Секция E2E: 4 переменные (API_ID, API_HASH, PHONE, BOT_USERNAME)",
+          "becomes": "Добавить E2E_TEST_USER_ID с комментарием: Telegram-ID аккаунта для E2E тестирования. Не добавляйте этот ID в ALLOWED_USER_IDS — бот обрабатывает его отдельно.",
+          "reason": "Документирование новой переменной окружения для E2E тестов."
+        }
+      },
+      {
+        "file": "CLAUDE.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Раздел 'Архитектурные принципы' заканчивается подразделом 'Защита персистентных данных от затирания'",
+          "becomes": "Добавить подраздел '### Однопользовательский инвариант' после 'Защита персистентных данных от затирания'. Текст: бот архитектурно однопользовательский, ALLOWED_USER_IDS допускает несколько ID только для одного человека, все модули хранят состояние без изоляции по chat_id, добавление ID другого человека сломает бота.",
+          "reason": "Фиксация архитектурного ограничения в главном документе проекта. Рекомендация root-cause отчёта."
+        }
+      },
+      {
+        "file": "CLAUDE.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Раздел 'Важные детали для разработки' заканчивается пунктом про переключение проектов",
+          "becomes": "Добавить пункт '- **E2E тестирование и изоляция:**' — E2E тесты через Telethon используют отдельный аккаунт, НЕ добавляемый в ALLOWED_USER_IDS; используется E2E_TEST_USER_ID; бот принимает сообщения от E2E через отдельную проверку в _check_access, watcher не шлёт broadcast.",
+          "reason": "Документирование правильного способа E2E тестирования. Рекомендация root-cause отчёта."
+        }
+      },
+      {
+        "file": "dev/docs/brd/brd-user-journeys.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Описание ALLOWED_USER_IDS (строка ~32) — 'для одного человека с разных устройств'",
+          "becomes": "После описания добавить предупреждение: добавление ID другого человека не поддерживается и приведёт к конфликтам состояния. Подробности в CLAUDE.md, раздел «Однопользовательский инвариант».",
+          "reason": "Явное указание ограничения в требованиях. Рекомендация root-cause отчёта."
+        }
+      },
+      {
+        "file": ".claude/skills/test-e2e/SKILL.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Предварительные проверки: .env с Telethon-переменными",
+          "becomes": "Добавить проверку: 'Перед запуском E2E проверь раздел Однопользовательский инвариант в CLAUDE.md. E2E тестовый аккаунт НЕ добавляется в ALLOWED_USER_IDS — используй E2E_TEST_USER_ID. Если Telethon user ID обнаружен в ALLOWED_USER_IDS — СТОП.'",
+          "reason": "Предотвращение повторного добавления тестового аккаунта в ALLOWED_USER_IDS."
+        }
+      },
+      {
+        "file": ".claude/skills/validate-brd/SKILL.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Направление 3 — Противоречия: общие проверки",
+          "becomes": "Добавить пункт: 'Проверь, что архитектурные ограничения из BRD и CLAUDE.md (однопользовательский инвариант, single-instance через файл-замок) не нарушены конфигурацией и кодом.'",
+          "reason": "Ловить конфликты BRD/конфиг на этапе валидации. Рекомендация root-cause отчёта."
+        }
+      },
+      {
+        "file": ".claude/skills/review-code/SKILL.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Проход 4 — Соответствие BRD: проверка белого списка, сквозных механизмов",
+          "becomes": "Добавить пункт: 'Если BRD или CLAUDE.md фиксирует архитектурное ограничение (однопользовательский инвариант, single-instance), проверь что глобальное состояние всех модулей не конфликтует при расширении за рамки ограничения.'",
+          "reason": "Ловить отсутствие изоляции при ревью кода. Рекомендация root-cause отчёта."
+        }
+      }
+    ]
+  }
+}

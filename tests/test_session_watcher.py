@@ -730,6 +730,51 @@ class TestDetectNewMessages:
         called_chat_ids = {call[0][0] for call in mock_callback.call_args_list}
         assert called_chat_ids == {111, 222}
 
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.session_manager")
+    @patch("claude_manager.session_watcher.config")
+    @patch("claude_manager.session_watcher.daily_session_registry")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_e2e_user_excluded_from_fallback_broadcast(
+        self,
+        mock_reader,
+        mock_registry,
+        mock_config,
+        mock_session_manager,
+        mock_callback,
+        mock_get_current_session,
+    ) -> None:
+        """E2E_TEST_USER_ID не получает fallback-broadcast."""
+        mock_config.WORKING_DIR = "/fake/project"
+        mock_config.ALLOWED_USER_IDS = {111, 99999}
+        mock_config.E2E_TEST_USER_ID = 99999
+        # Владелец не найден — срабатывает fallback
+        mock_session_manager.get_chat_id_for_session.return_value = None
+
+        session_watcher._callback = mock_callback
+        session_watcher._get_current_session = mock_get_current_session
+        session_watcher._seen_message_counts = {"session-1": 1}
+
+        messages = [
+            _make_system_message(),
+            _make_assistant_message("Ответ только реальному пользователю"),
+        ]
+
+        mock_reader.get_recent_sessions = AsyncMock(
+            return_value=[_FakeSessionInfo("session-1")]
+        )
+        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
+        mock_reader.get_session_messages = AsyncMock(return_value=messages)
+        mock_registry.register_session = AsyncMock(return_value=1)
+
+        await session_watcher._poll_sessions()
+
+        # callback вызван ТОЛЬКО для 111, НЕ для E2E-пользователя 99999
+        assert mock_callback.call_count == 1
+        called_chat_ids = {call[0][0] for call in mock_callback.call_args_list}
+        assert called_chat_ids == {111}
+        assert 99999 not in called_chat_ids
+
 
 # --- Юнит-тесты pause/resume ---
 

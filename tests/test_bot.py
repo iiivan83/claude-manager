@@ -153,6 +153,76 @@ class TestCheckAccess:
         assert _check_access(update) is False
 
 
+# --- Тесты авторизации E2E тестового аккаунта ---
+
+
+E2E_TEST_USER_ID = 77777
+
+
+class TestE2eTestUserAccess:
+    """Тесты авторизации E2E тестового аккаунта."""
+
+    def test_e2e_user_passes_check_access(self) -> None:
+        """E2E_TEST_USER_ID проходит _check_access."""
+        original = config_module.E2E_TEST_USER_ID
+        config_module.E2E_TEST_USER_ID = E2E_TEST_USER_ID
+        try:
+            update = _make_update(user_id=E2E_TEST_USER_ID)
+            assert _check_access(update) is True
+        finally:
+            config_module.E2E_TEST_USER_ID = original
+
+    def test_e2e_user_denied_when_not_configured(self) -> None:
+        """Без E2E_TEST_USER_ID чужой ID отклоняется."""
+        original = config_module.E2E_TEST_USER_ID
+        config_module.E2E_TEST_USER_ID = None
+        try:
+            update = _make_update(user_id=E2E_TEST_USER_ID)
+            assert _check_access(update) is False
+        finally:
+            config_module.E2E_TEST_USER_ID = original
+
+    @patch("claude_manager.bot._send_telegram_message", new_callable=AsyncMock)
+    @patch("claude_manager.bot._clean_old_received_files", new_callable=AsyncMock)
+    @patch("claude_manager.bot.session_manager")
+    async def test_post_init_skips_e2e_user(
+        self,
+        mock_session_mgr: MagicMock,
+        mock_clean: AsyncMock,
+        mock_send: AsyncMock,
+    ) -> None:
+        """post_init не шлёт уведомление E2E-пользователю."""
+        original_allowed = config_module.ALLOWED_USER_IDS
+        original_e2e = config_module.E2E_TEST_USER_ID
+
+        # Оба ID в белом списке, но E2E-пользователь должен быть пропущен
+        config_module.ALLOWED_USER_IDS = {111, E2E_TEST_USER_ID}
+        config_module.E2E_TEST_USER_ID = E2E_TEST_USER_ID
+
+        mock_session_mgr.load_bindings = AsyncMock()
+        mock_session_mgr.get_all_bindings.return_value = {}
+
+        mock_app = MagicMock()
+        mock_app.bot = MagicMock()
+        mock_app.bot.set_my_commands = AsyncMock()
+
+        try:
+            with patch.object(
+                daily_session_registry, "is_registry_loaded", return_value=False,
+            ):
+                await post_init(mock_app)
+
+            # _send_telegram_message вызван только для chat_id=111, не для E2E
+            sent_chat_ids = [
+                call.args[0] for call in mock_send.call_args_list
+            ]
+            assert 111 in sent_chat_ids
+            assert E2E_TEST_USER_ID not in sent_chat_ids
+        finally:
+            config_module.ALLOWED_USER_IDS = original_allowed
+            config_module.E2E_TEST_USER_ID = original_e2e
+
+
 # --- Тесты форматирования ---
 
 
