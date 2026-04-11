@@ -97,6 +97,10 @@ _processes: dict[str, ClaudeProcess] = {}
 # Флаги занятости: session_id -> True/False
 _busy_flags: dict[str, bool] = {}
 
+# Блокировка для атомарных операций над _busy_flags, _processes, _stop_events.
+# Захватывается только на короткие критические секции — не на всё время обработки.
+_busy_lock: asyncio.Lock = asyncio.Lock()
+
 # События отмены для прерывания ретраев через /stop
 _stop_events: dict[str, asyncio.Event] = {}
 
@@ -337,7 +341,8 @@ async def _restart_process(session_id: str) -> ClaudeProcess:
             f"Не удалось запустить Claude: {error}"
         ) from error
 
-    _processes[session_id] = claude_process
+    async with _busy_lock:
+        _processes[session_id] = claude_process
 
     logger.info(
         "Процесс Claude перезапущен: session_id=%s, PID=%d",
@@ -369,10 +374,13 @@ async def create_process(session_id: str | None = None) -> str:
             f"Не удалось запустить Claude: {error}"
         ) from error
 
-    # Сохраняем процесс и инициализируем служебные структуры
-    _processes[effective_session_id] = claude_process
-    _busy_flags[effective_session_id] = False
-    _stop_events[effective_session_id] = asyncio.Event()
+    # Сохраняем процесс и инициализируем служебные структуры.
+    # Lock гарантирует, что другая корутина не увидит процесс без busy-флага
+    # (промежуточное состояние между записью в _processes и _busy_flags).
+    async with _busy_lock:
+        _processes[effective_session_id] = claude_process
+        _busy_flags[effective_session_id] = False
+        _stop_events[effective_session_id] = asyncio.Event()
 
     process_type = "resume" if session_id is not None else "новый"
     logger.info(
@@ -413,19 +421,33 @@ async def send_message(
     retry_callback: RetryCallback | None = None,
 ) -> SendResult:
     """Отправляет сообщение в процесс Claude и ожидает ответ."""
-    claude_process = _validate_process_ready(session_id)
-    _prepare_for_send(session_id)
+    # Критическая секция 1: атомарная проверка «не занят» + установка «занят».
+    # Lock защищает от race condition, когда два send_message для одной сессии
+    # одновременно проходят проверку и оба устанавливают busy=True.
+    async with _busy_lock:
+        claude_process = _validate_process_ready(session_id)
+        _prepare_for_send(session_id)
 
+    # Lock освобождён — долгая работа идёт без блокировки.
+    # stop_process может захватить Lock и очистить busy, пока мы здесь.
     try:
         result = await _execute_send(
             session_id, text, claude_process, progress_callback, retry_callback,
         )
         if result.session_id != session_id:
+            # update_session_id захватывает _busy_lock внутри себя.
+            # Lock не удерживается здесь — deadlock невозможен.
             await update_session_id(session_id, result.session_id)
             session_id = result.session_id
         return result
     finally:
-        _busy_flags[session_id] = False
+        # Критическая секция 2: безопасная очистка busy.
+        # Проверяем наличие ключа, чтобы не создать «зомби» после stop_process.
+        # Сценарий без проверки: stop_process.pop удаляет ключ → finally пишет
+        # _busy_flags[session_id] = False → ключ воскресает как «зомби».
+        async with _busy_lock:
+            if session_id in _busy_flags:
+                _busy_flags[session_id] = False
 
 
 async def _execute_send(
@@ -459,24 +481,28 @@ async def _execute_send(
 
 async def stop_process(session_id: str) -> StopResult:
     """Останавливает процесс Claude в указанной сессии."""
-    claude_process = _processes.get(session_id)
+    # Критическая секция: читаем состояние и удаляем ключи атомарно.
+    # Гарантирует, что send_message.finally увидит отсутствие ключа
+    # и не создаст зомби-запись после нашего pop.
+    async with _busy_lock:
+        claude_process = _processes.get(session_id)
+        was_retrying = _busy_flags.get(session_id, False)
+
+        # Устанавливаем флаг отмены — прервёт ожидание ретрая
+        stop_event = _stop_events.get(session_id)
+        if stop_event is not None:
+            stop_event.set()
+
+        # Очищаем словари — до terminate, чтобы finally увидел отсутствие ключа
+        _processes.pop(session_id, None)
+        _busy_flags.pop(session_id, None)
+        _stop_events.pop(session_id, None)
+
+    # Завершаем процесс вне Lock — terminate может быть долгим (ждёт завершения)
     was_running = False
-    was_retrying = _busy_flags.get(session_id, False)
-
-    # Устанавливаем флаг отмены — прервёт ожидание ретрая
-    stop_event = _stop_events.get(session_id)
-    if stop_event is not None:
-        stop_event.set()
-
-    # Завершаем процесс, если он работает
     if claude_process is not None and claude_process.is_running():
         was_running = True
         await claude_process.terminate()
-
-    # Очищаем словари
-    _processes.pop(session_id, None)
-    _busy_flags.pop(session_id, None)
-    _stop_events.pop(session_id, None)
 
     logger.info(
         "Процесс остановлен: session_id=%s, was_running=%s, was_retrying=%s",
@@ -521,10 +547,13 @@ def has_process(session_id: str) -> bool:
 
 async def update_session_id(old_session_id: str, new_session_id: str) -> None:
     """Обновляет ключ сессии во всех внутренних словарях."""
-    # Переносим данные по новому ключу
-    for storage in (_processes, _busy_flags, _stop_events):
-        if old_session_id in storage:
-            storage[new_session_id] = storage.pop(old_session_id)
+    # Атомарный перенос: все три словаря обновляются за один захват Lock.
+    # Без Lock: другая корутина может прочитать словарь между pop и присвоением
+    # нового ключа — и увидеть промежуточное состояние (ключ удалён, но новый не создан).
+    async with _busy_lock:
+        for storage in (_processes, _busy_flags, _stop_events):
+            if old_session_id in storage:
+                storage[new_session_id] = storage.pop(old_session_id)
 
     logger.info(
         "Session ID обновлён: %s -> %s", old_session_id, new_session_id,

@@ -1,0 +1,207 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-11T11:24:00+03:00",
+  "result": {
+    "affected_files": [
+      {
+        "path": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "reason": "Основной файл изменения: добавить asyncio.Lock, оборачивающий чтение и запись _busy_flags в send_message, stop_process, update_session_id, stop_all_processes, create_process. Lock защищает от race condition при конкурентном доступе к _busy_flags из разных корутин (например, send_message + stop_process одновременно)"
+      },
+      {
+        "path": "tests/test_process_manager.py",
+        "type": "modify",
+        "reason": "Тесты напрямую обращаются к pm_module._busy_flags (reset_module_state фикстура, test_create_process_new_session, TestStopAllProcesses). Поведение не меняется, но нужно добавить тесты на конкурентный доступ через Lock"
+      },
+      {
+        "path": "tests/integration/test_message_path.py",
+        "type": "modify",
+        "reason": "Фикстура _reset_process_manager_state обращается к process_manager._busy_flags.clear(). Поведение сохраняется, но если Lock станет атрибутом модуля — фикстура должна его учитывать (Lock не нужно сбрасывать, он stateless после release)"
+      }
+    ],
+    "affected_functions": [
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "send_message",
+        "impact": "Критическая точка: _validate_process_ready проверяет _busy_flags, затем _prepare_for_send устанавливает True, finally снимает False. Между проверкой и установкой есть окно для race condition. Lock должен покрыть весь блок: проверка + установка busy (acquire перед _validate_process_ready, release после _prepare_for_send). finally-блок тоже под Lock для очистки"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "_validate_process_ready",
+        "impact": "Читает _busy_flags.get(session_id, False). Вызывается из send_message — будет вызываться внутри Lock. Саму функцию менять не нужно"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "_prepare_for_send",
+        "impact": "Пишет _busy_flags[session_id] = True. Вызывается из send_message — будет вызываться внутри Lock. Саму функцию менять не нужно"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "stop_process",
+        "impact": "Читает _busy_flags.get() для определения was_retrying, затем _busy_flags.pop() для удаления. Должно быть под Lock, чтобы не конфликтовать с send_message.finally (который пишет _busy_flags[session_id] = False). Без Lock возможна ситуация: stop_process.pop удаляет ключ, а send_message.finally пишет по удалённому ключу — «зомби»-флаг"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "stop_all_processes",
+        "impact": "Итерирует по _processes.keys() и вызывает stop_process для каждого. stop_process уже будет использовать Lock. stop_all_processes сам Lock не захватывает — делегирует в stop_process"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "update_session_id",
+        "impact": "Переносит ключ в _busy_flags (и _processes, _stop_events). Без Lock: send_message может читать _busy_flags по старому ключу, пока update_session_id переносит. Lock должен покрывать весь перенос данных во всех трёх словарях атомарно"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "create_process",
+        "impact": "Пишет _busy_flags[effective_session_id] = False. Это инициализация нового ключа — конфликт маловероятен, но для консистентности запись под Lock"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "is_busy",
+        "impact": "Читает _busy_flags.get(session_id, False). Синхронная функция. Если Lock используется только в async-контексте (asyncio.Lock), то is_busy не может его захватить напрямую (is_busy — sync). Два варианта: (1) оставить без Lock — допустимо, чтение одного значения из dict атомарно в CPython из-за GIL; (2) сделать async — сломает вызывающий код. Рекомендация: оставить без Lock"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "has_process",
+        "impact": "Читает _processes.get(). Синхронная функция. Аналогично is_busy — не требует Lock, чтение из dict атомарно в CPython"
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_ensure_process_running",
+        "impact": "Вызывает process_manager.has_process() и process_manager.create_process(). Не затронута напрямую — Lock внутренний для process_manager. Но: между has_process и create_process теоретически возможен race (два Telegram-сообщения одновременно). Это существующая проблема, Lock в _busy_flags её не решает"
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "handle_message",
+        "impact": "Вызывает process_manager.send_message(). Не затронута напрямую — Lock внутренний. Но handle_message уже обрабатывает ProcessManagerError (процесс занят)"
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "handle_stop",
+        "impact": "Вызывает process_manager.has_process() и process_manager.stop_process(). Не затронута напрямую — Lock внутренний"
+      }
+    ],
+    "affected_tests": [
+      {
+        "path": "tests/test_process_manager.py::reset_module_state",
+        "action": "keep",
+        "reason": "Фикстура сбрасывает pm_module._busy_flags.clear(). Lock — asyncio.Lock, stateless после release, сбрасывать не нужно. Фикстура работает корректно"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_create_process_new_session",
+        "action": "keep",
+        "reason": "Проверяет pm_module._busy_flags[session_id] is False. Поведение не меняется — Lock прозрачен для результата"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_send_message_success",
+        "action": "keep",
+        "reason": "Проверяет результат send_message. Lock прозрачен — один вызов, нет конкуренции"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_is_busy_during_request",
+        "action": "keep",
+        "reason": "Проверяет is_busy внутри _process_events через обёртку. is_busy остаётся sync, Lock не мешает — busy уже установлен до вызова _process_events"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_is_busy_after_completion",
+        "action": "keep",
+        "reason": "Проверяет is_busy после send_message. Lock не меняет поведение"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_busy_flag_cleared_on_error",
+        "action": "keep",
+        "reason": "Проверяет is_busy(session_id) is False после ошибки. Lock гарантирует finally-блок, поведение то же"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_stop_process_running",
+        "action": "keep",
+        "reason": "Проверяет session_id not in pm_module._processes. Lock прозрачен для одиночного вызова"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_stop_interrupts_retry_loop",
+        "action": "keep",
+        "reason": "Проверяет ProcessStoppedError. Lock не мешает — stop ставит event, send_message проверяет его"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_update_session_id",
+        "action": "keep",
+        "reason": "Проверяет перенос ключей в словарях. Lock прозрачен для одиночного вызова"
+      },
+      {
+        "path": "tests/test_process_manager.py::TestStopAllProcesses",
+        "action": "keep",
+        "reason": "5 тестов на stop_all_processes. Lock прозрачен — каждый stop_process внутри корректно захватывает/освобождает Lock"
+      },
+      {
+        "path": "tests/test_process_manager.py::test_send_message_retry_on_error",
+        "action": "keep",
+        "reason": "Ретрай-логика. Lock захватывается в начале send_message, release в finally. Retry-цикл внутри — Lock удерживается на всё время send_message. Это корректно"
+      },
+      {
+        "path": "tests/test_bot.py::test_handle_stop_*",
+        "action": "keep",
+        "reason": "Мокают process_manager.has_process и stop_process через patch.object. Lock не влияет на моки"
+      },
+      {
+        "path": "tests/integration/test_message_path.py::_reset_process_manager_state",
+        "action": "keep",
+        "reason": "Сбрасывает process_manager._busy_flags.clear(). Lock не требует сброса"
+      },
+      {
+        "path": "tests/integration/test_concurrent_access.py",
+        "action": "keep",
+        "reason": "Тестирует session_manager.update_session_id (не process_manager). Не затронут"
+      }
+    ],
+    "risk_zones": [
+      {
+        "area": "send_message удерживает Lock на всё время выполнения (включая ретраи до 10 минут)",
+        "risk_level": "high",
+        "reason": "send_message устанавливает busy в начале и снимает в finally. Если Lock покрывает весь send_message целиком — stop_process не сможет захватить Lock и не сможет очистить busy/прервать процесс, пока send_message ждёт ретрая. РЕШЕНИЕ: Lock должен покрывать только короткие критические секции (проверка + установка busy, очистка busy), а НЕ весь send_message. Паттерн: acquire → check + set busy → release → ... do work ... → acquire → clear busy → release"
+      },
+      {
+        "area": "stop_process vs send_message.finally — race на _busy_flags",
+        "risk_level": "medium",
+        "reason": "Сценарий: stop_process вызывает _busy_flags.pop(session_id), затем send_message.finally пишет _busy_flags[session_id] = False — создаётся «зомби»-ключ. С Lock: если finally захватывает Lock и проверяет наличие ключа перед записью — проблема решена. Без проверки — Lock не спасает, потому что pop и set — разные критические секции"
+      },
+      {
+        "area": "update_session_id vs send_message — перенос ключа во время обработки",
+        "risk_level": "medium",
+        "reason": "Сценарий: update_session_id вызывается из send_message (строка 424) после получения результата. В этот момент busy ещё True. update_session_id переносит busy на новый ключ, а finally (строка 428) пишет по session_id — который уже обновлён на строке 425 (session_id = result.session_id). Сейчас это работает корректно: строка 425 обновляет локальную переменную session_id, finally пишет по новому ключу. Lock не ломает эту логику, но должен быть в update_session_id для защиты от внешних конкурентных вызовов"
+      },
+      {
+        "area": "is_busy — синхронная функция, не может использовать asyncio.Lock",
+        "risk_level": "low",
+        "reason": "is_busy — sync, asyncio.Lock — async. Вызывается из session_watcher (не найдено прямых вызовов) и из тестов. В CPython чтение dict[key] атомарно из-за GIL. Риск минимален. Если перевести is_busy на async — придётся менять всех вызывающих. Рекомендация: оставить sync без Lock"
+      },
+      {
+        "area": "has_process — синхронная функция",
+        "risk_level": "low",
+        "reason": "Аналогично is_busy — sync, чтение из dict. Вызывается из bot.py: _ensure_process_running и handle_stop. Не защищается Lock. Между has_process и следующим вызовом (create_process, stop_process) возможен race, но это существующая проблема, не связанная с _busy_flags"
+      },
+      {
+        "area": "Deadlock: send_message → update_session_id, оба захватывают Lock",
+        "risk_level": "medium",
+        "reason": "send_message вызывает update_session_id (строка 424). Если Lock захвачен send_message и update_session_id тоже пытается захватить — deadlock (asyncio.Lock не reentrant). РЕШЕНИЕ: Lock только вокруг критических секций _busy_flags, а не вокруг всего тела функции. Либо update_session_id использует тот же Lock — тогда send_message должен его освободить перед вызовом update_session_id"
+      },
+      {
+        "area": "Тестовая фикстура reset_module_state обращается к _busy_flags напрямую",
+        "risk_level": "low",
+        "reason": "Фикстура делает pm_module._busy_flags.clear(). Это safe: Lock не удерживается между тестами (каждый тест — отдельная корутина). Если Lock окажется залоченным из-за падения теста без release — asyncio.Lock не переживает между тестами (новый event loop)"
+      }
+    ],
+    "spec_conflicts": [
+      "process_manager_spec.md (раздел 'Состояние модуля'): описывает _busy_flags как dict[str, bool], но не упоминает asyncio.Lock. Спецификация должна быть обновлена: добавить _busy_lock: asyncio.Lock в состояние модуля, описать гранулярность блокировки",
+      "process_manager_spec.md (раздел 'Алгоритм: send_message', шаги 2-3-9): описывает проверку busy → установку busy → снятие busy как отдельные шаги без атомарности. Нужно обновить: шаги 2-3 атомарны под Lock, шаг 9 под Lock",
+      "process_manager_spec.md (раздел 'Алгоритм: stop_process', шаги 4-5): описывает чтение was_retrying и pop из _busy_flags. Нужно обновить: шаги 4-5 атомарны под Lock",
+      "process_manager_spec.md (раздел 'Координация с session_watcher'): описывает _busy_flags как механизм координации. Lock не меняет семантику, но спецификация должна упомянуть потокобезопасность"
+    ],
+    "new_tests_needed": [
+      "test_concurrent_send_and_stop — две корутины: send_message (с медленным mock _process_events) и stop_process вызываются параллельно через asyncio.gather. Проверить: (1) stop_process не блокируется надолго, (2) после завершения обоих — нет зомби-ключей в _busy_flags, (3) send_message получает ProcessStoppedError",
+      "test_concurrent_two_sends_same_session — два send_message для одного session_id через asyncio.gather. Первый должен захватить busy, второй должен получить ProcessManagerError (уже занят). Проверить атомарность check + set",
+      "test_update_session_id_during_busy — вызвать update_session_id пока busy=True (имитация: напрямую установить _busy_flags[old_id]=True). Проверить: busy корректно перенесён на новый ключ",
+      "test_stop_process_does_not_leave_zombie_flag — stop_process вызывается, затем проверяется что session_id полностью удалён из _busy_flags (нет воскрешения из finally)"
+    ]
+  }
+}

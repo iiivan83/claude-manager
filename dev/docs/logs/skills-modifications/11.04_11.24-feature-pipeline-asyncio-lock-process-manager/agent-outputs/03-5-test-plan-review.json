@@ -1,0 +1,80 @@
+{
+  "agent": "feature-test-plan-review",
+  "status": "success",
+  "timestamp": "2026-04-11T11:50:00+03:00",
+  "result": {
+    "verdict": "approved_with_remarks",
+    "issues": [
+      {
+        "severity": "low",
+        "test": "test_update_session_id_atomic_under_lock",
+        "issue": "Дублирует существующий test_update_session_id (строки 479-498). Существующий тест уже проверяет: (1) new_id присутствует во всех трёх словарях, (2) old_id отсутствует во всех трёх. Новый тест описывает те же самые assertions. Разница только в названии.",
+        "recommendation": "Оставить тест в плане, но при реализации сделать его осмысленно другим: добавить конкурентный вызов (asyncio.gather update_session_id + read из другой корутины), чтобы проверить именно атомарность под Lock, а не просто повторить последовательный вызов. Альтернатива — удалить из плана и считать risk_zone покрытой существующим тестом."
+      }
+    ],
+    "review_checklist": {
+      "risk_zones_covered": {
+        "status": "pass",
+        "details": "Все 7 risk_zones из анализа влияния покрыты. 5 из 7 — существующими тестами (is_busy sync, has_process sync, фикстура, deadlock — косвенно). 2 ключевых (race send+stop, race два send) — новыми тестами. Зомби-ключи — отдельным тестом."
+      },
+      "no_duplicate_tests": {
+        "status": "warning",
+        "details": "test_update_session_id_atomic_under_lock пересекается с test_update_session_id. Рекомендация выше."
+      },
+      "correct_test_level": {
+        "status": "pass",
+        "details": "Все 4 новых теста — unit. Для scale=small это правильно. Конкурентные тесты через asyncio.gather — это юнит-тесты (один event loop, моки, без внешних зависимостей), не интеграционные."
+      },
+      "existing_tests_preserved": {
+        "status": "pass",
+        "details": "Все 30 существующих тестов в tests_to_update = [] и tests_to_delete = []. Lock прозрачен для одиночных вызовов — корректно."
+      },
+      "spec_changes_c8_matched": {
+        "status": "pass",
+        "details": "Спецификация C8 требует 4 теста: (1) test_concurrent_send_and_stop, (2) test_concurrent_two_sends_same_session, (3) test_stop_does_not_leave_zombie_busy_flag, (4) test_update_session_id_atomic_under_lock. План содержит все 4."
+      },
+      "assertions_are_specific": {
+        "status": "pass",
+        "details": "Каждый тест содержит конкретные assertions: проверка наличия/отсутствия в конкретных словарях, проверка типов исключений, проверка количества успешных/неуспешных вызовов."
+      },
+      "test_isolation": {
+        "status": "pass",
+        "details": "Фикстура reset_module_state (autouse=True) сбрасывает все три словаря перед каждым тестом. asyncio.Lock stateless после release — не требует сброса. Новые тесты не влияют на существующие."
+      }
+    },
+    "approved_plan": {
+      "test_framework": "pytest + pytest-asyncio",
+      "scale": "small",
+      "tests_to_update": [],
+      "tests_to_add": [
+        {
+          "name": "test_concurrent_send_and_stop",
+          "path": "tests/test_process_manager.py",
+          "level": "unit",
+          "description": "asyncio.gather: send_message (медленный mock) + stop_process. Проверяет отсутствие зомби-ключей после конкурентного выполнения."
+        },
+        {
+          "name": "test_concurrent_two_sends_same_session",
+          "path": "tests/test_process_manager.py",
+          "level": "unit",
+          "description": "asyncio.gather: два send_message для одного session_id. Ровно один успешен, ровно один получает ProcessManagerError."
+        },
+        {
+          "name": "test_stop_does_not_leave_zombie_busy_flag",
+          "path": "tests/test_process_manager.py",
+          "level": "unit",
+          "description": "stop_process.pop + имитация finally. Проверяет: ключ не воскресает после pop."
+        },
+        {
+          "name": "test_update_session_id_atomic_under_lock",
+          "path": "tests/test_process_manager.py",
+          "level": "unit",
+          "description": "create_process + update_session_id. Проверяет атомарный перенос ключей во всех трёх словарях. ЗАМЕЧАНИЕ: при реализации добавить конкурентный элемент, чтобы отличаться от существующего test_update_session_id."
+        }
+      ],
+      "tests_to_delete": [],
+      "total_new_tests": 4,
+      "total_existing_tests_unchanged": 30
+    }
+  }
+}

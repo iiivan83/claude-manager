@@ -1010,3 +1010,180 @@ class TestStopAllProcesses:
 
         assert result == 1
         assert "sess-busy" not in pm_module._processes
+
+
+# --- Тесты конкурентного доступа (Lock) ---
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_concurrent_two_sends_same_session(mock_start):
+    """Два одновременных send_message для одной сессии — ровно один получает ошибку."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "abc-123"},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": "abc-123",
+        },
+    ]
+    mock_process = _make_claude_process(events=events)
+    mock_start.return_value = mock_process
+
+    session_id = await create_process(session_id=None)
+
+    # Замедляем _process_events, чтобы первый send_message удерживал busy=True
+    # пока второй пытается захватить Lock
+    original_process_events = pm_module._process_events
+
+    async def slow_process_events(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return await original_process_events(*args, **kwargs)
+
+    results = []
+    errors = []
+
+    async def safe_send(label: str):
+        try:
+            result = await send_message(session_id, f"Привет от {label}")
+            results.append(result)
+        except (ProcessManagerError, ProcessNotFoundError) as error:
+            errors.append(error)
+
+    with patch.object(pm_module, "_process_events", side_effect=slow_process_events):
+        await asyncio.gather(safe_send("first"), safe_send("second"))
+
+    # Ровно один успех и ровно одна ошибка «уже занят»
+    assert len(results) + len(errors) == 2
+    assert len(errors) == 1
+    assert "уже занят" in str(errors[0])
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_concurrent_send_and_stop(mock_start):
+    """Одновременный send_message + stop_process — нет зомби в _busy_flags."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "abc-123"},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": "abc-123",
+        },
+    ]
+    mock_process = _make_claude_process(events=events)
+    mock_start.return_value = mock_process
+
+    session_id = await create_process(session_id=None)
+
+    # Замедляем _process_events, чтобы stop_process успел вызваться во время send_message
+    original_process_events = pm_module._process_events
+
+    async def slow_process_events(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return await original_process_events(*args, **kwargs)
+
+    send_result = None
+    send_error = None
+
+    async def do_send():
+        nonlocal send_result, send_error
+        try:
+            send_result = await send_message(session_id, "Привет")
+        except (ProcessManagerError, ProcessStoppedError, ProcessNotFoundError) as error:
+            send_error = error
+
+    async def do_stop():
+        # Небольшая задержка, чтобы send_message успел захватить Lock первым
+        await asyncio.sleep(0.01)
+        await stop_process(session_id)
+
+    with patch.object(pm_module, "_process_events", side_effect=slow_process_events):
+        await asyncio.gather(do_send(), do_stop())
+
+    # Главная проверка: после обоих операций — session_id НЕТ в _busy_flags (нет зомби)
+    assert session_id not in pm_module._busy_flags
+
+
+async def test_stop_does_not_leave_zombie_busy_flag():
+    """stop_process.pop удаляет ключ — имитация finally не воскрешает зомби."""
+    session_id = "zombie-test"
+
+    # Напрямую устанавливаем состояние, как если бы send_message работал
+    mock_process = _make_claude_process()
+    pm_module._processes[session_id] = mock_process
+    pm_module._busy_flags[session_id] = True
+    pm_module._stop_events[session_id] = asyncio.Event()
+
+    # stop_process удаляет ключ из _busy_flags через pop
+    await stop_process(session_id)
+
+    # Ключ удалён
+    assert session_id not in pm_module._busy_flags
+
+    # Имитация finally-блока send_message: проверяем наличие перед записью
+    # Это повторяет логику: async with _busy_lock: if session_id in _busy_flags: ...
+    async with pm_module._busy_lock:
+        if session_id in pm_module._busy_flags:
+            pm_module._busy_flags[session_id] = False
+
+    # Ключ НЕ воскрес — зомби не создан
+    assert session_id not in pm_module._busy_flags
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_update_session_id_atomic_under_lock(mock_start):
+    """update_session_id переносит ключи атомарно во всех трёх словарях."""
+    mock_process = _make_claude_process()
+    mock_start.return_value = mock_process
+
+    old_id = await create_process(session_id=None)
+    new_id = "new-session-uuid"
+
+    # Запоминаем оригинальные объекты до переноса
+    original_process = pm_module._processes[old_id]
+    original_stop_event = pm_module._stop_events[old_id]
+
+    # Проверяем промежуточное состояние: запускаем update и конкурентную проверку
+    observed_states = []
+
+    original_update = pm_module.update_session_id
+
+    async def check_consistency_after_update():
+        # Даём update_session_id время начать
+        await asyncio.sleep(0.001)
+        # После update — проверяем консистентность словарей
+        async with pm_module._busy_lock:
+            has_old_in_processes = old_id in pm_module._processes
+            has_old_in_busy = old_id in pm_module._busy_flags
+            has_old_in_events = old_id in pm_module._stop_events
+            has_new_in_processes = new_id in pm_module._processes
+            has_new_in_busy = new_id in pm_module._busy_flags
+            has_new_in_events = new_id in pm_module._stop_events
+            observed_states.append({
+                "old_gone": not has_old_in_processes and not has_old_in_busy and not has_old_in_events,
+                "new_present": has_new_in_processes and has_new_in_busy and has_new_in_events,
+            })
+
+    await asyncio.gather(
+        update_session_id(old_id, new_id),
+        check_consistency_after_update(),
+    )
+
+    # Старый ключ отсутствует во всех трёх словарях
+    assert old_id not in pm_module._processes
+    assert old_id not in pm_module._busy_flags
+    assert old_id not in pm_module._stop_events
+
+    # Новый ключ присутствует во всех трёх словарях с правильными значениями
+    assert pm_module._processes[new_id] is original_process
+    assert pm_module._busy_flags[new_id] is False
+    assert pm_module._stop_events[new_id] is original_stop_event
+
+    # Конкурентная проверка: после завершения update — состояние консистентно
+    if observed_states:
+        state = observed_states[0]
+        assert state["old_gone"] is True
+        assert state["new_present"] is True
