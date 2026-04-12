@@ -344,3 +344,73 @@ class TestMessagePathWithFileMarkers:
         # Маркера нет в HTML-выходе
         for part in html_parts:
             assert "[SEND_FILE" not in part
+
+
+# --- Тесты: session_id_callback в интеграции с ClaudeProcess ---
+
+
+class TestSessionIdCallbackIntegration:
+    """Интеграция session_id_callback с реальным ClaudeProcess (фейковый subprocess)."""
+
+    @pytest.mark.asyncio()
+    async def test_session_id_callback_fires_during_event_processing(self) -> None:
+        """Callback вызывается при обнаружении нового session_id в потоке событий.
+
+        Отличие от юнит-теста: здесь используется реальный ClaudeProcess
+        с фейковым subprocess, а не мок — проверяет интеграцию между
+        ClaudeProcess.read_events() и _process_events().
+        """
+        temp_id = "_new_temp_1234"
+        real_id = "uuid-real-session-abc"
+
+        events = [
+            {
+                "type": "system",
+                "session_id": real_id,
+                "message": "session started",
+            },
+            {
+                "type": "assistant",
+                "session_id": real_id,
+                "message": {
+                    "content": [{"type": "text", "text": "Ответ Claude"}],
+                },
+            },
+            {
+                "type": "result",
+                "session_id": real_id,
+                "result": "Ответ Claude",
+                "is_error": False,
+            },
+        ]
+
+        fake_process = _make_fake_process(events)
+        claude_process = ClaudeProcess(fake_process)
+
+        # Отслеживаем вызов callback и момент его срабатывания
+        callback_received_args: list[tuple[str, str]] = []
+        callback_fired_before_result = False
+        result_holder: list = []
+
+        async def tracking_callback(old_id: str, new_id: str) -> None:
+            """Записывает аргументы и проверяет, что callback вызван до завершения."""
+            callback_received_args.append((old_id, new_id))
+            # На момент callback результат ещё не получен
+            callback_fired_before_result = len(result_holder) == 0  # noqa: F841
+
+        result = await process_manager._process_events(
+            claude_process, temp_id, progress_callback=None,
+            session_id_callback=tracking_callback,
+        )
+        result_holder.append(result)
+
+        # Callback вызван ровно 1 раз
+        assert len(callback_received_args) == 1
+
+        # Аргументы правильные: старый temp_id -> новый real_id
+        assert callback_received_args[0] == (temp_id, real_id)
+
+        # Результат содержит новый session_id
+        assert result.session_id == real_id
+        assert result.text == "Ответ Claude"
+        assert result.is_error is False

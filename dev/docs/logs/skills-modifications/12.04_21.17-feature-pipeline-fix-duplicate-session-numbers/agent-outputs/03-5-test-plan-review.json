@@ -1,0 +1,107 @@
+{
+  "agent": "feature-test-plan-review",
+  "status": "success",
+  "timestamp": "2026-04-12T22:10:00+03:00",
+  "result": {
+    "verdict": "approved",
+    "issues": [
+      {
+        "type": "missing_coverage",
+        "description": "Карта влияния указывает зону риска 'Двойной вызов callback при ретрае' и рекомендует тест test_session_id_callback_during_retry. В тест-плане этого теста нет. Однако тест test_session_id_callback_called_once_despite_multiple_events проверяет флаг callback_fired (защиту от повторного вызова) на уровне одного вызова _process_events. При ретрае _process_events вызывается заново, но callback_fired инициализируется заново внутри функции, поэтому настоящая защита при ретрае — идемпотентность session_manager.update_session_id (проверяет _bindings.get(chat_id) == old_session_id). Это уже покрыто существующими тестами session_manager. Дыра некритичная, но стоит добавить комментарий в test_session_id_callback_called_once_despite_multiple_events, что при ретрае идемпотентность обеспечивается модулями-потребителями callback, а не флагом callback_fired.",
+        "severity": "warning"
+      },
+      {
+        "type": "redundant",
+        "description": "test_session_id_callback_not_called_when_id_unchanged — проверяет, что callback НЕ вызывается, если session_id не менялся. Это поведение тривиально следует из условия if event_session_id != final_session_id в _process_events (строка 206). Тест проверяет реализацию, а не поведение — фактически тестирует, что if-условие работает. Не критично (тест быстрый, не раздувает набор), но ценности почти не добавляет.",
+        "severity": "warning"
+      },
+      {
+        "type": "wrong_level",
+        "description": "E2E тест test_new_session_no_duplicate_numbers — для задачи масштаба medium E2E тест допустим, потому что это регрессионный тест основного бага (дубликаты номеров сессий). Но его описание требует взаимодействия с реальным Claude (ожидание ответа), что делает тест медленным (10-60 сек) и зависимым от внешнего сервиса. Для medium-задачи это на грани — при следующем ревью стоит обсудить, нельзя ли заменить на интеграционный тест с мокнутым Claude.",
+        "severity": "warning"
+      }
+    ],
+    "approved_plan": {
+      "test_framework": "pytest + pytest-asyncio (asyncio_mode=auto), unittest.mock (AsyncMock, MagicMock, patch)",
+      "scale": "medium",
+      "tests_to_update": [
+        {
+          "path": "tests/test_bot.py",
+          "changes": "Обновить тесты, которые проверяют обновление session_id через _handle_claude_result. Сейчас _handle_claude_result вызывает session_manager.update_session_id() и session_watcher.update_session_id() при result.session_id != session_id (строки 429-434 bot.py). После рефакторинга эти вызовы перемещаются в callback _on_session_id_changed, а _handle_claude_result упрощается — получает уже актуальный session_id. Если есть тесты, проверяющие что _handle_claude_result вызывает update_session_id, их нужно убрать или переписать. Также все моки process_manager.send_message должны учитывать новый параметр session_id_callback в сигнатуре — хотя при моккировании через patch это обычно прозрачно, проверить что call_args не ломаются."
+        },
+        {
+          "path": "tests/integration/test_message_path.py",
+          "changes": "Все 8 вызовов process_manager._process_events() используют позиционные аргументы (claude_process, session_id, progress_callback=None). Новый параметр session_id_callback добавляется четвёртым с default=None — позиционные вызовы продолжат работать без изменений. Формальное обновление НЕ нужно, но нужно убедиться в обратной совместимости при прогоне тестов. Добавить один новый тест в этот файл (см. tests_to_add)."
+        }
+      ],
+      "tests_to_add": [
+        {
+          "path": "tests/test_process_manager.py",
+          "description": "test_session_id_callback_called_on_new_id — в _process_events() при обнаружении нового session_id в потоке событий callback вызывается с аргументами (old_id, new_id). Создаёт ClaudeProcess с событиями, где session_id отличается от переданного. Передаёт AsyncMock как session_id_callback. Проверяет: callback вызван ровно 1 раз, первый аргумент — исходный session_id, второй — новый из события.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_process_manager.py",
+          "description": "test_session_id_callback_called_once_despite_multiple_events — ClaudeProcess отдаёт 3 события (system, assistant, result), каждое с одинаковым новым session_id. Проверяет: callback вызвался ровно 1 раз (не 3). Защита от повторных вызовов через флаг callback_fired.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_process_manager.py",
+          "description": "test_session_id_callback_none_no_error — вызывает _process_events() с session_id_callback=None и событиями, содержащими новый session_id. Проверяет: ошибки нет, результат содержит новый session_id, обратная совместимость не нарушена.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_process_manager.py",
+          "description": "test_session_id_callback_error_does_not_break_events — callback бросает RuntimeError. Проверяет: _process_events() всё равно возвращает SendResult с текстом ответа и правильным session_id. События дочитаны до конца, пользователь получил ответ Claude. Закрывает зону риска 'Callback вызывается внутри _process_events()'.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_process_manager.py",
+          "description": "test_session_id_callback_not_called_when_id_unchanged — ClaudeProcess отдаёт события, где session_id совпадает с переданным. Проверяет: callback НЕ вызывается, потому что ID не менялся.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_process_manager.py",
+          "description": "test_send_message_passes_callback_to_process_events — вызывает send_message() с session_id_callback=AsyncMock. Мокает _execute_send. Проверяет: session_id_callback передан в _execute_send (через call_args). Это сквозная проверка проброса callback через цепочку send_message → _execute_send → _process_events.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_bot.py",
+          "description": "test_send_to_claude_passes_session_id_callback — проверяет, что _send_to_claude_and_respond() передаёт session_id_callback в process_manager.send_message(). Мокает process_manager.send_message (возвращает SendResult). Проверяет: в call_args или call_kwargs есть ключ session_id_callback и его значение — callable.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_bot.py",
+          "description": "test_on_session_id_changed_updates_watcher_and_session_manager — проверяет, что callback _on_session_id_changed вызывает session_watcher.update_session_id(old, new) и session_manager.update_session_id(chat_id, old, new). Способ: мокаем process_manager.send_message так, чтобы он захватил и вызвал переданный session_id_callback с тестовыми аргументами. Проверяем: оба модуля получили правильные вызовы.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_bot.py",
+          "description": "test_resume_uses_updated_session_id_after_callback — проверяет, что после срабатывания callback переменная session_id в _send_to_claude_and_respond обновляется через nonlocal, и finally-блок вызывает session_watcher.resume_session() с НОВЫМ session_id, а не со старым. Способ: мокаем send_message так, чтобы session_id_callback обновил session_id, затем проверяем аргумент resume_session.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_bot.py",
+          "description": "test_handle_claude_result_no_longer_calls_update_session_id — проверяет, что после рефакторинга _handle_claude_result НЕ вызывает session_manager.update_session_id() и session_watcher.update_session_id(), даже когда result.session_id отличается от session_id. Обновление теперь происходит только через callback.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/integration/test_message_path.py",
+          "description": "test_session_id_callback_fires_during_event_processing — интеграционный тест: создаём ClaudeProcess с событиями, содержащими новый session_id. Передаём async callback в _process_events(). Проверяем: 1) callback вызван до завершения _process_events(), 2) результат содержит новый session_id, 3) callback получил правильные аргументы (old_id, new_id). Отличие от юнит-теста: здесь используется реальный ClaudeProcess (с фейковым subprocess), а не мок — проверяет интеграцию между ClaudeProcess и _process_events.",
+          "level": "integration"
+        },
+        {
+          "path": "tests/integration/test_watcher_handler_coordination.py",
+          "description": "test_callback_transfers_pause_from_temp_to_real_id — интеграционный тест race condition: 1) pause_session(temp_id), 2) вызываем callback (имитация _on_session_id_changed) — update_session_id(temp_id, real_id), 3) проверяем: temp_id больше не в _paused_sessions, real_id в _paused_sessions, 4) resume_session(real_id) — real_id убран из _paused_sessions. Проверяет, что перенос паузы работает атомарно и watcher не пролезет в зазор между pause(temp) и resume(real).",
+          "level": "integration"
+        },
+        {
+          "path": "tests/e2e/test_session_flow.py",
+          "description": "test_new_session_no_duplicate_numbers — E2E тест: 1) отправляем /new, получаем номер сессии (#N), 2) отправляем текстовое сообщение (Claude создаёт реальную сессию, temp_id → real UUID), 3) ждём ответ Claude, 4) отправляем /sessions, 5) проверяем: в списке сессий номер #N встречается ровно один раз (нет дубликата #N, #N+1 для одной и той же сессии). Это регрессионный E2E тест для основного бага.",
+          "level": "e2e"
+        }
+      ],
+      "tests_to_delete": []
+    }
+  }
+}

@@ -38,6 +38,8 @@ from claude_manager.bot import (
     _build_file_task,
     _check_access,
     _clean_old_received_files,
+    _handle_claude_result,
+    _send_to_claude_and_respond,
     _format_clickable_session_number,
     _format_session_header,
     _generate_file_name,
@@ -1669,3 +1671,165 @@ class TestProcessFileMarkers:
         # (только _send_telegram_message может быть вызвана позже для текста,
         # но _process_file_markers сама файлы не отправляла)
         _setup_application.bot.send_document.assert_not_called()
+
+
+# --- Тесты session_id_callback (раннее обновление привязок) ---
+
+
+class TestSessionIdCallback:
+    """Тесты механизма раннего уведомления о смене session_id через callback."""
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(session_manager, "get_bound_session")
+    async def test_send_to_claude_passes_session_id_callback(
+        self,
+        mock_get_bound: MagicMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """_send_to_claude_and_respond передаёт session_id_callback в process_manager.send_message."""
+        mock_get_bound.return_value = TEST_SESSION_ID
+        mock_register.return_value = 1
+
+        with patch.object(
+            process_manager, "has_process", return_value=True,
+        ), patch.object(
+            process_manager, "send_message", new_callable=AsyncMock,
+        ) as mock_send, patch.object(
+            session_watcher, "pause_session",
+        ), patch.object(
+            session_watcher, "resume_session", new_callable=AsyncMock,
+        ):
+            mock_send.return_value = SendResult(
+                text="OK", session_id=TEST_SESSION_ID, is_error=False, retries_used=0,
+            )
+            await _send_to_claude_and_respond(TEST_CHAT_ID, "Привет")
+
+            # Проверяем, что session_id_callback передан и является callable
+            call_kwargs = mock_send.call_args
+            assert "session_id_callback" in call_kwargs.kwargs
+            assert callable(call_kwargs.kwargs["session_id_callback"])
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(session_manager, "update_session_id", new_callable=AsyncMock)
+    @patch.object(session_manager, "get_bound_session")
+    async def test_on_session_id_changed_updates_watcher_and_session_manager(
+        self,
+        mock_get_bound: MagicMock,
+        mock_sm_update: AsyncMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Callback _on_session_id_changed вызывает update_session_id в watcher и session_manager."""
+        mock_get_bound.return_value = TEST_SESSION_ID
+        mock_register.return_value = 1
+        new_session_id = "real-uuid-xyz-789"
+
+        # Мокаем send_message так, чтобы он захватил и вызвал session_id_callback
+        async def fake_send_message(
+            session_id, text, progress_callback=None,
+            retry_callback=None, session_id_callback=None,
+        ):
+            # Вызываем callback, имитируя обнаружение нового session_id
+            if session_id_callback is not None:
+                await session_id_callback(TEST_SESSION_ID, new_session_id)
+            return SendResult(
+                text="OK", session_id=new_session_id, is_error=False, retries_used=0,
+            )
+
+        with patch.object(
+            process_manager, "has_process", return_value=True,
+        ), patch.object(
+            process_manager, "send_message", side_effect=fake_send_message,
+        ), patch.object(
+            session_watcher, "pause_session",
+        ), patch.object(
+            session_watcher, "update_session_id",
+        ) as mock_watcher_update, patch.object(
+            session_watcher, "resume_session", new_callable=AsyncMock,
+        ):
+            await _send_to_claude_and_respond(TEST_CHAT_ID, "Привет")
+
+            # session_watcher.update_session_id вызван с правильными аргументами
+            mock_watcher_update.assert_called_once_with(TEST_SESSION_ID, new_session_id)
+            # session_manager.update_session_id вызван с chat_id и обоими ID
+            mock_sm_update.assert_awaited_once_with(
+                TEST_CHAT_ID, TEST_SESSION_ID, new_session_id,
+            )
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(session_manager, "update_session_id", new_callable=AsyncMock)
+    @patch.object(session_manager, "get_bound_session")
+    async def test_resume_uses_updated_session_id_after_callback(
+        self,
+        mock_get_bound: MagicMock,
+        mock_sm_update: AsyncMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """После callback обновления, finally вызывает resume_session с НОВЫМ session_id."""
+        mock_get_bound.return_value = TEST_SESSION_ID
+        mock_register.return_value = 1
+        new_session_id = "real-uuid-resume-test"
+
+        async def fake_send_message(
+            session_id, text, progress_callback=None,
+            retry_callback=None, session_id_callback=None,
+        ):
+            if session_id_callback is not None:
+                await session_id_callback(TEST_SESSION_ID, new_session_id)
+            return SendResult(
+                text="OK", session_id=new_session_id, is_error=False, retries_used=0,
+            )
+
+        with patch.object(
+            process_manager, "has_process", return_value=True,
+        ), patch.object(
+            process_manager, "send_message", side_effect=fake_send_message,
+        ), patch.object(
+            session_watcher, "pause_session",
+        ), patch.object(
+            session_watcher, "update_session_id",
+        ), patch.object(
+            session_watcher, "resume_session", new_callable=AsyncMock,
+        ) as mock_resume:
+            await _send_to_claude_and_respond(TEST_CHAT_ID, "Привет")
+
+            # resume_session вызван с НОВЫМ session_id, а не со старым
+            mock_resume.assert_awaited_once_with(new_session_id)
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(session_manager, "get_bound_session")
+    async def test_handle_claude_result_no_longer_calls_update_session_id(
+        self,
+        mock_get_bound: MagicMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """_handle_claude_result не вызывает update_session_id — обновление теперь через callback."""
+        mock_register.return_value = 1
+        different_session_id = "different-uuid-999"
+
+        # Результат с session_id, отличающимся от переданного
+        result = SendResult(
+            text="OK", session_id=different_session_id, is_error=False, retries_used=0,
+        )
+
+        with patch.object(
+            session_manager, "update_session_id", new_callable=AsyncMock,
+        ) as mock_sm_update, patch.object(
+            session_watcher, "update_session_id",
+        ) as mock_watcher_update:
+            returned_id = await _handle_claude_result(
+                TEST_CHAT_ID, TEST_SESSION_ID, result,
+            )
+
+            # update_session_id НЕ вызывается в _handle_claude_result
+            mock_sm_update.assert_not_awaited()
+            mock_watcher_update.assert_not_called()
+            # Возвращает actual_session_id из результата
+            assert returned_id == different_session_id

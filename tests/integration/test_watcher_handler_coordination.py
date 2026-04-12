@@ -302,3 +302,57 @@ class TestEmptyResponses:
 
     def test_normal_text_is_not_empty(self) -> None:
         assert _is_empty_response("Привет, мир!") is False
+
+
+# --- Тесты: перенос паузы при замене temp → real session_id ---
+
+
+class TestCallbackTransfersPause:
+    """Перенос паузы при замене temp_id на real_id через callback."""
+
+    @pytest.mark.asyncio()
+    async def test_callback_transfers_pause_from_temp_to_real_id(self) -> None:
+        """Проверяет, что при замене session_id пауза переносится атомарно.
+
+        Сценарий race condition:
+        1. pause_session(temp_id) — watcher не трогает temp_id
+        2. callback update_session_id(temp_id, real_id) — пауза переносится
+        3. Проверка: temp_id убран, real_id на паузе
+        4. resume_session(real_id) — пауза снята, watcher может работать
+        """
+        temp_id = "_new_temp_5678"
+        real_id = "uuid-real-session-xyz"
+
+        # Шаг 1: handler ставит watcher на паузу для temp_id
+        pause_session(temp_id)
+        assert temp_id in session_watcher._paused_sessions
+        assert real_id not in session_watcher._paused_sessions
+
+        # Устанавливаем счётчик для temp_id (watcher уже видел 0 сообщений)
+        session_watcher._seen_message_counts[temp_id] = 0
+
+        # Шаг 2: callback (имитация _on_session_id_changed) переносит состояние
+        update_session_id(temp_id, real_id)
+
+        # Шаг 3: temp_id больше не на паузе, real_id — на паузе
+        assert temp_id not in session_watcher._paused_sessions
+        assert real_id in session_watcher._paused_sessions
+
+        # Счётчик тоже перенесён
+        assert temp_id not in session_watcher._seen_message_counts
+        assert session_watcher._seen_message_counts[real_id] == 0
+
+        # Шаг 4: resume_session(real_id) — пауза снята
+        with patch(
+            "claude_manager.session_watcher.session_reader.get_session_messages",
+            new_callable=AsyncMock,
+            return_value=[
+                {"type": "user", "message": {"content": "Привет"}},
+                {"type": "assistant", "message": {"content": "Ответ"}},
+            ],
+        ):
+            await resume_session(real_id)
+
+        # real_id убран из паузы, счётчик обновлён
+        assert real_id not in session_watcher._paused_sessions
+        assert session_watcher._seen_message_counts[real_id] == 2

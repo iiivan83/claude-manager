@@ -1,0 +1,167 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-12T21:25:00+03:00",
+  "result": {
+    "affected_files": [
+      {
+        "path": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "reason": "Добавить параметр session_id_callback в send_message(), _execute_send(), _process_events(), _retry_loop(), _execute_single_retry(). В _process_events() вызывать callback при первом обнаружении нового session_id в потоке событий. Тип callback: Callable[[str, str], Awaitable[None]] (old_id, new_id). Убрать вызов update_session_id() из send_message() — теперь обновление происходит внутри _process_events() через callback"
+      },
+      {
+        "path": "src/claude_manager/bot.py",
+        "type": "modify",
+        "reason": "Создать функцию _on_session_id_changed(old_id, new_id) — async callback, который координирует три модуля: session_watcher.update_session_id(), session_manager.update_session_id(), daily_session_registry.update_session_id(). Передать этот callback в process_manager.send_message(). Обновить _send_to_claude_and_respond(): пауза watcher по temp-ID, callback мгновенно перенесёт паузу на реальный UUID. Упростить _handle_claude_result() — убрать из неё логику обновления session_id (перенесена в callback)"
+      },
+      {
+        "path": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "reason": "Нет изменений в коде модуля. Существующие функции update_session_id() и pause_session() уже обеспечивают нужную функциональность. Callback из bot.py будет вызывать их через публичный API"
+      },
+      {
+        "path": "src/claude_manager/session_manager.py",
+        "type": "modify",
+        "reason": "Нет изменений в коде модуля. Существующая функция update_session_id(chat_id, old_id, new_id) уже обеспечивает нужную функциональность. Callback из bot.py будет вызывать её через публичный API"
+      },
+      {
+        "path": "src/claude_manager/daily_session_registry.py",
+        "type": "modify",
+        "reason": "Нет изменений в коде модуля. Существующая функция update_session_id(old_id, new_id) вызывается внутри session_manager.update_session_id(). Callback из bot.py не вызывает её напрямую"
+      }
+    ],
+    "affected_functions": [
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "send_message()",
+        "impact": "Добавляется новый опциональный параметр session_id_callback: Callable[[str, str], Awaitable[None]] | None = None. Изменяется внутренняя логика: вместо вызова update_session_id() после завершения _process_events(), callback вызывается ВНУТРИ _process_events() при первом обнаружении нового session_id. Блок после result.session_id != session_id в send_message() нужно упростить или убрать"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "_process_events()",
+        "impact": "Добавляется параметр session_id_callback. При обнаружении нового session_id (event_session_id != final_session_id) вызывается await session_id_callback(session_id, event_session_id) ОДИН раз — только при первом изменении. Это ключевая точка изменения: именно здесь callback срабатывает мгновенно, до того как watcher проснётся"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "_execute_send()",
+        "impact": "Прокидывает session_id_callback в _process_events() и _retry_loop()"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "_retry_loop()",
+        "impact": "Прокидывает session_id_callback в _execute_single_retry()"
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "function": "_execute_single_retry()",
+        "impact": "Прокидывает session_id_callback в _process_events()"
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_send_to_claude_and_respond()",
+        "impact": "Передаёт session_id_callback при вызове process_manager.send_message(). В finally-блоке resume_session вызывается с актуальным session_id (который мог быть обновлён callback-ом через замыкание или nonlocal). Пауза watcher ставится на исходный temp-ID, callback переносит её на реальный UUID"
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_handle_claude_result()",
+        "impact": "Упрощается: блок обновления session_id (строки 429-434) удаляется или становится no-op, потому что обновление теперь происходит через callback в _process_events(). Остаётся только регистрация в дневном реестре и отправка ответа"
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_on_session_id_changed() [новая]",
+        "impact": "Новая async-функция. Принимает (old_session_id, new_session_id). Координирует: 1) session_watcher.update_session_id(old, new) — переносит паузу, 2) session_manager.update_session_id(chat_id, old, new) — обновляет привязки и дневной реестр. chat_id берётся из замыкания. Функция создаётся внутри _send_to_claude_and_respond() как замыкание, чтобы иметь доступ к chat_id"
+      }
+    ],
+    "affected_tests": [
+      {
+        "path": "tests/test_process_manager.py",
+        "action": "update",
+        "reason": "Все тесты send_message() нужно проверить на совместимость с новым параметром session_id_callback. Тест test_session_id_updated_from_event (строка 639) — ключевой: нужно добавить проверку вызова callback при смене session_id. Тест test_send_message_success (строка 304) — после изменения send_message() не вызывает update_session_id() напрямую, а делегирует callback-у. Тесты _process_events в интеграционных тестах тоже затронуты (см. test_message_path.py)"
+      },
+      {
+        "path": "tests/test_bot.py",
+        "action": "update",
+        "reason": "Тесты _send_to_claude_and_respond() и _handle_claude_result() нужно обновить. _handle_claude_result() больше не вызывает session_manager.update_session_id() и session_watcher.update_session_id() — это делает callback. Тесты, которые мокают process_manager.send_message, должны учитывать новый параметр session_id_callback"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "action": "keep",
+        "reason": "API session_watcher не меняется — update_session_id() и pause_session() остаются прежними. Существующие тесты остаются валидными"
+      },
+      {
+        "path": "tests/test_session_manager.py",
+        "action": "keep",
+        "reason": "API session_manager не меняется — update_session_id() остаётся прежним. Существующие тесты остаются валидными"
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "action": "keep",
+        "reason": "API daily_session_registry не меняется. Существующие тесты остаются валидными"
+      },
+      {
+        "path": "tests/integration/test_message_path.py",
+        "action": "update",
+        "reason": "Тесты напрямую вызывают process_manager._process_events() с тремя аргументами (claude_process, session_id, progress_callback). После добавления параметра session_id_callback нужно обновить все вызовы: добавить четвёртый аргумент session_id_callback=None. Затронуты строки 92, 121, 150, 178, 199, 234, 281, 312 — 8 вызовов"
+      },
+      {
+        "path": "tests/integration/test_watcher_handler_coordination.py",
+        "action": "keep",
+        "reason": "Тесты координации watcher/handler работают через публичный API (pause_session, resume_session, update_session_id). API не меняется. Тесты остаются валидными"
+      },
+      {
+        "path": "tests/integration/test_session_lifecycle.py",
+        "action": "keep",
+        "reason": "Тесты жизненного цикла сессии работают через публичный API session_manager и daily_session_registry. API не меняется"
+      }
+    ],
+    "risk_zones": [
+      {
+        "area": "Callback вызывается внутри _process_events() во время итерации по событиям",
+        "risk_level": "high",
+        "reason": "Callback выполняет async-операции (session_manager.update_session_id с Lock, _save_bindings с записью на диск). Если callback бросит исключение, _process_events() прервётся и не прочитает оставшиеся события — пользователь не получит ответ Claude. Нужна обработка ошибок: try/except вокруг вызова callback с логированием, но без прерывания потока событий"
+      },
+      {
+        "area": "Двойной вызов callback при ретрае",
+        "risk_level": "medium",
+        "reason": "При ретрае _execute_single_retry() вызывает _process_events() заново. Если первый вызов уже обновил session_id через callback, повторный вызов callback с тем же old_id и new_id может привести к ошибке (old_id уже не существует в словарях). Решение: callback должен быть идемпотентным — проверять, не был ли ID уже обновлён"
+      },
+      {
+        "area": "Замыкание session_id в _send_to_claude_and_respond()",
+        "risk_level": "medium",
+        "reason": "Переменная session_id используется в finally-блоке для resume_session(). Если callback обновил session_id через замыкание (nonlocal), finally должен вызвать resume с НОВЫМ session_id. Если callback не обновит локальную переменную, resume вызовется со старым temp-ID — и реальная сессия останется без мониторинга. Нужно убедиться, что callback обновляет session_id через nonlocal"
+      },
+      {
+        "area": "Удаление логики обновления session_id из send_message() и _handle_claude_result()",
+        "risk_level": "medium",
+        "reason": "Сейчас обновление session_id происходит в двух местах: 1) process_manager.send_message() вызывает update_session_id() для внутренних словарей, 2) bot._handle_claude_result() вызывает session_manager и session_watcher. После рефакторинга callback объединяет оба шага. Если callback не передан (None), внутренние словари process_manager тоже должны обновиться — нужно сохранить fallback на старое поведение (update_session_id в send_message при callback=None)"
+      },
+      {
+        "area": "Координация Lock-ов между модулями",
+        "risk_level": "low",
+        "reason": "Callback вызывает session_manager.update_session_id() (который захватывает session_manager._lock) и process_manager.update_session_id() (захватывает _busy_lock). Порядок захвата Lock-ов должен быть одинаковым во всех сценариях, иначе возможен deadlock. В текущем коде _process_events() вызывается без _busy_lock, а update_session_id захватывает его — конфликта нет. Но нужно проверить, что callback тоже вызывается без удержания _busy_lock"
+      },
+      {
+        "area": "session_id_callback вызывается только один раз",
+        "risk_level": "low",
+        "reason": "В _process_events() несколько событий могут содержать session_id. Callback должен вызываться только при ПЕРВОМ изменении (когда final_session_id меняется с temp-ID на реальный UUID). Текущая логика уже отслеживает final_session_id — callback нужно вызывать внутри блока if event_session_id != final_session_id, но только если это первое изменение (добавить флаг callback_fired)"
+      }
+    ],
+    "spec_conflicts": [
+      "Нет конфликтов с архитектурой. CLAUDE.md явно описывает паттерн session_id_callback: «замена session_id (temp → real) должна происходить мгновенно, при первом обнаружении нового ID в потоке событий от Claude». Задача реализует именно этот паттерн.",
+      "Слоёная архитектура соблюдена: callback передаётся сверху (bot.py — транспортный слой) вниз (process_manager — инфраструктурный слой). process_manager не импортирует bot, session_manager или session_watcher — только вызывает переданный callback.",
+      "BRD CJM-02 (отправка текстового сообщения) и CJM-07 (мониторинг сессий) описывают координацию watcher/handler через механизм паузы. Изменения улучшают эту координацию, не меняя внешнего поведения.",
+      "Однопользовательский инвариант не затрагивается: callback принимает chat_id через замыкание, как и текущие callbacks (_on_progress, _on_retry)."
+    ],
+    "new_tests_needed": [
+      "test_process_manager: test_session_id_callback_called_on_new_id — callback вызывается при обнаружении нового session_id в потоке событий, с правильными аргументами (old_id, new_id)",
+      "test_process_manager: test_session_id_callback_called_once — callback вызывается только один раз, даже если несколько событий содержат session_id",
+      "test_process_manager: test_session_id_callback_none_no_error — если callback=None, поведение не меняется (обратная совместимость)",
+      "test_process_manager: test_session_id_callback_error_does_not_break_events — если callback бросает исключение, _process_events() продолжает читать события и возвращает результат",
+      "test_process_manager: test_session_id_callback_during_retry — callback вызывается корректно при ретрае (идемпотентность или однократность)",
+      "test_bot: test_on_session_id_changed_updates_all_modules — новый callback координирует session_watcher.update_session_id(), session_manager.update_session_id()",
+      "test_bot: test_send_to_claude_passes_session_id_callback — _send_to_claude_and_respond передаёт session_id_callback в process_manager.send_message()",
+      "test_bot: test_resume_uses_updated_session_id — после callback обновления, finally-блок вызывает resume_session() с новым session_id",
+      "test_integration: test_callback_fires_before_watcher_wakes — сквозной тест: pause ставится на temp-ID, callback переносит паузу на реальный UUID, watcher не создаёт дубликат"
+    ]
+  }
+}

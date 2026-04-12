@@ -425,15 +425,11 @@ async def _ensure_process_running(chat_id: int, session_id: str) -> bool:
 async def _handle_claude_result(
     chat_id: int, session_id: str, result: process_manager.SendResult,
 ) -> str:
-    """Обрабатывает результат от Claude: обновляет ID, отправляет ответ."""
-    if result.session_id != session_id:
-        old_id = session_id
-        new_id = result.session_id
-        await session_manager.update_session_id(chat_id, old_id, new_id)
-        session_watcher.update_session_id(old_id, new_id)
-        session_id = new_id
+    """Обрабатывает результат от Claude: регистрирует сессию и отправляет ответ."""
+    # Используем актуальный session_id из результата — callback уже обновил привязки
+    actual_session_id = result.session_id
 
-    day_number = await daily_session_registry.register_session(session_id)
+    day_number = await daily_session_registry.register_session(actual_session_id)
 
     if result.is_error:
         error_text = result.text if result.text else "Неизвестная ошибка Claude"
@@ -443,7 +439,7 @@ async def _handle_claude_result(
     else:
         await send_response(chat_id, result.text, day_number, is_final=True)
 
-    return session_id
+    return actual_session_id
 
 
 async def _send_to_claude_and_respond(chat_id: int, text: str) -> None:
@@ -460,10 +456,18 @@ async def _send_to_claude_and_respond(chat_id: int, text: str) -> None:
 
     session_watcher.pause_session(session_id)
 
+    async def _on_session_id_changed(old_id: str, new_id: str) -> None:
+        """Мгновенно обновляет привязки при смене session_id внутри потока событий."""
+        nonlocal session_id
+        session_watcher.update_session_id(old_id, new_id)
+        await session_manager.update_session_id(chat_id, old_id, new_id)
+        session_id = new_id
+
     try:
         result = await process_manager.send_message(
             session_id, text,
             progress_callback=_on_progress, retry_callback=_on_retry,
+            session_id_callback=_on_session_id_changed,
         )
         session_id = await _handle_claude_result(chat_id, session_id, result)
     except process_manager.ProcessStoppedError:

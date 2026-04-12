@@ -20,6 +20,7 @@ from claude_manager.process_manager import (
     _extract_result_text,
     _generate_temp_session_id,
     _is_error_result,
+    _process_events,
     _should_send_progress,
     create_process,
     has_process,
@@ -1187,3 +1188,183 @@ async def test_update_session_id_atomic_under_lock(mock_start):
         state = observed_states[0]
         assert state["old_gone"] is True
         assert state["new_present"] is True
+
+
+# --- Тесты session_id_callback ---
+
+
+async def test_session_id_callback_called_on_new_id():
+    """Callback вызывается при обнаружении нового session_id в потоке событий."""
+    old_id = "temp-session-001"
+    new_id = "real-uuid-abc-123"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": new_id},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": new_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+    callback_mock = AsyncMock()
+
+    result = await _process_events(
+        claude_process, old_id, progress_callback=None,
+        session_id_callback=callback_mock,
+    )
+
+    callback_mock.assert_awaited_once_with(old_id, new_id)
+    assert result.session_id == new_id
+
+
+async def test_session_id_callback_called_once_despite_multiple_events():
+    """Callback вызывается ровно один раз, даже если session_id повторяется в нескольких событиях."""
+    old_id = "temp-session-002"
+    new_id = "real-uuid-def-456"
+    # Три события с одним и тем же новым session_id
+    events = [
+        {"type": "system", "subtype": "init", "session_id": new_id},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "Думаю..."}],
+            },
+            "session_id": new_id,
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": new_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+    callback_mock = AsyncMock()
+
+    await _process_events(
+        claude_process, old_id, progress_callback=None,
+        session_id_callback=callback_mock,
+    )
+
+    # Callback вызван ровно 1 раз (не 3), благодаря флагу callback_fired.
+    # При ретрае идемпотентность обеспечивается модулями-потребителями callback,
+    # а не флагом callback_fired (он сбрасывается при новом вызове _process_events).
+    assert callback_mock.await_count == 1
+
+
+async def test_session_id_callback_none_no_error():
+    """При session_id_callback=None смена ID обрабатывается без ошибок (обратная совместимость)."""
+    old_id = "temp-session-003"
+    new_id = "real-uuid-ghi-789"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": new_id},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": new_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+
+    result = await _process_events(
+        claude_process, old_id, progress_callback=None,
+        session_id_callback=None,
+    )
+
+    assert result.session_id == new_id
+    assert result.text == "OK"
+    assert result.is_error is False
+
+
+async def test_session_id_callback_error_does_not_break_events():
+    """Ошибка в callback не прерывает чтение потока событий."""
+    old_id = "temp-session-004"
+    new_id = "real-uuid-jkl-012"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": new_id},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "Ответ получен",
+            "session_id": new_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+
+    # Callback бросает RuntimeError — _process_events должен перехватить и продолжить
+    failing_callback = AsyncMock(side_effect=RuntimeError("Ошибка в callback"))
+
+    result = await _process_events(
+        claude_process, old_id, progress_callback=None,
+        session_id_callback=failing_callback,
+    )
+
+    # События дочитаны до конца — пользователь получил ответ
+    assert result.text == "Ответ получен"
+    assert result.session_id == new_id
+    assert result.is_error is False
+
+
+async def test_session_id_callback_not_called_when_id_unchanged():
+    """Callback не вызывается, если session_id в событиях совпадает с переданным."""
+    session_id = "same-session-id"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": session_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+    callback_mock = AsyncMock()
+
+    await _process_events(
+        claude_process, session_id, progress_callback=None,
+        session_id_callback=callback_mock,
+    )
+
+    callback_mock.assert_not_awaited()
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_send_message_passes_callback_to_execute_send(mock_start):
+    """send_message пробрасывает session_id_callback через цепочку вызовов."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "abc-123"},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": "abc-123",
+        },
+    ]
+    mock_process = _make_claude_process(events=events)
+    mock_start.return_value = mock_process
+
+    session_id = await create_process(session_id=None)
+    callback_mock = AsyncMock()
+
+    # Мокаем _execute_send, чтобы проверить что callback передаётся
+    with patch.object(pm_module, "_execute_send", new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = SendResult(
+            text="OK", session_id="abc-123", is_error=False, retries_used=0,
+        )
+        await send_message(
+            session_id, "Привет", session_id_callback=callback_mock,
+        )
+
+    # Проверяем, что session_id_callback передан в _execute_send
+    call_kwargs = mock_execute.call_args
+    # Аргументы: session_id, text, claude_process, progress_callback, retry_callback, session_id_callback
+    assert call_kwargs[0][5] is callback_mock or call_kwargs[1].get("session_id_callback") is callback_mock

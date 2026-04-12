@@ -1,0 +1,14 @@
+{
+  "agent": "feature-unit-test",
+  "status": "success",
+  "timestamp": "2026-04-12T21:30:00+03:00",
+  "result": {
+    "total_tests": 523,
+    "passed": 523,
+    "failed": 0,
+    "skipped": 0,
+    "failures": [],
+    "fix_cycles_used": 0,
+    "needs_rollback": false
+  }
+}

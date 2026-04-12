@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 type ProgressCallback = Callable[[str, str], Awaitable[None]]
 type RetryCallback = Callable[[str, int, int], Awaitable[None]]
+type SessionIdCallback = Callable[[str, str], Awaitable[None]]
 
 # --- Константы ---
 
@@ -191,6 +192,7 @@ async def _process_events(
     claude_process: ClaudeProcess,
     session_id: str,
     progress_callback: ProgressCallback | None,
+    session_id_callback: SessionIdCallback | None = None,
 ) -> SendResult:
     """Читает поток событий от Claude и собирает результат."""
     last_progress_time = 0.0
@@ -198,13 +200,24 @@ async def _process_events(
     final_session_id = session_id
     is_error = False
     got_result = False
+    callback_fired = False
 
     async for event in claude_process.read_events():
         _check_stop_requested(session_id)
 
         event_session_id = event.get("session_id")
         if event_session_id is not None and event_session_id != final_session_id:
+            old_final = final_session_id
             final_session_id = event_session_id
+            if session_id_callback is not None and not callback_fired:
+                callback_fired = True
+                try:
+                    await session_id_callback(old_final, event_session_id)
+                except Exception:
+                    logger.error(
+                        "Ошибка в session_id_callback: %s -> %s",
+                        old_final, event_session_id, exc_info=True,
+                    )
 
         last_progress_time = await _handle_progress_event(
             event, session_id, progress_callback, last_progress_time,
@@ -240,6 +253,7 @@ async def _execute_single_retry(
     text: str,
     attempt: int,
     progress_callback: ProgressCallback | None,
+    session_id_callback: SessionIdCallback | None = None,
 ) -> SendResult | None:
     """Выполняет одну попытку ретрая. Возвращает результат или None при ошибке."""
     old_process = _processes.get(session_id)
@@ -249,7 +263,9 @@ async def _execute_single_retry(
 
     try:
         await claude_process.send_message(text)
-        return await _process_events(claude_process, session_id, progress_callback)
+        return await _process_events(
+            claude_process, session_id, progress_callback, session_id_callback,
+        )
     except ProcessStoppedError:
         raise
     except Exception:
@@ -283,6 +299,7 @@ async def _retry_loop(
     text: str,
     progress_callback: ProgressCallback | None,
     retry_callback: RetryCallback | None,
+    session_id_callback: SessionIdCallback | None = None,
 ) -> SendResult:
     """Цикл повторных попыток при ошибке от Claude."""
     last_result: SendResult | None = None
@@ -300,7 +317,7 @@ async def _retry_loop(
         await _wait_with_stop_check(session_id, RETRY_INTERVAL_SECONDS)
 
         result = await _execute_single_retry(
-            session_id, text, attempt, progress_callback,
+            session_id, text, attempt, progress_callback, session_id_callback,
         )
         if result is None:
             continue
@@ -419,6 +436,7 @@ async def send_message(
     text: str,
     progress_callback: ProgressCallback | None = None,
     retry_callback: RetryCallback | None = None,
+    session_id_callback: SessionIdCallback | None = None,
 ) -> SendResult:
     """Отправляет сообщение в процесс Claude и ожидает ответ."""
     # Критическая секция 1: атомарная проверка «не занят» + установка «занят».
@@ -432,7 +450,8 @@ async def send_message(
     # stop_process может захватить Lock и очистить busy, пока мы здесь.
     try:
         result = await _execute_send(
-            session_id, text, claude_process, progress_callback, retry_callback,
+            session_id, text, claude_process,
+            progress_callback, retry_callback, session_id_callback,
         )
         if result.session_id != session_id:
             # update_session_id захватывает _busy_lock внутри себя.
@@ -456,25 +475,32 @@ async def _execute_send(
     claude_process: ClaudeProcess,
     progress_callback: ProgressCallback | None,
     retry_callback: RetryCallback | None,
+    session_id_callback: SessionIdCallback | None = None,
 ) -> SendResult:
     """Выполняет отправку сообщения с обработкой ошибок и ретраями."""
     try:
         await claude_process.send_message(text)
-        result = await _process_events(claude_process, session_id, progress_callback)
+        result = await _process_events(
+            claude_process, session_id, progress_callback, session_id_callback,
+        )
     except ClaudeProcessError as error:
         # Ошибка отправки или чтения — пробуем ретраи
         logger.warning(
             "Ошибка при взаимодействии с Claude (сессия %s): %s",
             session_id, error,
         )
-        return await _retry_loop(session_id, text, progress_callback, retry_callback)
+        return await _retry_loop(
+            session_id, text, progress_callback, retry_callback, session_id_callback,
+        )
 
     # Если Claude вернул ошибку — запускаем ретраи
     if result.is_error:
         logger.warning(
             "Claude вернул ошибку (сессия %s): %s", session_id, result.text[:200],
         )
-        return await _retry_loop(session_id, text, progress_callback, retry_callback)
+        return await _retry_loop(
+            session_id, text, progress_callback, retry_callback, session_id_callback,
+        )
 
     return result
 

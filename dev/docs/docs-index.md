@@ -12,6 +12,7 @@
 - **changelog/** — история изменений проекта
   - [changelog/2026-04.md](changelog/2026-04.md) — апрель 2026: asyncio.Lock в process_manager, watcher уведомляет только владельца сессии
   - [changelog/12.04_19.05-md-file-delivery.md](changelog/12.04_19.05-md-file-delivery.md) — 12.04.2026: отправка файлов из ответа Claude пользователю через маркеры `[SEND_FILE:path]` и telegramify-markdown
+  - [changelog/12.04_21.17-session-id-callback.md](changelog/12.04_21.17-session-id-callback.md) — 12.04.2026: раннее уведомление о смене session_id через callback — закрытие гонки watcher/handler при создании новых сессий
 - **claude-md-updates/** — лог изменений CLAUDE.md (пока пусто)
 
 ## BRD и пользовательские пути
@@ -71,6 +72,7 @@
 Глубокий анализ первопричин багов — неизменяемые документы. Новые ошибки кладутся в корень `logs/root-cause-reports/`, после починки ссылка переезжает:
 
 - **Активные** (в корне `logs/root-cause-reports/`):
+  - [logs/root-cause-reports/12-04_20-41_duplicate-session-numbers.md](logs/root-cause-reports/12-04_20-41_duplicate-session-numbers.md) — дублирование дневных номеров сессий из-за гонки watcher/handler (исправлено через session_id_callback)
   - [logs/root-cause-reports/30-03_03-06_progress-icon-checkmark.md](logs/root-cause-reports/30-03_03-06_progress-icon-checkmark.md) — иконка прогресса не меняется на галочку
   - [logs/root-cause-reports/30-03_04-50_session-counter-reset.md](logs/root-cause-reports/30-03_04-50_session-counter-reset.md) — счётчик сессий сбрасывается
   - [logs/root-cause-reports/30-03_05-08_message-not-reaching-terminal-session.md](logs/root-cause-reports/30-03_05-08_message-not-reaching-terminal-session.md) — сообщение не доходит до терминальной сессии
