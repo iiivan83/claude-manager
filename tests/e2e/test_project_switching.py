@@ -5,13 +5,16 @@
 - Переключение на другой проект и возврат на исходный
 - Обработка несуществующего номера проекта
 - No-op при переключении на уже активный проект
+- Доставка непрочитанных сообщений при возврате в проект
+- Отсутствие ложных pending-сообщений при быстром переключении
 
 Требования: бот запущен, Telethon авторизован, в PROJECTS_ROOT_DIR
 есть минимум один доступный проект (для переключения на другой —
 минимум два, иначе соответствующий тест будет пропущен).
 
-Тесты НЕ обращаются к Claude API — команды /projects и /pN полностью
-обрабатываются ботом локально, ответ приходит быстро (миллисекунды).
+FLOW-08..12, FLOW-14 НЕ обращаются к Claude API — команды /projects
+и /pN полностью обрабатываются ботом локально. FLOW-13 обращается
+к Claude API и занимает ~70 секунд.
 """
 
 import asyncio
@@ -40,6 +43,17 @@ CURRENT_PROJECT_MARKER = "\u25cf"
 _PROJECT_LINE_PATTERN = re.compile(
     rf"^(?:{CURRENT_PROJECT_MARKER}\s+)?/p(\d+)\s+(.+)$"
 )
+
+# Время ожидания ответа Claude в фоне (секунды). Claude обычно отвечает
+# за 10-30 сек, но даём запас на задержки API и сети.
+CLAUDE_BACKGROUND_WAIT_SECONDS = 60
+
+# Таймаут ожидания доставки pending-сообщений после переключения обратно.
+PENDING_DELIVERY_TIMEOUT_SECONDS = 30
+
+# Кодовое слово для pending-теста. Уникальное слово, которое Claude должен
+# включить в ответ и которое не может прийти от watcher или другого источника.
+PENDING_TEST_CODEWORD = "ананас"
 
 
 @dataclass(frozen=True)
@@ -286,6 +300,133 @@ async def test_flow12_no_ghost_messages_after_project_switch(
         )
     finally:
         # Возвращаемся на исходный проект
+        await telegram_client.send_command(f"/p{original.number}")
+        await telegram_client.wait_for_regex_response(
+            r"(?:Переключено на проект|Уже работаю в проекте)",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+
+# --- FLOW-13: доставка непрочитанных сообщений при возврате в проект ---
+
+
+async def test_flow13_pending_messages_delivered_on_return(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """При возврате в проект бот доставляет сообщения, накопленные в фоне.
+
+    Сценарий:
+    1. Создать сессию → отправить сообщение Claude
+    2. Быстро переключиться на другой проект (до ответа Claude)
+    3. Подождать ~60 сек, пока Claude ответит в фоне (пишет в JSONL)
+    4. Переключиться обратно
+    5. Проверить: ответ содержит «Непрочитанных сообщений: N»
+    6. Проверить: pending-сообщение с кодовым словом доставлено
+
+    Тест обращается к Claude API — нужен рабочий Claude Code.
+    concurrent_updates(256) в боте позволяет отправить /pN пока Claude думает.
+    """
+    projects = await _fetch_project_list(telegram_client)
+    original = _find_current_project(projects)
+    other = _find_other_project(projects, original.name)
+
+    if other is None:
+        pytest.skip("Нужно минимум 2 проекта для теста pending messages")
+
+    try:
+        # 1. Создаём сессию
+        await telegram_client.send_command("/new")
+        await telegram_client.wait_for_matching_response(
+            "Создана новая сессия", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+        # 2. Отправляем сообщение Claude — НЕ ждём ответа
+        await telegram_client.send_message(
+            f"ответь одним словом: {PENDING_TEST_CODEWORD}"
+        )
+
+        # 3. Даём Claude 2 секунды на старт процесса, затем переключаемся.
+        #    Claude обычно отвечает за 10-30 сек — мы успеваем уйти до ответа.
+        await asyncio.sleep(2)
+
+        await telegram_client.send_command(f"/p{other.number}")
+        await telegram_client.wait_for_matching_response(
+            "Переключено на проект", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+        # 4. Ждём, пока Claude ответит в фоне (запишет ответ в JSONL на диске)
+        await asyncio.sleep(CLAUDE_BACKGROUND_WAIT_SECONDS)
+
+        # 5. Переключаемся обратно — send_command сбрасывает буфер ответов
+        await telegram_client.send_command(f"/p{original.number}")
+
+        # 6. Проверяем: ответ переключения содержит счётчик непрочитанных
+        switch_response = await telegram_client.wait_for_matching_response(
+            "Переключено на проект", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+        assert "Непрочитанных сообщений" in switch_response, (
+            f"Ожидалось уведомление о непрочитанных сообщениях. "
+            f"Ответ: {switch_response}"
+        )
+
+        # 7. Проверяем: pending-сообщение с кодовым словом доставлено
+        pending_response = await telegram_client.wait_for_regex_response(
+            rf"(?i){PENDING_TEST_CODEWORD}",
+            timeout=PENDING_DELIVERY_TIMEOUT_SECONDS,
+        )
+        assert pending_response, (
+            f"Pending-сообщение с '{PENDING_TEST_CODEWORD}' не доставлено"
+        )
+
+    finally:
+        # Гарантированно возвращаемся на исходный проект
+        await telegram_client.send_command(f"/p{original.number}")
+        await telegram_client.wait_for_regex_response(
+            r"(?:Переключено на проект|Уже работаю в проекте)",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+
+# --- FLOW-14: быстрый переход туда-обратно — нет ложных pending ---
+
+
+async def test_flow14_no_pending_on_clean_round_trip(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Быстрый переход туда-обратно без фоновой активности — нет pending.
+
+    Переключиться на другой проект и сразу вернуться. За это время
+    Claude не успевает ответить ни в одной сессии — непрочитанных
+    сообщений быть не должно. Ответ НЕ содержит «Непрочитанных сообщений».
+    """
+    projects = await _fetch_project_list(telegram_client)
+    original = _find_current_project(projects)
+    other = _find_other_project(projects, original.name)
+
+    if other is None:
+        pytest.skip("Нужно минимум 2 проекта")
+
+    try:
+        # Переключаемся на другой проект
+        await telegram_client.send_command(f"/p{other.number}")
+        await telegram_client.wait_for_matching_response(
+            "Переключено на проект", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+        # Сразу возвращаемся — Claude не успел ничего написать в фоне
+        await telegram_client.send_command(f"/p{original.number}")
+        return_response = await telegram_client.wait_for_matching_response(
+            "Переключено на проект", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+        # Проверяем: НЕТ упоминания pending-сообщений
+        assert "Непрочитанных сообщений" not in return_response, (
+            f"При быстром переключении без фоновой активности не должно "
+            f"быть непрочитанных сообщений: {return_response}"
+        )
+
+    finally:
+        # Гарантированно возвращаемся на исходный проект
         await telegram_client.send_command(f"/p{original.number}")
         await telegram_client.wait_for_regex_response(
             r"(?:Переключено на проект|Уже работаю в проекте)",

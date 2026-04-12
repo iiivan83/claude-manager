@@ -59,6 +59,16 @@
 
 **Возвращает:** ничего.
 
+### `def get_seen_counts_snapshot() -> dict[str, int]`
+
+Возвращает копию словаря `_seen_message_counts` (session_id -> количество обработанных сообщений). Нужна модулю `project_manager` для сохранения снапшота при переключении проектов — чтобы при возврате знать, какие сообщения уже были обработаны, и доставить только новые.
+
+**Аргументы:** нет.
+
+**Возвращает:** `dict[str, int]` — копия (не ссылка) текущих счётчиков. Ключ — session_id, значение — количество уже обработанных строк в JSONL-файле сессии.
+
+**Исключения:** нет.
+
 ### Типы-алиасы
 
 ```python
@@ -171,6 +181,11 @@ CurrentSessionGetter = Callable[[int], Awaitable[str | None]]
 2. **Перенести статус паузы** — если `old_session_id` есть в `_paused_sessions`, удалить его и добавить `new_session_id`
 3. **Залогировать** — `logging.info(f"Watcher: session_id обновлён {old_session_id} → {new_session_id}")`
 4. **Если old_session_id не найден** — молча завершиться (идемпотентность). Залогировать через `logging.debug`
+
+### get_seen_counts_snapshot
+
+1. **Скопировать словарь** — создать новый `dict` из `_seen_message_counts` через `dict(...)` — чтобы вернуть независимую копию, а не ссылку на внутреннее состояние
+2. **Вернуть копию** — `dict[str, int]`
 
 ### _extract_assistant_messages
 
@@ -306,6 +321,11 @@ CurrentSessionGetter = Callable[[int], Awaitable[str | None]]
 - **test_get_sessions_to_monitor_combines_reader_and_registry** — объединяет сессии из session_reader и daily_session_registry
   - Вход: session_reader возвращает сессии ["A", "B"], daily_session_registry возвращает {1: "B", 2: "C"}
   - Ожидаемый результат: список содержит "A", "B", "C" (без дубликатов)
+  - Тип: unit
+
+- **test_get_seen_counts_snapshot_returns_copy** — снапшот возвращает копию, а не ссылку на внутренний словарь
+  - Вход: watcher инициализирован, `_seen_message_counts == {"session-1": 5, "session-2": 3}`. Вызвать `get_seen_counts_snapshot()`, изменить полученный словарь
+  - Ожидаемый результат: возвращённый словарь `== {"session-1": 5, "session-2": 3}`. Изменение копии не повлияло на `_seen_message_counts` watcher
   - Тип: unit
 
 ### Граничные случаи

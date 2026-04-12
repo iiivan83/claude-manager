@@ -1,12 +1,12 @@
 # Спецификация модуля: project_manager
 
 Дата: 10-04-2026
-Слой: 3 (зависит от слоёв 0-2: config, process_manager, session_manager, daily_session_registry, session_watcher)
+Слой: 3 (зависит от слоёв 0-2: config, process_manager, session_manager, daily_session_registry, session_watcher, unread_buffer)
 Файл: `src/claude_manager/project_manager.py`
 
 ## Назначение
 
-Управляет проектами в Telegram-боте: сканирует корневую папку с проектами и возвращает список, атомарно переключает бот между проектами без перезапуска, запоминает последний выбранный проект и восстанавливает его при старте. Это центральный модуль фичи «Переключение между проектами».
+Управляет проектами в Telegram-боте: сканирует корневую папку с проектами и возвращает список, атомарно переключает бот между проектами без перезапуска (процессы Claude продолжают работать в фоне), запоминает последний выбранный проект и восстанавливает его при старте, доставляет непрочитанные сообщения при возврате в проект. Это центральный модуль фичи «Переключение между проектами».
 
 Модуль не знает о Telegram API — он только работает с файловой системой и координирует state-модули при переключении. Верхний слой (`bot.py`) вызывает его функции в ответ на команды пользователя `/projects` и `/pN`.
 
@@ -28,14 +28,14 @@
 
 ### `async def switch_project(target_path: str) -> SwitchResult`
 
-Атомарно переключает бота на новый проект. Проверяет валидность пути, останавливает все запущенные процессы Claude, сбрасывает внутреннее состояние state-модулей, обновляет `config.WORKING_DIR`, перезагружает файлы состояния нового проекта, сохраняет выбор в `LAST_PROJECT_FILE`.
+Атомарно переключает бота на новый проект. Проверяет валидность пути, сохраняет снапшот счётчиков watcher (чтобы при возврате знать, какие сообщения уже были обработаны), сбрасывает внутреннее состояние state-модулей, обновляет `config.WORKING_DIR`, перезагружает файлы состояния нового проекта, сохраняет выбор в `LAST_PROJECT_FILE`. Процессы Claude НЕ останавливаются — они продолжают работать в фоне. При возврате в проект непрочитанные сообщения будут доставлены.
 
-Использует `asyncio.Lock` (`_switch_lock`) — параллельные вызовы выполняются последовательно. При сбое в середине переключения пытается откатить `config.WORKING_DIR` к старому значению.
+Использует `asyncio.Lock` (`_switch_lock`) — параллельные вызовы выполняются последовательно. При сбое в середине переключения пытается откатить `config.WORKING_DIR` к старому значению и удалить только что созданный снапшот.
 
 **Аргументы:**
 - `target_path` (str) — абсолютный путь к целевой папке проекта
 
-**Возвращает:** `SwitchResult` с полями `success`, `already_active`, `old_path`, `new_path`, `stopped_processes_count`, `error_message`.
+**Возвращает:** `SwitchResult` с полями `success`, `already_active`, `old_path`, `new_path`, `pending_messages_count`, `pending_messages`, `error_message`.
 
 **Исключения:** нет. Ошибки (невалидный путь, сбой сброса state) возвращаются через поле `error_message`, `success=False`.
 
@@ -100,13 +100,37 @@
 
 Последовательно вызывает `reset_state()` у четырёх state-модулей: `session_manager`, `daily_session_registry`, `session_watcher`. Используется `switch_project` и `_rollback_switch`.
 
-### `_perform_switch(target_path: str) -> int`
+### `async _perform_switch(target_path: str) -> None`
 
-Основное действие переключения: останавливает все процессы Claude через `process_manager.stop_all_processes`, меняет `config.WORKING_DIR`, сбрасывает state. Возвращает количество остановленных процессов. Если бросит исключение — вызывается `_rollback_switch`.
+Основное действие переключения: сохраняет снапшот счётчиков watcher через `session_watcher.get_seen_counts_snapshot()` и `unread_buffer.save_snapshot()`, меняет `config.WORKING_DIR`, сбрасывает state. Процессы Claude НЕ останавливаются — они продолжают работать в фоне. Если бросит исключение — вызывается `_rollback_switch`.
 
-### `_rollback_switch(old_path: str) -> None`
+### `async _rollback_switch(old_path: str) -> None`
 
-Пытается восстановить старое значение `config.WORKING_DIR` и перезагрузить state старого проекта после сбоя в `_perform_switch`. Ошибка в самом откате логируется, но наверх не поднимается — иначе пользователь не получит осмысленное сообщение об исходной ошибке.
+Пытается восстановить старое значение `config.WORKING_DIR`, удаляет снапшот для старого проекта через `unread_buffer.clear_snapshot()` (уход из проекта не произошёл — снапшот не нужен) и перезагружает state старого проекта. Ошибка в самом откате логируется, но наверх не поднимается — иначе пользователь не получит осмысленное сообщение об исходной ошибке.
+
+### `_make_error_result(old_path: str, target_path: str, error_message: str) -> SwitchResult`
+
+Собирает `SwitchResult` для любой неудачи переключения — единый формат ошибки. Устанавливает `pending_messages_count=0`, `pending_messages=[]`.
+
+### `_make_success_result(old_path: str, target_path: str, pending_messages_count: int, pending_messages: list, already_active: bool) -> SwitchResult`
+
+Собирает `SwitchResult` для успешного переключения или no-op (уже активен).
+
+### `_precheck_switch(target_path: str, old_path: str) -> SwitchResult | None`
+
+Проверяет путь через `_validate_target_path` и ловит случай «уже активен». Если путь невалиден — возвращает `SwitchResult` с ошибкой. Если уже в этом проекте — возвращает no-op результат. Если нужно реально переключаться — возвращает None.
+
+### `async _try_switch_with_rollback(target_path: str, old_path: str) -> tuple[bool, SwitchResult | None]`
+
+Вызывает `_perform_switch` и при ошибке делает `_rollback_switch`. Возвращает `(True, None)` при успехе или `(False, error_result)` при сбое.
+
+### `async _collect_pending_messages(target_path: str) -> tuple[int, list]`
+
+Собирает непрочитанные сообщения для проекта, в который возвращается пользователь. Проверяет наличие непросроченного снапшота через `unread_buffer.has_pending()`, получает сообщения через `unread_buffer.get_pending_messages()`, после чего удаляет снапшот через `unread_buffer.clear_snapshot()`. Если снапшота нет — возвращает `(0, [])`.
+
+### `async _finalize_successful_switch(old_path: str, target_path: str) -> SwitchResult`
+
+Завершает успешное переключение: сохраняет путь в файл последнего проекта, собирает непрочитанные сообщения через `_collect_pending_messages()`, очищает просроченные снапшоты через `unread_buffer.cleanup_expired()`, логирует результат.
 
 ## Классы данных
 
@@ -124,7 +148,8 @@
 - `already_active: bool` — True если целевой проект совпадает с текущим (no-op)
 - `old_path: str` — путь к проекту ДО переключения
 - `new_path: str` — путь к целевому проекту
-- `stopped_processes_count: int` — сколько процессов Claude было остановлено (0 при already_active или ошибке)
+- `pending_messages_count: int` — сколько непрочитанных сообщений накопилось за время отсутствия (0 при already_active, ошибке или отсутствии снапшота)
+- `pending_messages: list` — список объектов `PendingMessage` (из модуля `unread_buffer`) с полями `session_id` и `text`. Пустой при ошибке или отсутствии непрочитанных
 - `error_message: str` — причина ошибки или пустая строка при успехе
 
 ### `ProjectSwitchError` (Exception)
@@ -145,12 +170,10 @@
 
 1. Войти в `async with _switch_lock` — сериализация параллельных вызовов
 2. Запомнить `old_path = config.WORKING_DIR`
-3. Валидировать `target_path` через `_validate_target_path`. При `ProjectSwitchError` — залогировать warning и вернуть `SwitchResult(success=False, error_message=...)`
-4. Проверить `_paths_point_to_same_dir(target_path, old_path)`. Если True — вернуть `SwitchResult(success=True, already_active=True)` без выполнения переключения
-5. Вызвать `_perform_switch(target_path)`. При любом `Exception` — вызвать `_rollback_switch(old_path)`, залогировать error, вернуть `SwitchResult(success=False, error_message=...)`
-6. Вызвать `save_selected_project(target_path)` — ошибка внутри не отменяет успех переключения
-7. Залогировать info с указанием старого и нового путей и количества остановленных процессов
-8. Вернуть `SwitchResult(success=True, already_active=False, old_path, new_path, stopped_processes_count)`
+3. Вызвать `_precheck_switch(target_path, old_path)` — валидация пути и проверка «уже активен». Если вернул не None — вернуть готовый результат
+4. Вызвать `_try_switch_with_rollback(target_path, old_path)`. Если вернул ошибку — вернуть её
+5. Вызвать `_finalize_successful_switch(old_path, target_path)` — сохраняет путь, собирает pending, чистит просроченные снапшоты
+6. Вернуть `SwitchResult` из `_finalize_successful_switch`
 
 ### load_last_selected_project
 
@@ -169,7 +192,7 @@
 
 ## Зависимости
 
-Модуль зависит от стандартной библиотеки и пяти других модулей проекта:
+Модуль зависит от стандартной библиотеки и шести других модулей проекта:
 
 - **asyncio** (стандартная библиотека) — `Lock`, `to_thread` для сериализации и выноса блокирующих операций
 - **os** (стандартная библиотека) — `path.exists`, `path.isdir`, `path.islink`, `path.realpath`, `path.join`, `access`, `listdir`, `replace`
@@ -177,10 +200,11 @@
 - **dataclasses** (стандартная библиотека) — `dataclass` для `ProjectInfo` и `SwitchResult`
 - **pathlib.Path** (стандартная библиотека) — работа с `LAST_PROJECT_FILE`
 - **claude_manager.config** — `WORKING_DIR`, `PROJECTS_ROOT_DIR`, `LAST_PROJECT_FILE`
-- **claude_manager.process_manager** — `stop_all_processes`
+- **claude_manager.process_manager** — импортируется, но при переключении проектов больше НЕ используется (процессы продолжают работать в фоне)
 - **claude_manager.session_manager** — `reset_state`
 - **claude_manager.daily_session_registry** — `reset_state`
-- **claude_manager.session_watcher** — `reset_state`
+- **claude_manager.session_watcher** — `reset_state`, `get_seen_counts_snapshot`
+- **claude_manager.unread_buffer** — `save_snapshot`, `get_pending_messages`, `clear_snapshot`, `has_pending`, `cleanup_expired`
 
 ## Обработка ошибок
 
@@ -214,17 +238,20 @@
 - **test_nonexistent_root_returns_empty_list** — несуществующая папка даёт пустой список без исключения. Тип: edge case
 - **test_marks_current_project** — проект, путь которого совпадает с `config.WORKING_DIR`, помечен `is_current=True`. Тип: unit
 
-**TestSwitchProject (11 тестов):**
+**TestSwitchProject (14 тестов):**
 
-- **test_happy_path** — успешное переключение на валидный проект: `success=True`, `config.WORKING_DIR` обновился. Тип: unit
+- **test_happy_path** — успешное переключение на валидный проект: `success=True`, `config.WORKING_DIR` обновился, снапшот сохранён через `unread_buffer.save_snapshot`. Тип: unit
 - **test_already_active** — переключение на текущий проект: `already_active=True`, state не сбрасывается (проверяется через моки). Тип: unit
 - **test_path_traversal_blocked** — попытка переключиться на папку вне `PROJECTS_ROOT_DIR`: `success=False`, сообщение про границы корня. Тип: error
 - **test_nonexistent_path_fails** — несуществующий путь: `success=False`, сообщение про отсутствие папки. Тип: error
 - **test_path_is_file_not_dir_fails** — путь на файл: `success=False`, сообщение что это не папка. Тип: error
-- **test_stops_all_processes** — мокается `process_manager.stop_all_processes`, проверяется вызов и передача количества. Тип: unit
+- **test_saves_snapshot_before_switch** — при переключении вызывается `session_watcher.get_seen_counts_snapshot()` и `unread_buffer.save_snapshot()` ДО смены проекта. Тип: unit
 - **test_resets_all_state_modules** — мокаются `reset_state` у трёх модулей, проверяется что вызваны ровно один раз. Тип: unit
+- **test_collects_pending_on_return** — при возврате в проект с непрочитанными: `pending_messages_count > 0`, `pending_messages` содержит ожидаемые сообщения. Тип: unit
+- **test_no_pending_without_snapshot** — при переключении в проект, из которого ранее не уходили: `pending_messages_count == 0`, `pending_messages == []`. Тип: unit
+- **test_cleanup_expired_called** — после успешного переключения вызывается `unread_buffer.cleanup_expired()`. Тип: unit
 - **test_saves_to_last_project_file** — после успешного переключения файл `LAST_PROJECT_FILE` содержит путь к новому проекту. Тип: unit
-- **test_rollback_on_reset_error** — один из `reset_state` бросает исключение, `config.WORKING_DIR` восстанавливается к старому значению, `success=False`, файл `LAST_PROJECT_FILE` НЕ создан. Тип: error
+- **test_rollback_on_reset_error** — один из `reset_state` бросает исключение, `config.WORKING_DIR` восстанавливается к старому значению, `success=False`, файл `LAST_PROJECT_FILE` НЕ создан, снапшот удалён через `unread_buffer.clear_snapshot`. Тип: error
 - **test_concurrent_switches_serialized** — два параллельных `switch_project` через `asyncio.gather` выполняются последовательно, без перемешивания state. Тип: edge case
 
 **TestLoadLastSelectedProject (4 теста):**
@@ -247,6 +274,7 @@
 
 - **test_switch_between_two_projects** — полный цикл: создать два проекта во временной директории, зарегистрировать привязку и сессию в A, переключиться на B (проверить сброс), вернуться в A (проверить восстановление привязки и сессии). Тип: integration
 - **test_switch_to_same_project_is_noop** — переключение на текущий проект возвращает `already_active=True`, привязки сохраняются. Тип: integration
-- **test_switch_stops_running_processes** — создать фейковые процессы в `process_manager._processes`, переключиться, проверить что `_processes` пустой и `stopped_processes_count` корректен. Тип: integration
+- **test_switch_preserves_running_processes** — создать фейковые процессы в `process_manager._processes`, переключиться, проверить что процессы НЕ остановлены (продолжают работать в фоне), снапшот создан. Тип: integration
 - **test_switch_to_nonexistent_fails_gracefully** — несуществующий путь возвращает `success=False`, `config.WORKING_DIR` не меняется, привязки остаются. Тип: integration
+- **test_pending_messages_delivered_on_return** — уйти из проекта A в B, записать новые сообщения в JSONL проекта A, вернуться в A — проверить что `pending_messages` содержит новые сообщения. Тип: integration
 - **test_path_traversal_attack_blocked** — попытка переключиться на папку вне корня блокируется, state не меняется. Тип: security
