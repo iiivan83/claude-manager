@@ -188,6 +188,56 @@ async def _read_registry_file() -> dict | None:
     return None
 
 
+def _remove_phantom_entries() -> int:
+    """Удаляет записи с временными session_id (префикс '_new_') из реестра."""
+    total_removed = 0
+    for day_key, day_entries in _registry.items():
+        phantom_keys = [
+            number for number, session_id in day_entries.items()
+            if session_id.startswith("_new_")
+        ]
+        for key in phantom_keys:
+            del day_entries[key]
+        total_removed += len(phantom_keys)
+    return total_removed
+
+
+def _remove_duplicate_entries() -> int:
+    """Удаляет дубликаты session_id внутри каждого дня, оставляя запись с наименьшим номером.
+
+    Race condition между watcher и обработчиком сообщений может привести к тому,
+    что один UUID регистрируется под двумя разными номерами. Эта функция находит
+    такие дубликаты и оставляет только первую регистрацию (наименьший номер).
+    """
+    total_removed = 0
+
+    for day_key, day_entries in _registry.items():
+        # Группируем номера по session_id
+        numbers_by_session: dict[str, list[int]] = {}
+        for number_str, session_id in day_entries.items():
+            numbers_by_session.setdefault(session_id, []).append(int(number_str))
+
+        # Находим session_id с несколькими номерами и удаляем лишние
+        for session_id, numbers in numbers_by_session.items():
+            if len(numbers) < 2:
+                continue
+
+            numbers.sort()
+            kept_number = numbers[0]
+            duplicate_numbers = numbers[1:]
+
+            for duplicate_number in duplicate_numbers:
+                del day_entries[str(duplicate_number)]
+                logger.info(
+                    "Удалён дубликат: день %s, session_id %s — убран #%d (оставлен #%d)",
+                    day_key, session_id, duplicate_number, kept_number,
+                )
+
+            total_removed += len(duplicate_numbers)
+
+    return total_removed
+
+
 async def load_registry() -> None:
     """Загружает реестр из файла daily_sessions.json в память."""
     global _registry, _registry_path, _loaded_from_disk
@@ -204,6 +254,20 @@ async def load_registry() -> None:
     else:
         _registry = {}
         _loaded_from_disk = False
+
+    # Удаляем фантомные записи с временными ID (префикс _new_).
+    # Они появляются, когда сессия была зарегистрирована, но Claude CLI
+    # не вернул реальный session_id. Watcher пытается найти файлы
+    # для таких сессий и генерирует тысячи предупреждений.
+    phantom_count = _remove_phantom_entries()
+    if phantom_count > 0:
+        logger.info("Удалено %d фантомных записей с префиксом _new_", phantom_count)
+
+    # Удаляем дубликаты — один session_id, зарегистрированный под несколькими номерами.
+    # Возникают из-за race condition между watcher и обработчиком сообщений.
+    duplicate_count = _remove_duplicate_entries()
+    if duplicate_count > 0:
+        logger.info("Удалено %d дублированных записей session_id", duplicate_count)
 
     _ensure_today_registry()
 
