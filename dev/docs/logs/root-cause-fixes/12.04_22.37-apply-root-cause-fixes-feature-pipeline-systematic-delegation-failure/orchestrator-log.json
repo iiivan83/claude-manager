@@ -1,0 +1,42 @@
+{
+  "pipeline": "apply-root-cause-fixes",
+  "created_at": "2026-04-12T22:37:00+03:00",
+  "report_file": "/Users/ivan/Desktop/claude-sandbox/claude_manager/dev/docs/logs/root-cause-reports/12-04_21-51_feature-pipeline-systematic-delegation-failure.md",
+  "steps": [
+    {
+      "phase": "phase-0",
+      "start_time": "2026-04-12T22:37:00+03:00",
+      "end_time": "2026-04-12T22:37:30+03:00",
+      "success": true,
+      "comment": "Parsed 8 recommendations from report: 3 [CODE], 2 [ARCHITECTURE], 3 [SKILL]. Report covers 3rd recurrence of delegation failure in feature-pipeline."
+    },
+    {
+      "phase": "phase-1",
+      "start_time": "2026-04-12T22:37:30+03:00",
+      "end_time": "2026-04-12T22:40:00+03:00",
+      "success": true,
+      "comment": "Verification complete. 3 APPROVED, 4 APPROVED WITH NOTES, 1 REJECTED (rec 7: check-phase-gate.py — not related to root cause). User confirmed."
+    },
+    {
+      "phase": "phase-2",
+      "start_time": "2026-04-12T22:40:00+03:00",
+      "end_time": "2026-04-12T22:45:00+03:00",
+      "success": true,
+      "comment": "7 fixes applied via 5 parallel agents. Rec 1: validator critical mode (5 replacements). Rec 2: validator connected to SKILL.md phase 10 + finalizer. Rec 3+4: section 20 in skills-agents-rules.md + CLAUDE.md reference. Rec 5: INVARIANT block in SKILL.md. Rec 6: pending-delegations.md created. Rec 8: apply-root-cause-fixes updated for tracker."
+    },
+    {
+      "phase": "phase-3",
+      "start_time": "2026-04-12T22:45:00+03:00",
+      "end_time": "2026-04-12T22:46:00+03:00",
+      "success": true,
+      "comment": "Verification passed: all 7 changes confirmed via grep/file checks. No Python code changed — pytest not needed."
+    },
+    {
+      "phase": "phase-4",
+      "start_time": "2026-04-12T22:46:00+03:00",
+      "end_time": null,
+      "success": null,
+      "comment": "Commit and archival."
+    }
+  ]
+}
