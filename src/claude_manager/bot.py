@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, MessageEntity, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
@@ -29,6 +29,7 @@ from telegram.ext import (
 from claude_manager import (
     config,
     daily_session_registry,
+    file_sender,
     message_splitter,
     process_manager,
     project_manager,
@@ -67,6 +68,9 @@ EMPTY_RESPONSE_TEXT = "Claude обработал запрос, но не дал 
 
 # Служебный ответ Claude, который не пересылается пользователю
 NO_RESPONSE_MARKER = "No response requested."
+
+# Заголовок перед содержимым файла, отправленным в чат (скрепка + имя файла)
+FILE_CONTENT_HEADER_TEMPLATE = "\U0001F4CE {filename}\n\n"
 
 # Команды для меню подсказок в Telegram
 BOT_COMMANDS = [
@@ -268,6 +272,67 @@ async def _send_telegram_message(
                 await asyncio.sleep(SEND_RETRY_DELAY_SECONDS)
 
 
+def _shift_entity(entity: MessageEntity, offset_delta: int) -> MessageEntity:
+    """Создаёт копию MessageEntity со сдвинутым offset."""
+    return MessageEntity(
+        type=entity.type, offset=entity.offset + offset_delta,
+        length=entity.length, url=entity.url, language=entity.language,
+    )
+
+
+async def _send_text_file(chat_id: int, file_path: str) -> None:
+    """Читает текстовый файл, рендерит через telegramify-markdown и отправляет в чат."""
+    content, error = file_sender.read_file_content(file_path)
+    if error:
+        await _send_telegram_message(chat_id, error, parse_mode=None)
+        return
+
+    chunks = file_sender.render_file_for_telegram(content)
+    filename = Path(file_path).name
+
+    for index, (text, entities) in enumerate(chunks):
+        ptb_entities = file_sender.convert_entities(entities)
+        # Заголовок с именем файла — только перед первым чанком
+        if index == 0:
+            header = FILE_CONTENT_HEADER_TEMPLATE.format(filename=filename)
+            text = header + text
+            # Сдвигаем offset всех entities на длину заголовка (в UTF-16 code units)
+            header_utf16_len = len(header.encode("utf-16-le")) // 2
+            ptb_entities = [
+                _shift_entity(entity, header_utf16_len)
+                for entity in ptb_entities
+            ]
+        await _application.bot.send_message(
+            chat_id, text, entities=ptb_entities,
+        )
+
+
+async def _send_binary_file(chat_id: int, file_path: str) -> None:
+    """Отправляет бинарный файл через Telegram send_document."""
+    error = file_sender.check_binary_file(file_path)
+    if error:
+        await _send_telegram_message(chat_id, error, parse_mode=None)
+        return
+    await _application.bot.send_document(chat_id, document=file_path)
+
+
+async def _process_file_markers(chat_id: int, text: str) -> str:
+    """Извлекает маркеры [SEND_FILE:...], отправляет файлы, возвращает очищенный текст."""
+    file_paths = file_sender.extract_file_markers(text)
+    if not file_paths:
+        return text
+
+    cleaned_text = file_sender.strip_file_markers(text)
+
+    for file_path in file_paths:
+        if file_sender.is_text_file(file_path):
+            await _send_text_file(chat_id, file_path)
+        else:
+            await _send_binary_file(chat_id, file_path)
+
+    return cleaned_text
+
+
 def _extract_file_info(update: Update) -> tuple[str, str, str | None]:
     """Извлекает file_id, расширение и оригинальное имя из сообщения Telegram."""
     if update.message.photo:
@@ -445,6 +510,10 @@ async def send_response(
     if not text or text == NO_RESPONSE_MARKER:
         text = EMPTY_RESPONSE_TEXT
 
+    # Обработка файловых маркеров — только для финальных ответов
+    if is_final:
+        text = await _process_file_markers(chat_id, text)
+
     parts = message_splitter.prepare_message(text)
 
     # Промежуточные обновления отображаем курсивом
@@ -469,6 +538,10 @@ async def send_watcher_message(
     is_final: bool,
 ) -> None:
     """Отправляет сообщение от watcher (ответ из другой сессии)."""
+    # Обработка файловых маркеров — только для финальных ответов
+    if is_final:
+        text = await _process_file_markers(chat_id, text)
+
     parts = message_splitter.prepare_message(text)
 
     # Промежуточные обновления отображаем курсивом, как в send_response

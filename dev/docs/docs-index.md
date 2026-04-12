@@ -11,6 +11,7 @@
 - **logs/** — логи работы пайплайнов: root-cause отчёты и артефакты тестирования
 - **changelog/** — история изменений проекта
   - [changelog/2026-04.md](changelog/2026-04.md) — апрель 2026: asyncio.Lock в process_manager, watcher уведомляет только владельца сессии
+  - [changelog/12.04_19.05-md-file-delivery.md](changelog/12.04_19.05-md-file-delivery.md) — 12.04.2026: отправка файлов из ответа Claude пользователю через маркеры `[SEND_FILE:path]` и telegramify-markdown
 - **claude-md-updates/** — лог изменений CLAUDE.md (пока пусто)
 
 ## BRD и пользовательские пути

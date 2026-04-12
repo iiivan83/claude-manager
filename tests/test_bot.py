@@ -22,6 +22,7 @@ from claude_manager.bot import (
     BOT_COMMANDS,
     EMPTY_PROJECTS_TEMPLATE,
     EMPTY_RESPONSE_TEXT,
+    FILE_CONTENT_HEADER_TEMPLATE,
     IMAGE_EXTENSIONS,
     INVALID_PROJECT_NUMBER_TEMPLATE,
     MONITORING_MODE_MESSAGE,
@@ -41,7 +42,10 @@ from claude_manager.bot import (
     _format_session_header,
     _generate_file_name,
     _is_current_session,
+    _process_file_markers,
+    _send_binary_file,
     _send_telegram_message,
+    _send_text_file,
     handle_all,
     handle_document,
     handle_message,
@@ -57,6 +61,7 @@ from claude_manager.bot import (
     send_watcher_message,
     setup_bot,
 )
+from claude_manager import file_sender
 from claude_manager import project_manager
 import claude_manager.bot as bot_module
 import claude_manager.config as config_module
@@ -1457,3 +1462,210 @@ class TestHandleSwitchProject:
             f"Ожидалось минимум 3 вызова send_message (1 результат + 2 pending), "
             f"получено {len(all_calls)}"
         )
+
+
+# --- Тесты send_response с файловыми маркерами ---
+
+
+class TestSendResponseFileMarkers:
+    """Тесты обработки маркеров [SEND_FILE:path] в send_response."""
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._send_text_file", new_callable=AsyncMock)
+    @patch.object(file_sender, "is_text_file", return_value=True)
+    @patch.object(file_sender, "strip_file_markers", return_value="answer")
+    @patch.object(
+        file_sender, "extract_file_markers", return_value=["/tmp/test.md"],
+    )
+    async def test_send_response_with_text_file_marker(
+        self,
+        mock_extract: MagicMock,
+        mock_strip: MagicMock,
+        mock_is_text: MagicMock,
+        mock_send_text_file: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Финальный ответ с маркером текстового файла — файл отправляется."""
+        await send_response(
+            TEST_CHAT_ID,
+            "answer [SEND_FILE:/tmp/test.md]",
+            1,
+            is_final=True,
+        )
+        mock_extract.assert_called_once()
+        mock_send_text_file.assert_awaited_once_with(
+            TEST_CHAT_ID, "/tmp/test.md",
+        )
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._process_file_markers", new_callable=AsyncMock)
+    async def test_send_response_not_final_skips_file_markers(
+        self,
+        mock_process: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Промежуточный ответ (is_final=False) — маркеры не обрабатываются."""
+        await send_response(
+            TEST_CHAT_ID,
+            "text [SEND_FILE:/tmp/test.md]",
+            1,
+            is_final=False,
+        )
+        mock_process.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._send_binary_file", new_callable=AsyncMock)
+    @patch.object(file_sender, "is_text_file", return_value=False)
+    @patch.object(file_sender, "strip_file_markers", return_value="answer")
+    @patch.object(
+        file_sender, "extract_file_markers", return_value=["/tmp/image.png"],
+    )
+    async def test_send_response_with_binary_file_marker(
+        self,
+        mock_extract: MagicMock,
+        mock_strip: MagicMock,
+        mock_is_text: MagicMock,
+        mock_send_binary: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Маркер бинарного файла — отправляется как документ."""
+        await send_response(
+            TEST_CHAT_ID,
+            "answer [SEND_FILE:/tmp/image.png]",
+            1,
+            is_final=True,
+        )
+        mock_send_binary.assert_awaited_once_with(
+            TEST_CHAT_ID, "/tmp/image.png",
+        )
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._send_text_file", new_callable=AsyncMock)
+    @patch.object(file_sender, "is_text_file", return_value=True)
+    @patch.object(file_sender, "strip_file_markers", return_value="answer")
+    @patch.object(
+        file_sender,
+        "extract_file_markers",
+        return_value=["/tmp/a.md", "/tmp/b.md"],
+    )
+    async def test_send_response_multiple_file_markers(
+        self,
+        mock_extract: MagicMock,
+        mock_strip: MagicMock,
+        mock_is_text: MagicMock,
+        mock_send_text_file: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Два маркера — оба файла отправлены."""
+        await send_response(
+            TEST_CHAT_ID,
+            "answer [SEND_FILE:/tmp/a.md] [SEND_FILE:/tmp/b.md]",
+            1,
+            is_final=True,
+        )
+        assert mock_send_text_file.await_count == 2
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._send_telegram_message", new_callable=AsyncMock)
+    @patch.object(
+        file_sender,
+        "read_file_content",
+        return_value=("", "Файл не найден: /tmp/missing.md"),
+    )
+    @patch.object(file_sender, "is_text_file", return_value=True)
+    @patch.object(file_sender, "strip_file_markers", return_value="answer")
+    @patch.object(
+        file_sender,
+        "extract_file_markers",
+        return_value=["/tmp/missing.md"],
+    )
+    async def test_send_response_file_not_found_sends_error(
+        self,
+        mock_extract: MagicMock,
+        mock_strip: MagicMock,
+        mock_is_text: MagicMock,
+        mock_read: MagicMock,
+        mock_send_msg: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Файл не найден — пользователь получает сообщение об ошибке, бот не падает."""
+        await send_response(
+            TEST_CHAT_ID,
+            "answer [SEND_FILE:/tmp/missing.md]",
+            1,
+            is_final=True,
+        )
+        # Одно из сообщений содержит ошибку о файле
+        error_sent = any(
+            "Файл не найден" in str(call)
+            for call in mock_send_msg.call_args_list
+        )
+        assert error_sent
+
+
+# --- Тесты send_watcher_message с файловыми маркерами ---
+
+
+class TestSendWatcherMessageFileMarkers:
+    """Тесты обработки маркеров [SEND_FILE:path] в send_watcher_message."""
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._send_text_file", new_callable=AsyncMock)
+    @patch.object(file_sender, "is_text_file", return_value=True)
+    @patch.object(file_sender, "strip_file_markers", return_value="ответ")
+    @patch.object(
+        file_sender, "extract_file_markers", return_value=["/tmp/file.md"],
+    )
+    @patch.object(session_manager, "get_bound_session", return_value=TEST_SESSION_ID)
+    async def test_send_watcher_message_with_file_marker(
+        self,
+        mock_get_bound: MagicMock,
+        mock_extract: MagicMock,
+        mock_strip: MagicMock,
+        mock_is_text: MagicMock,
+        mock_send_text_file: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Финальный ответ watcher с маркером — файл отправлен."""
+        await send_watcher_message(
+            TEST_CHAT_ID, "ответ [SEND_FILE:/tmp/file.md]",
+            TEST_SESSION_ID, 1, is_final=True,
+        )
+        mock_send_text_file.assert_awaited_once_with(
+            TEST_CHAT_ID, "/tmp/file.md",
+        )
+
+    @pytest.mark.asyncio()
+    @patch("claude_manager.bot._process_file_markers", new_callable=AsyncMock)
+    @patch.object(session_manager, "get_bound_session", return_value=TEST_SESSION_ID)
+    async def test_send_watcher_message_not_final_skips_markers(
+        self,
+        mock_get_bound: MagicMock,
+        mock_process: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Промежуточный ответ watcher — маркеры не обрабатываются."""
+        await send_watcher_message(
+            TEST_CHAT_ID, "text [SEND_FILE:/tmp/file.md]",
+            TEST_SESSION_ID, 1, is_final=False,
+        )
+        mock_process.assert_not_awaited()
+
+
+# --- Тесты _process_file_markers напрямую ---
+
+
+class TestProcessFileMarkers:
+    """Тесты функции _process_file_markers."""
+
+    @pytest.mark.asyncio()
+    async def test_process_file_markers_no_markers(
+        self, _setup_application: MagicMock,
+    ) -> None:
+        """Текст без маркеров — возвращается без изменений, файлы не отправляются."""
+        result = await _process_file_markers(TEST_CHAT_ID, "обычный текст")
+        assert result == "обычный текст"
+        # send_message не должен быть вызван для отправки файлов
+        # (только _send_telegram_message может быть вызвана позже для текста,
+        # но _process_file_markers сама файлы не отправляла)
+        _setup_application.bot.send_document.assert_not_called()

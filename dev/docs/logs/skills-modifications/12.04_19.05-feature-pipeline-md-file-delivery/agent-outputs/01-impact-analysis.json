@@ -1,0 +1,159 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-12T19:08:00+03:00",
+  "result": {
+    "affected_files": [
+      {
+        "path": "src/claude_manager/file_sender.py",
+        "type": "create",
+        "reason": "Новый модуль — вся логика: парсинг маркера [SEND_FILE:path], определение типа файла (текстовый/бинарный), чтение с диска, рендеринг текстовых файлов через telegramify-markdown, разбивка на части до 4096 символов. Слой утилит (слой 0) — без зависимостей от других модулей проекта."
+      },
+      {
+        "path": "src/claude_manager/bot.py",
+        "type": "modify",
+        "reason": "Интеграция file_sender в путь ответа. Затронуты функции send_response и send_watcher_message — после вызова message_splitter.prepare_message нужно проверить наличие маркеров [SEND_FILE:...] в тексте, вырезать их, и отправить файлы. Также нужна функция для отправки бинарных файлов через bot.send_document. Импорт file_sender добавляется в шапку файла."
+      },
+      {
+        "path": "requirements.txt",
+        "type": "modify",
+        "reason": "Добавить telegramify-markdown>=1.1.2 — библиотека уже установлена в .venv (v1.1.2), но не указана в зависимостях."
+      },
+      {
+        "path": "pyproject.toml",
+        "type": "modify",
+        "reason": "Добавить telegramify-markdown>=1.1.2 в секцию dependencies."
+      },
+      {
+        "path": "tests/test_file_sender.py",
+        "type": "create",
+        "reason": "Юнит-тесты для нового модуля file_sender.py — парсинг маркеров, определение типа файла, чтение файлов, рендеринг через telegramify-markdown, обработка ошибок."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "type": "modify",
+        "reason": "Обновить тесты send_response и send_watcher_message — добавить кейсы с маркером [SEND_FILE:...] в тексте ответа. Проверить что маркер вырезается, файл отправляется."
+      }
+    ],
+    "affected_functions": [
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "send_response",
+        "impact": "Ключевая точка интеграции. Сейчас функция получает text, вызывает message_splitter.prepare_message, добавляет заголовок (#N) и отправляет части через _send_telegram_message. Нужно ПЕРЕД вызовом prepare_message: 1) извлечь маркеры [SEND_FILE:path] из текста через file_sender.extract_file_markers, 2) вырезать маркеры из текста, 3) ПОСЛЕ отправки текста — отправить каждый файл (текстовые — как рендеренные сообщения, бинарные — через send_document)."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "send_watcher_message",
+        "impact": "Аналогично send_response — watcher тоже пересылает ответы Claude из мониторинга. Нужна та же логика извлечения и отправки файлов. Рекомендуется вынести общую логику обработки маркеров в отдельную приватную функцию бота, чтобы не дублировать код между send_response и send_watcher_message."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_handle_claude_result",
+        "impact": "Не требует прямых изменений — вызывает send_response, который будет изменён. Но нужно убедиться, что для ошибочных ответов (result.is_error=True) маркеры НЕ обрабатываются (ошибки отправляются как plain text)."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_deliver_pending_messages",
+        "impact": "Вызывает send_response для доставки пропущенных сообщений из буфера при переключении проектов. Если в пропущенном сообщении есть маркер [SEND_FILE:...], файл может уже не существовать (TTL буфера 3 часа). Нужна обработка случая file-not-found."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_on_progress",
+        "impact": "Вызывает send_response для промежуточных обновлений (thinking). Маркеры [SEND_FILE:...] не должны обрабатываться в промежуточных ответах — они появляются только в финальном result. Нужно убедиться, что is_final=False подавляет обработку файлов."
+      }
+    ],
+    "affected_tests": [
+      {
+        "path": "tests/test_bot.py",
+        "action": "update",
+        "reason": "66 тестов. Обновить класс TestSendResponse (3 теста): добавить кейсы с маркером SEND_FILE в тексте — маркер вырезается, файл отправляется. Обновить TestSendWatcherMessage (3 теста): аналогичные кейсы. Добавить тесты для новой логики отправки документов (send_document). Существующие тесты должны остаться зелёными — текст без маркеров обрабатывается как раньше."
+      },
+      {
+        "path": "tests/test_process_manager.py",
+        "action": "keep",
+        "reason": "51 тест. process_manager НЕ затрагивается — он возвращает SendResult с текстом ответа, парсинг маркеров происходит выше (в bot.py). Тесты остаются без изменений."
+      },
+      {
+        "path": "tests/test_message_splitter.py",
+        "action": "keep",
+        "reason": "41 тест. message_splitter не изменяется — он по-прежнему конвертирует Markdown в HTML. Маркеры вырезаются ДО вызова message_splitter. Тесты остаются без изменений."
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "action": "keep",
+        "reason": "55 тестов. session_watcher передаёт текст ответа через callback в bot.py. Парсинг маркеров происходит в bot.py, не в watcher. Тесты остаются без изменений."
+      },
+      {
+        "path": "tests/integration/test_message_path.py",
+        "action": "update",
+        "reason": "Интеграционные тесты проверяют цепочку ClaudeProcess → process_manager → message_splitter. Нужно добавить тест, проверяющий цепочку с маркером SEND_FILE в ответе: маркер извлекается и вырезается из текста перед отправкой."
+      },
+      {
+        "path": "tests/integration/test_file_handling.py",
+        "action": "keep",
+        "reason": "Тестирует ВХОДЯЩИЕ файлы (фото/документы от пользователя → Claude). Наша фича — ИСХОДЯЩИЕ файлы (Claude → пользователь). Разные пути, тесты не затрагиваются."
+      }
+    ],
+    "risk_zones": [
+      {
+        "area": "Дублирование логики send_response / send_watcher_message",
+        "risk_level": "high",
+        "reason": "Обе функции отправляют ответы Claude пользователю. Если добавить обработку файлов только в одну — вторая будет показывать сырые маркеры [SEND_FILE:...]. Нужно вынести общую логику обработки маркеров в отдельную функцию и вызывать из обоих мест. В текущем коде уже видна частичная дупликация (обе вызывают prepare_message, обе добавляют header, обе оборачивают в <i> при is_final=False)."
+      },
+      {
+        "area": "Промежуточные обновления (is_final=False) не должны обрабатывать маркеры",
+        "risk_level": "medium",
+        "reason": "Функция send_response вызывается и для промежуточных обновлений (thinking от Claude, is_final=False) и для финальных ответов. Маркеры [SEND_FILE:...] появляются только в финальном ответе. Но если Claude упомянет маркер в промежуточном thinking — бот попытается отправить файл до завершения работы. Нужен guard: обрабатывать файлы только при is_final=True."
+      },
+      {
+        "area": "Файл может не существовать или быть недоступен",
+        "risk_level": "medium",
+        "reason": "Claude указывает путь к файлу, но к моменту отправки файл может быть удалён, перемещён или заблокирован. Особенно актуально для _deliver_pending_messages (буфер непрочитанных, TTL 3 часа). Нужна graceful обработка: сообщение пользователю вместо краша."
+      },
+      {
+        "area": "Лимит размера файла в Telegram (50 МБ для бота)",
+        "risk_level": "medium",
+        "reason": "Telegram Bot API ограничивает отправку файлов до 50 МБ. Если Claude укажет путь к большому файлу — нужна проверка размера и понятная ошибка пользователю."
+      },
+      {
+        "area": "Безопасность — чтение произвольных файлов",
+        "risk_level": "medium",
+        "reason": "Claude может указать путь к чувствительным файлам (.env, private keys, /etc/passwd). Бот однопользовательский и локальный (пользователь и так имеет доступ к своей файловой системе), но стоит добавить минимальную защиту: ограничить пути рабочей директорией (config.WORKING_DIR) или логировать все запросы."
+      },
+      {
+        "area": "telegramify-markdown не в зависимостях",
+        "risk_level": "low",
+        "reason": "Библиотека установлена в .venv (v1.1.2), но не указана в requirements.txt и pyproject.toml. При деплое на чистой машине pip install не установит её. Нужно добавить в оба файла."
+      },
+      {
+        "area": "Разбивка длинных текстовых файлов на части",
+        "risk_level": "low",
+        "reason": "Текстовые файлы могут быть длиннее 4096 символов. Нужно разбивать на части аналогично message_splitter. telegramify-markdown возвращает Markdown → Telegram-формат, но разбивку на части нужно реализовать самостоятельно. Можно переиспользовать split_html_message из message_splitter."
+      }
+    ],
+    "spec_conflicts": [],
+    "new_tests_needed": [
+      "test_file_sender.py — парсинг маркеров: extract_file_markers находит все [SEND_FILE:path] в тексте",
+      "test_file_sender.py — парсинг маркеров: strip_file_markers вырезает маркеры и возвращает чистый текст",
+      "test_file_sender.py — парсинг маркеров: маркер с пробелами в пути (в кавычках или нет)",
+      "test_file_sender.py — парсинг маркеров: несколько маркеров в одном тексте",
+      "test_file_sender.py — парсинг маркеров: текст без маркеров возвращается без изменений",
+      "test_file_sender.py — определение типа: is_text_file корректно определяет MD, TXT, JSON, PY, SH как текстовые",
+      "test_file_sender.py — определение типа: бинарные файлы (PNG, ZIP, PDF, EXE) не считаются текстовыми",
+      "test_file_sender.py — чтение файла: read_text_file читает содержимое и возвращает строку",
+      "test_file_sender.py — чтение файла: несуществующий файл возвращает ошибку (не крашит)",
+      "test_file_sender.py — чтение файла: файл без прав чтения возвращает ошибку",
+      "test_file_sender.py — рендеринг: render_for_telegram конвертирует Markdown через telegramify-markdown",
+      "test_file_sender.py — рендеринг: длинный файл разбивается на части до 4096 символов",
+      "test_file_sender.py — рендеринг: пустой файл обрабатывается корректно",
+      "test_bot.py — send_response с маркером SEND_FILE: маркер вырезается из текста ответа",
+      "test_bot.py — send_response с маркером SEND_FILE: текстовый файл отправляется как форматированное сообщение",
+      "test_bot.py — send_response с маркером SEND_FILE: бинарный файл отправляется через send_document",
+      "test_bot.py — send_response с is_final=False: маркеры НЕ обрабатываются (промежуточное обновление)",
+      "test_bot.py — send_response с несуществующим файлом: пользователь получает сообщение об ошибке",
+      "test_bot.py — send_watcher_message с маркером SEND_FILE: файл отправляется (аналогично send_response)",
+      "test_bot.py — send_response с несколькими маркерами: все файлы отправляются последовательно",
+      "integration/test_message_path.py — полный путь с маркером: ответ Claude содержит [SEND_FILE:...], маркер вырезается из финального текста"
+    ]
+  }
+}

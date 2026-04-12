@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from claude_manager import message_splitter, process_manager
+from claude_manager import file_sender, message_splitter, process_manager
 from claude_manager.claude_runner import ClaudeProcess
 from claude_manager.message_splitter import TELEGRAM_MESSAGE_LIMIT
 
@@ -315,3 +315,32 @@ class TestNoResponseMarker:
 
         # process_manager возвращает пустую строку для этого маркера
         assert result.text == ""
+
+
+# --- Тесты пути сообщения с файловыми маркерами ---
+
+
+class TestMessagePathWithFileMarkers:
+    """Интеграционный тест: ответ Claude с маркером -> file_sender -> message_splitter."""
+
+    async def test_response_with_send_file_marker_strips_marker(self) -> None:
+        """Маркер [SEND_FILE:...] вырезается из текста, путь извлекается корректно."""
+        # Имитируем текст ответа Claude с маркером
+        claude_response_text = "Вот файл [SEND_FILE:/tmp/readme.md] и пояснение"
+
+        # Шаг 1: извлекаем маркеры
+        markers = file_sender.extract_file_markers(claude_response_text)
+        assert markers == ["/tmp/readme.md"]
+
+        # Шаг 2: вырезаем маркеры из текста
+        cleaned_text = file_sender.strip_file_markers(claude_response_text)
+        assert "[SEND_FILE" not in cleaned_text
+        assert "Вот файл" in cleaned_text
+        assert "пояснение" in cleaned_text
+
+        # Шаг 3: очищенный текст проходит через message_splitter без ошибок
+        html_parts = message_splitter.prepare_message(cleaned_text)
+        assert len(html_parts) >= 1
+        # Маркера нет в HTML-выходе
+        for part in html_parts:
+            assert "[SEND_FILE" not in part

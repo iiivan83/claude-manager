@@ -1,0 +1,228 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-12T19:20:00+03:00",
+  "result": {
+    "approach_summary": "Новый утилитный модуль file_sender.py берёт на себя всю работу с файлами: парсинг маркеров [SEND_FILE:path] из текста Claude, определение типа файла (текстовый или бинарный), чтение и рендеринг через telegramify-markdown.convert() + split_entities(). В bot.py появляется одна общая приватная функция _process_file_markers(), которая извлекает маркеры, вырезает их из текста и отправляет файлы — её вызывают и send_response, и send_watcher_message. Файлы отправляются через entities API Telegram (не через parse_mode=HTML), а бинарные — через send_document. Guard: файлы обрабатываются только при is_final=True.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/file_sender.py",
+        "type": "create",
+        "diff_spec": null,
+        "full_spec": {
+          "purpose": "Утилитный модуль без состояния (как message_splitter). Отвечает за три задачи: 1) парсинг маркеров [SEND_FILE:path] из текста, 2) определение типа файла — текстовый или бинарный, 3) рендеринг текстовых файлов через telegramify-markdown с разбивкой на чанки для Telegram.",
+          "api": [
+            "extract_file_markers(text: str) -> list[str] — находит все маркеры [SEND_FILE:/path/to/file] в тексте и возвращает список абсолютных путей. Регулярное выражение: r'\\[SEND_FILE:([^\\]]+)\\]'. Пути обрезаются strip()-ом. Возвращает пустой список если маркеров нет.",
+            "strip_file_markers(text: str) -> str — вырезает все маркеры [SEND_FILE:...] из текста. Возвращает текст без маркеров. Пустые строки, оставшиеся после вырезки, схлопываются (не больше двух подряд). Использует то же регулярное выражение, что и extract_file_markers.",
+            "is_text_file(file_path: str) -> bool — определяет, является ли файл текстовым по расширению. Проверяет по множеству TEXT_EXTENSIONS (набор расширений: md, txt, json, py, sh, js, ts, jsx, tsx, html, css, yml, yaml, toml, cfg, ini, csv, xml, log, env, gitignore, dockerignore, makefile, rst, tex, sql, rb, go, rs, java, kt, swift, c, cpp, h, hpp). Файлы без расширения считаются бинарными. Регистр не важен (сравнение через .lower()).",
+            "read_file_content(file_path: str) -> tuple[str, str | None] — читает текстовый файл с диска. Возвращает кортеж (content, error). При успехе error=None. При ошибке content='', error=человекочитаемое сообщение. Обрабатывает: FileNotFoundError ('Файл не найден: {path}'), PermissionError ('Нет доступа к файлу: {path}'), UnicodeDecodeError ('Файл не является текстовым: {path}'), OSError (общая ошибка). Ограничение MAX_TEXT_FILE_SIZE_BYTES = 1_000_000 (1 МБ) — файлы больше этого размера не читаются (ошибка 'Файл слишком большой для отображения в чате: {path}'). Проверка размера через os.path.getsize() перед чтением.",
+            "render_file_for_telegram(content: str) -> list[tuple[str, list]] — рендерит текстовое содержимое через telegramify_markdown.convert(), затем разбивает через telegramify_markdown.split_entities(text, entities, TELEGRAM_MESSAGE_LIMIT). Возвращает список чанков — каждый чанк это кортеж (text, entities). TELEGRAM_MESSAGE_LIMIT = 4096. Если content пустой — возвращает [('(пустой файл)', [])].",
+            "convert_entities(entities: list) -> list — конвертирует MessageEntity из telegramify-markdown в MessageEntity из python-telegram-bot. Нужна потому что telegramify-markdown использует свой класс MessageEntity (telegramify_markdown.entity.MessageEntity), а python-telegram-bot — свой (telegram.MessageEntity). Конвертация: для каждого entity создаётся telegram.MessageEntity(type=e.type, offset=e.offset, length=e.length, url=e.url, language=e.language).",
+            "check_binary_file(file_path: str) -> str | None — проверяет бинарный файл перед отправкой через send_document. Возвращает None при успехе, строку с ошибкой при проблеме. Проверяет: файл существует (FileNotFoundError), есть права на чтение (PermissionError), размер не превышает MAX_BINARY_FILE_SIZE_BYTES = 50_000_000 (50 МБ — лимит Telegram Bot API). Ошибка для слишком большого файла: 'Файл слишком большой для отправки через Telegram (лимит 50 МБ): {path}'."
+          ],
+          "algorithms": "extract_file_markers: re.findall(SEND_FILE_PATTERN, text), где SEND_FILE_PATTERN = r'\\[SEND_FILE:([^\\]]+)\\]'. strip_file_markers: re.sub(SEND_FILE_PATTERN_WITH_BRACKETS, '', text).strip(), затем re.sub(r'\\n{3,}', '\\n\\n', result) для схлопывания пустых строк. SEND_FILE_PATTERN_WITH_BRACKETS = r'\\[SEND_FILE:[^\\]]+\\]\\s*'. is_text_file: Path(file_path).suffix.lstrip('.').lower() in TEXT_EXTENSIONS. Специальные файлы без расширения но с известными именами (Makefile, Dockerfile, .gitignore, .dockerignore, .env) проверяются отдельно по Path(file_path).name.lower(). read_file_content: os.path.getsize() для проверки размера, Path(file_path).read_text(encoding='utf-8') для чтения. render_file_for_telegram: telegramify_markdown.convert(content) -> (text, entities), затем telegramify_markdown.split_entities(text, entities, 4096) -> list[(text, entities)].",
+          "dependencies": [
+            "telegramify_markdown (convert, split_entities) — внешняя библиотека для рендеринга Markdown в формат Telegram с entities",
+            "telegram (MessageEntity) — для конвертации entities из telegramify-markdown формата в python-telegram-bot формат",
+            "re — стандартная библиотека для регулярных выражений (парсинг маркеров)",
+            "os — стандартная библиотека для проверки размера файла (os.path.getsize)",
+            "pathlib.Path — стандартная библиотека для работы с путями (извлечение расширения, имени файла, чтение)",
+            "logging — стандартная библиотека для логирования ошибок"
+          ],
+          "constants": [
+            "SEND_FILE_PATTERN = r'\\[SEND_FILE:([^\\]]+)\\]' — регулярное выражение для извлечения путей из маркеров",
+            "SEND_FILE_PATTERN_WITH_BRACKETS = r'\\[SEND_FILE:[^\\]]+\\]\\s*' — регулярное выражение для вырезки целых маркеров из текста (включая опциональный пробел/перенос после)",
+            "TEXT_EXTENSIONS = frozenset({'md', 'txt', 'json', 'py', 'sh', 'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'yml', 'yaml', 'toml', 'cfg', 'ini', 'csv', 'xml', 'log', 'env', 'gitignore', 'dockerignore', 'makefile', 'rst', 'tex', 'sql', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'cpp', 'h', 'hpp'}) — расширения, которые считаются текстовыми файлами",
+            "TEXT_FILE_NAMES = frozenset({'makefile', 'dockerfile', '.gitignore', '.dockerignore', '.env', '.env.example', '.editorconfig'}) — имена файлов без расширения, которые считаются текстовыми",
+            "MAX_TEXT_FILE_SIZE_BYTES = 1_000_000 — максимальный размер текстового файла для рендеринга в чате (1 МБ)",
+            "MAX_BINARY_FILE_SIZE_BYTES = 50_000_000 — максимальный размер бинарного файла для отправки через Telegram Bot API (50 МБ)",
+            "TELEGRAM_MESSAGE_LIMIT = 4096 — максимальная длина сообщения Telegram в UTF-16 code units",
+            "EMPTY_FILE_PLACEHOLDER = '(пустой файл)' — текст, который отправляется вместо содержимого для пустых файлов"
+          ],
+          "error_handling": "Все функции чтения файлов (read_file_content, check_binary_file) возвращают ошибку как строку, а не бросают исключение. Это позволяет вызывающему коду в bot.py отправить понятное сообщение пользователю. Логирование ошибок (logger.warning) происходит внутри file_sender — bot.py не нужно повторно логировать."
+        }
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "import_section": {
+            "was": "from claude_manager import (\n    config,\n    daily_session_registry,\n    message_splitter,\n    process_manager,\n    project_manager,\n    session_manager,\n    session_reader,\n    session_watcher,\n)",
+            "becomes": "from claude_manager import (\n    config,\n    daily_session_registry,\n    file_sender,\n    message_splitter,\n    process_manager,\n    project_manager,\n    session_manager,\n    session_reader,\n    session_watcher,\n)",
+            "reason": "Добавляем импорт нового модуля file_sender — он нужен для парсинга маркеров и отправки файлов."
+          },
+          "new_constant": {
+            "was": null,
+            "becomes": "# Заголовок перед содержимым файла, отправленным в чат (имя файла жирным)\nFILE_CONTENT_HEADER_TEMPLATE = \"\\U0001F4CE {filename}\\n\\n\"",
+            "reason": "Шаблон заголовка для текстового файла, отправляемого в чат. Скрепка + имя файла, чтобы визуально отличать содержимое файла от обычного ответа Claude."
+          },
+          "new_function_send_text_file": {
+            "was": null,
+            "becomes": "async def _send_text_file(chat_id: int, file_path: str) -> None:\n    \"\"\"Читает текстовый файл, рендерит через telegramify-markdown и отправляет в чат.\"\"\"\n    content, error = file_sender.read_file_content(file_path)\n    if error:\n        await _send_telegram_message(chat_id, error, parse_mode=None)\n        return\n\n    chunks = file_sender.render_file_for_telegram(content)\n    filename = Path(file_path).name\n\n    for index, (text, entities) in enumerate(chunks):\n        ptb_entities = file_sender.convert_entities(entities)\n        # Заголовок с именем файла — только перед первым чанком\n        if index == 0:\n            header = FILE_CONTENT_HEADER_TEMPLATE.format(filename=filename)\n            text = header + text\n            # Сдвигаем offset всех entities на длину заголовка (в UTF-16)\n            header_utf16_len = len(header.encode('utf-16-le')) // 2\n            ptb_entities = [\n                _shift_entity(entity, header_utf16_len)\n                for entity in ptb_entities\n            ]\n        await _application.bot.send_message(\n            chat_id, text, entities=ptb_entities,\n        )",
+            "reason": "Отправка текстового файла в чат: чтение, рендеринг в формат Telegram с entities, разбивка на чанки. Entities API вместо parse_mode позволяет отображать форматирование без HTML/MarkdownV2 проблем."
+          },
+          "new_function_shift_entity": {
+            "was": null,
+            "becomes": "def _shift_entity(entity, offset_delta: int):\n    \"\"\"Создаёт копию MessageEntity со сдвинутым offset.\"\"\"\n    from telegram import MessageEntity\n    return MessageEntity(\n        type=entity.type, offset=entity.offset + offset_delta,\n        length=entity.length, url=entity.url, language=entity.language,\n    )",
+            "reason": "Вспомогательная функция для сдвига offset entities при добавлении заголовка перед первым чанком. Заголовок (имя файла) добавляется как plain text перед рендеренным содержимым, поэтому все entities нужно сместить на длину заголовка."
+          },
+          "new_function_send_binary_file": {
+            "was": null,
+            "becomes": "async def _send_binary_file(chat_id: int, file_path: str) -> None:\n    \"\"\"Отправляет бинарный файл через Telegram send_document.\"\"\"\n    error = file_sender.check_binary_file(file_path)\n    if error:\n        await _send_telegram_message(chat_id, error, parse_mode=None)\n        return\n    await _application.bot.send_document(chat_id, document=file_path)",
+            "reason": "Отправка бинарного файла (PNG, PDF, ZIP и др.) как документа через Telegram Bot API. Проверка доступности и размера перед отправкой."
+          },
+          "new_function_process_file_markers": {
+            "was": null,
+            "becomes": "async def _process_file_markers(chat_id: int, text: str) -> str:\n    \"\"\"Извлекает маркеры [SEND_FILE:...], отправляет файлы, возвращает очищенный текст.\"\"\"\n    file_paths = file_sender.extract_file_markers(text)\n    if not file_paths:\n        return text\n\n    cleaned_text = file_sender.strip_file_markers(text)\n\n    for file_path in file_paths:\n        if file_sender.is_text_file(file_path):\n            await _send_text_file(chat_id, file_path)\n        else:\n            await _send_binary_file(chat_id, file_path)\n\n    return cleaned_text",
+            "reason": "Общая приватная функция, устраняющая дублирование между send_response и send_watcher_message. Извлекает пути из маркеров, вырезает маркеры из текста, отправляет каждый файл (текстовый — рендерит и шлёт как сообщение, бинарный — шлёт как документ). Возвращает очищенный текст для дальнейшей обработки через message_splitter."
+          },
+          "send_response": {
+            "was": "async def send_response(\n    chat_id: int,\n    text: str,\n    session_number: int,\n    is_final: bool,\n    reply_markup=None,\n) -> None:\n    \"\"\"Форматирует и отправляет ответ Claude в Telegram.\"\"\"\n    # Пустой ответ или служебный маркер — заменяем на информативное сообщение\n    if not text or text == NO_RESPONSE_MARKER:\n        text = EMPTY_RESPONSE_TEXT\n\n    parts = message_splitter.prepare_message(text)\n\n    # Промежуточные обновления отображаем курсивом\n    if not is_final:\n        parts = [f\"<i>{part}</i>\" for part in parts]\n\n    header = _format_session_header(session_number, is_final)\n    parts[0] = header + parts[0]\n\n    last_index = len(parts) - 1\n    for index, part in enumerate(parts):\n        # Кнопки (reply_markup) — только к последней части\n        markup = reply_markup if index == last_index else None\n        await _send_telegram_message(chat_id, part, reply_markup=markup)",
+            "becomes": "async def send_response(\n    chat_id: int,\n    text: str,\n    session_number: int,\n    is_final: bool,\n    reply_markup=None,\n) -> None:\n    \"\"\"Форматирует и отправляет ответ Claude в Telegram.\"\"\"\n    # Пустой ответ или служебный маркер — заменяем на информативное сообщение\n    if not text or text == NO_RESPONSE_MARKER:\n        text = EMPTY_RESPONSE_TEXT\n\n    # Обработка файловых маркеров — только для финальных ответов\n    if is_final:\n        text = await _process_file_markers(chat_id, text)\n\n    parts = message_splitter.prepare_message(text)\n\n    # Промежуточные обновления отображаем курсивом\n    if not is_final:\n        parts = [f\"<i>{part}</i>\" for part in parts]\n\n    header = _format_session_header(session_number, is_final)\n    parts[0] = header + parts[0]\n\n    last_index = len(parts) - 1\n    for index, part in enumerate(parts):\n        # Кнопки (reply_markup) — только к последней части\n        markup = reply_markup if index == last_index else None\n        await _send_telegram_message(chat_id, part, reply_markup=markup)",
+            "reason": "Добавляется вызов _process_file_markers ПЕРЕД prepare_message. Guard: только при is_final=True — промежуточные обновления (thinking от Claude) не обрабатывают маркеры. Файлы отправляются первыми (внутри _process_file_markers), затем очищенный текст ответа — обычным потоком через message_splitter."
+          },
+          "send_watcher_message": {
+            "was": "async def send_watcher_message(\n    chat_id: int,\n    text: str,\n    session_id: str,\n    session_number: int,\n    is_final: bool,\n) -> None:\n    \"\"\"Отправляет сообщение от watcher (ответ из другой сессии).\"\"\"\n    parts = message_splitter.prepare_message(text)\n\n    # Промежуточные обновления отображаем курсивом, как в send_response\n    if not is_final:\n        parts = [f\"<i>{part}</i>\" for part in parts]\n\n    if _is_current_session(chat_id, session_id):\n        header = _format_session_header(session_number, is_final)\n    else:\n        clickable = _format_clickable_session_number(session_number)\n        status_icon = \"\\u2705\" if is_final else \"\\u23f3\"\n        header = f\"{clickable} {status_icon} \"\n\n    parts[0] = header + parts[0]\n\n    for part in parts:\n        await _send_telegram_message(chat_id, part)",
+            "becomes": "async def send_watcher_message(\n    chat_id: int,\n    text: str,\n    session_id: str,\n    session_number: int,\n    is_final: bool,\n) -> None:\n    \"\"\"Отправляет сообщение от watcher (ответ из другой сессии).\"\"\"\n    # Обработка файловых маркеров — только для финальных ответов\n    if is_final:\n        text = await _process_file_markers(chat_id, text)\n\n    parts = message_splitter.prepare_message(text)\n\n    # Промежуточные обновления отображаем курсивом, как в send_response\n    if not is_final:\n        parts = [f\"<i>{part}</i>\" for part in parts]\n\n    if _is_current_session(chat_id, session_id):\n        header = _format_session_header(session_number, is_final)\n    else:\n        clickable = _format_clickable_session_number(session_number)\n        status_icon = \"\\u2705\" if is_final else \"\\u23f3\"\n        header = f\"{clickable} {status_icon} \"\n\n    parts[0] = header + parts[0]\n\n    for part in parts:\n        await _send_telegram_message(chat_id, part)",
+            "reason": "Аналогичное изменение: вызов _process_file_markers перед prepare_message с guard is_final=True. Та же логика, что в send_response — общая функция _process_file_markers устраняет дублирование."
+          },
+          "placement_of_new_functions": "Новые функции (_send_text_file, _shift_entity, _send_binary_file, _process_file_markers) размещаются в секции '# --- Вспомогательные функции ---', после _send_telegram_message и перед _extract_file_info. Константа FILE_CONTENT_HEADER_TEMPLATE — в секции '# --- Константы ---', после EMPTY_RESPONSE_TEXT."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "requirements.txt",
+        "type": "modify",
+        "diff_spec": {
+          "was": "# Основные зависимости проекта\npython-telegram-bot>=21.10\npython-dotenv>=1.1.0",
+          "becomes": "# Основные зависимости проекта\npython-telegram-bot>=21.10\npython-dotenv>=1.1.0\ntelegramify-markdown>=1.1.2",
+          "reason": "telegramify-markdown используется в file_sender.py для рендеринга Markdown в формат Telegram с entities. Библиотека уже установлена в .venv (v1.1.2), но отсутствует в requirements.txt — при деплое на чистой машине pip install не установит её."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "pyproject.toml",
+        "type": "modify",
+        "diff_spec": {
+          "was": "dependencies = [\n    \"python-telegram-bot>=21.10\",\n    \"python-dotenv>=1.1.0\",\n]",
+          "becomes": "dependencies = [\n    \"python-telegram-bot>=21.10\",\n    \"python-dotenv>=1.1.0\",\n    \"telegramify-markdown>=1.1.2\",\n]",
+          "reason": "Дублируем зависимость в pyproject.toml — это основной файл конфигурации проекта, requirements.txt используется для быстрой установки через pip install -r."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "tests/test_file_sender.py",
+        "type": "create",
+        "diff_spec": null,
+        "full_spec": {
+          "purpose": "Юнит-тесты для модуля file_sender.py. Покрывают все публичные функции: парсинг маркеров, определение типа файла, чтение файлов, рендеринг, конвертацию entities, проверку бинарных файлов.",
+          "api": null,
+          "test_cases": [
+            "test_extract_file_markers_single — один маркер [SEND_FILE:/path/to/file.md] → список с одним путём",
+            "test_extract_file_markers_multiple — несколько маркеров в тексте → список всех путей в порядке появления",
+            "test_extract_file_markers_no_markers — текст без маркеров → пустой список",
+            "test_extract_file_markers_path_with_spaces — путь с пробелами [SEND_FILE:/path/to my file.md] → корректно извлекается",
+            "test_extract_file_markers_strips_whitespace — путь с лишними пробелами → strip() убирает их",
+            "test_strip_file_markers_removes_marker — текст с маркером → маркер вырезан, остальной текст на месте",
+            "test_strip_file_markers_collapses_empty_lines — после вырезки маркера лишние пустые строки (более двух подряд) схлопываются",
+            "test_strip_file_markers_no_markers — текст без маркеров → возвращается без изменений",
+            "test_strip_file_markers_multiple — несколько маркеров → все вырезаны",
+            "test_is_text_file_markdown — файл .md → True",
+            "test_is_text_file_python — файл .py → True",
+            "test_is_text_file_json — файл .json → True",
+            "test_is_text_file_txt — файл .txt → True",
+            "test_is_text_file_various_extensions — sh, js, ts, html, css, yml, yaml, toml → все True",
+            "test_is_text_file_binary_png — файл .png → False",
+            "test_is_text_file_binary_zip — файл .zip → False",
+            "test_is_text_file_binary_pdf — файл .pdf → False",
+            "test_is_text_file_no_extension — файл без расширения, не в TEXT_FILE_NAMES → False",
+            "test_is_text_file_known_names — Makefile, Dockerfile, .gitignore, .env → True (определение по имени файла)",
+            "test_is_text_file_case_insensitive — файл .MD, .Py → True (регистронезависимо)",
+            "test_read_file_content_success — существующий файл → (содержимое, None)",
+            "test_read_file_content_not_found — несуществующий путь → ('', 'Файл не найден: ...')",
+            "test_read_file_content_permission_error — файл без прав чтения (мок через patch os.path.getsize) → ('', 'Нет доступа к файлу: ...')",
+            "test_read_file_content_too_large — файл больше MAX_TEXT_FILE_SIZE_BYTES (мок getsize) → ('', 'Файл слишком большой...')",
+            "test_read_file_content_unicode_error — бинарный файл прочитанный как текст (мок read_text с UnicodeDecodeError) → ('', 'Файл не является текстовым: ...')",
+            "test_read_file_content_empty_file — пустой файл → ('', None) — пустая строка это валидное содержимое",
+            "test_render_file_for_telegram_simple — простой Markdown → список чанков с entities",
+            "test_render_file_for_telegram_long — текст длиннее 4096 символов → разбивается на несколько чанков",
+            "test_render_file_for_telegram_empty — пустой контент → [('(пустой файл)', [])]",
+            "test_convert_entities_basic — конвертация telegramify entity в telegram.MessageEntity с сохранением type, offset, length",
+            "test_convert_entities_with_url — entity с url (ссылка) → url сохраняется при конвертации",
+            "test_convert_entities_empty_list — пустой список → пустой список",
+            "test_check_binary_file_ok — существующий файл нормального размера → None (ошибки нет)",
+            "test_check_binary_file_not_found — несуществующий файл → строка с ошибкой",
+            "test_check_binary_file_too_large — файл больше 50 МБ (мок getsize) → строка с ошибкой"
+          ],
+          "dependencies": [
+            "pytest",
+            "unittest.mock (patch, MagicMock) — для мокирования файловой системы и telegramify_markdown",
+            "pathlib.Path"
+          ]
+        }
+      },
+      {
+        "file": "tests/test_bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "new_tests": [
+            "test_send_response_with_file_marker_strips_marker — send_response с текстом 'answer [SEND_FILE:/tmp/test.md]' при is_final=True → file_sender.extract_file_markers вызван, маркер вырезан из текста, _send_text_file вызван. Мокаем file_sender.extract_file_markers, file_sender.strip_file_markers, file_sender.is_text_file, _send_text_file.",
+            "test_send_response_with_file_marker_not_final_ignores — send_response с маркером при is_final=False → _process_file_markers НЕ вызывается, маркер остаётся в тексте (обрабатывается message_splitter как обычный текст). Мокаем _process_file_markers чтобы проверить что он не вызван.",
+            "test_send_response_with_binary_file_marker — send_response с маркером [SEND_FILE:/tmp/image.png] при is_final=True → file_sender.is_text_file возвращает False → _send_binary_file вызван.",
+            "test_send_response_file_not_found_sends_error — send_response с маркером, file_sender.read_file_content возвращает ('', 'Файл не найден: ...') → пользователь получает сообщение об ошибке, бот не крашится.",
+            "test_send_response_multiple_file_markers — текст с двумя маркерами → оба файла отправлены последовательно.",
+            "test_send_watcher_message_with_file_marker — send_watcher_message с маркером при is_final=True → файл отправлен, маркер вырезан. Аналогично send_response.",
+            "test_send_watcher_message_not_final_ignores — send_watcher_message при is_final=False → маркер не обрабатывается.",
+            "test_process_file_markers_no_markers — _process_file_markers с текстом без маркеров → возвращает текст без изменений, никакие функции отправки не вызваны."
+          ],
+          "existing_tests_impact": "Все существующие тесты остаются зелёными. Текст без маркеров проходит через _process_file_markers без изменений (extract_file_markers возвращает пустой список, функция возвращает исходный текст). Единственное: в тестах send_response с is_final=True нужно подмокать file_sender.extract_file_markers → [] чтобы _process_file_markers не делала реальных вызовов. Или: file_sender.extract_file_markers с текстом без маркеров и так возвращает [] — дополнительных моков не нужно.",
+          "reason": "Тесты подтверждают: 1) маркеры обрабатываются только при is_final=True, 2) текстовые файлы рендерятся и отправляются как сообщения, 3) бинарные файлы отправляются как документы, 4) ошибки чтения файлов не крашат бота, 5) без маркеров поведение не меняется."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "tests/integration/test_message_path.py",
+        "type": "modify",
+        "diff_spec": {
+          "new_tests": [
+            "test_message_path_with_send_file_marker — интеграционный тест: ответ Claude содержит текст с маркером [SEND_FILE:/tmp/test.md], проходит через _handle_claude_result → send_response → _process_file_markers. Проверяем: 1) маркер вырезан из финального текста, 2) файл обработан (мокаем file_sender на уровне модуля). Тест подтверждает что вся цепочка (от получения ответа до отправки) работает корректно с маркерами."
+          ],
+          "reason": "Интеграционный тест проверяет полный путь сообщения с маркером — от result Claude до отправки в Telegram. Юнит-тесты в test_bot.py проверяют отдельные функции, а этот тест — их взаимодействие."
+        },
+        "full_spec": null
+      }
+    ],
+    "architectural_decisions": [
+      {
+        "decision": "Entities API вместо parse_mode для файлов",
+        "rationale": "telegramify-markdown.convert() возвращает (plain_text, entities) — это нативный формат Telegram entities, который не требует экранирования HTML/MarkdownV2. Telegram Bot API принимает entities напрямую через параметр entities в send_message. Это надёжнее, чем конвертация в HTML или MarkdownV2, потому что нет проблем с незакрытыми тегами и спецсимволами. Обычные ответы Claude по-прежнему идут через message_splitter (HTML) — это уже работает и проверено 498 тестами, менять смысла нет."
+      },
+      {
+        "decision": "Конвертация MessageEntity между библиотеками",
+        "rationale": "telegramify-markdown использует свой класс MessageEntity (telegramify_markdown.entity.MessageEntity — dataclass со slots), а python-telegram-bot — свой (telegram.MessageEntity). Они не совместимы: isinstance() возвращает False, PTB может отклонить чужие объекты при отправке. Функция convert_entities() в file_sender.py создаёт PTB-объекты с теми же полями. Это простое, безопасное решение — конвертация дешёвая (6 полей на объект)."
+      },
+      {
+        "decision": "Файлы отправляются ДО текста ответа",
+        "rationale": "Пользователь видит в чате: сначала файл(ы), потом текст ответа Claude. Такой порядок естественнее: Claude говорит 'вот файл [SEND_FILE:...]', файл появляется, потом комментарий Claude к файлу. При обратном порядке пользователь сначала увидит комментарий к файлу, который ещё не видел."
+      },
+      {
+        "decision": "Определение типа файла по расширению, а не по содержимому",
+        "rationale": "Определение по содержимому (magic bytes, heuristic encoding detection) ненадёжно и дорого. Расширение покрывает 99% реальных случаев: Claude указывает пути к конкретным файлам, а не к произвольным блобам. Набор TEXT_EXTENSIONS покрывает все распространённые языки программирования, конфиги и текстовые форматы. Если расширение не в списке — файл отправляется как документ (бинарный), что безопасный fallback."
+      },
+      {
+        "decision": "Заголовок файла вставляется как plain text перед entities-контентом",
+        "rationale": "Заголовок (скрепка + имя файла) добавляется как обычный текст перед первым чанком рендеренного файла. Все entities первого чанка сдвигаются на длину заголовка (в UTF-16 code units, потому что Telegram считает offset в UTF-16). Это проще, чем создавать отдельный entity для заголовка, и визуально чище — заголовок и содержимое в одном сообщении."
+      }
+    ],
+    "order_of_implementation": [
+      "1. requirements.txt и pyproject.toml — добавить telegramify-markdown в зависимости",
+      "2. src/claude_manager/file_sender.py — создать модуль со всеми функциями",
+      "3. tests/test_file_sender.py — создать юнит-тесты, прогнать (все должны быть зелёными)",
+      "4. src/claude_manager/bot.py — добавить импорт, константу, новые функции и изменения в send_response/send_watcher_message",
+      "5. tests/test_bot.py — добавить новые тесты, убедиться что старые не сломались",
+      "6. tests/integration/test_message_path.py — добавить интеграционный тест",
+      "7. Прогнать все тесты: python -m pytest tests/ -v"
+    ]
+  }
+}
