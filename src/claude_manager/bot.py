@@ -706,7 +706,11 @@ async def handle_stop(
         )
         return
 
-    if not process_manager.has_process(session_id):
+    # Процесс может отсутствовать в _processes (has_process=False),
+    # но retry loop ещё активен (is_busy=True). Первый /stop удаляет
+    # процесс из _processes, retry loop ещё не создал новый.
+    # В этом случае /stop должен установить флаг отмены для retry loop.
+    if not process_manager.has_process(session_id) and not process_manager.is_busy(session_id):
         await _send_telegram_message(
             chat_id,
             "Claude сейчас не работает, нечего останавливать",

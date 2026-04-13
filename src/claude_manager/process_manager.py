@@ -358,8 +358,14 @@ async def _restart_process(session_id: str) -> ClaudeProcess:
             f"Не удалось запустить Claude: {error}"
         ) from error
 
+    # Инвариант: все три словаря (_processes, _busy_flags, _stop_events)
+    # обновляются атомарно — по аналогии с create_process().
+    # Без этого перезапущенный процесс неуправляем: повторный /stop
+    # не найдёт stop_event, is_busy() не увидит busy_flag.
     async with _busy_lock:
         _processes[session_id] = claude_process
+        _busy_flags[session_id] = True
+        _stop_events[session_id] = asyncio.Event()
 
     logger.info(
         "Процесс Claude перезапущен: session_id=%s, PID=%d",
@@ -460,13 +466,16 @@ async def send_message(
             session_id = result.session_id
         return result
     finally:
-        # Критическая секция 2: безопасная очистка busy.
+        # Критическая секция 2: безопасная очистка busy и stop_event.
         # Проверяем наличие ключа, чтобы не создать «зомби» после stop_process.
         # Сценарий без проверки: stop_process.pop удаляет ключ → finally пишет
         # _busy_flags[session_id] = False → ключ воскресает как «зомби».
+        # stop_event очищается здесь (а не в stop_process), чтобы retry loop
+        # мог обнаружить флаг отмены через _check_stop_requested().
         async with _busy_lock:
             if session_id in _busy_flags:
                 _busy_flags[session_id] = False
+            _stop_events.pop(session_id, None)
 
 
 async def _execute_send(
@@ -507,7 +516,8 @@ async def _execute_send(
 
 async def stop_process(session_id: str) -> StopResult:
     """Останавливает процесс Claude в указанной сессии."""
-    # Критическая секция: читаем состояние и удаляем ключи атомарно.
+    # Критическая секция: читаем состояние, устанавливаем флаг отмены
+    # и удаляем записи из _processes/_busy_flags атомарно.
     # Гарантирует, что send_message.finally увидит отсутствие ключа
     # и не создаст зомби-запись после нашего pop.
     async with _busy_lock:
@@ -519,10 +529,12 @@ async def stop_process(session_id: str) -> StopResult:
         if stop_event is not None:
             stop_event.set()
 
-        # Очищаем словари — до terminate, чтобы finally увидел отсутствие ключа
+        # Очищаем словари — до terminate, чтобы finally увидел отсутствие ключа.
+        # stop_event НЕ удаляется: retry loop проверяет его через
+        # _check_stop_requested() и _wait_with_stop_check(). Очистка — в
+        # finally блоке send_message() после завершения retry loop.
         _processes.pop(session_id, None)
         _busy_flags.pop(session_id, None)
-        _stop_events.pop(session_id, None)
 
     # Завершаем процесс вне Lock — terminate может быть долгим (ждёт завершения)
     was_running = False

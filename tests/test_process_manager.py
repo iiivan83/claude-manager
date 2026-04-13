@@ -973,7 +973,11 @@ class TestStopAllProcesses:
         assert result == 3
         assert len(pm_module._processes) == 0
         assert len(pm_module._busy_flags) == 0
-        assert len(pm_module._stop_events) == 0
+        # stop_events остаются после stop_process() — очистка в send_message() finally.
+        # Проверяем, что флаги отмены установлены (set).
+        assert len(pm_module._stop_events) == 3
+        for event in pm_module._stop_events.values():
+            assert event.is_set()
 
     @pytest.mark.asyncio()
     async def test_error_in_one_does_not_block_others(self) -> None:
