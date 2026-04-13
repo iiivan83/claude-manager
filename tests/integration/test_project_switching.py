@@ -64,6 +64,8 @@ def _reset_all_module_state() -> None:
 
     session_watcher._seen_message_counts.clear()
     session_watcher._paused_sessions.clear()
+    session_watcher._global_paused = False
+    session_watcher._missing_file_sessions = set()
 
     unread_buffer._snapshots.clear()
 
@@ -92,7 +94,8 @@ class TestFullSwitchCycle:
 
         with patch.object(config, "PROJECTS_ROOT_DIR", str(root)), \
              patch.object(config, "WORKING_DIR", str(project_a)), \
-             patch.object(config, "LAST_PROJECT_FILE", last_file):
+             patch.object(config, "LAST_PROJECT_FILE", last_file), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
 
             # В проекте A создаём привязку и регистрируем сессию
             await session_manager.load_bindings()
@@ -140,7 +143,8 @@ class TestFullSwitchCycle:
 
         with patch.object(config, "PROJECTS_ROOT_DIR", str(root)), \
              patch.object(config, "WORKING_DIR", str(project_a)), \
-             patch.object(config, "LAST_PROJECT_FILE", last_file):
+             patch.object(config, "LAST_PROJECT_FILE", last_file), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
 
             await session_manager.load_bindings()
             await daily_session_registry.load_registry()
@@ -165,7 +169,8 @@ class TestFullSwitchCycle:
 
         with patch.object(config, "PROJECTS_ROOT_DIR", str(root)), \
              patch.object(config, "WORKING_DIR", str(project_a)), \
-             patch.object(config, "LAST_PROJECT_FILE", last_file):
+             patch.object(config, "LAST_PROJECT_FILE", last_file), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
 
             # Подготавливаем watcher: две сессии с обработанными сообщениями
             session_watcher._seen_message_counts["sess-1"] = 5
@@ -227,4 +232,70 @@ class TestFullSwitchCycle:
             assert result.success is False
             assert "вне корневой папки" in result.error_message
             assert config.WORKING_DIR == str(project_a)
+
+    @pytest.mark.asyncio()
+    async def test_watcher_paused_during_full_switch_cycle(
+        self, project_layout: dict[str, Path]
+    ) -> None:
+        """Watcher приостановлен (global_paused=True) внутри _reset_all_state_modules."""
+        root = project_layout["root"]
+        project_a = project_layout["project_a"]
+        project_b = project_layout["project_b"]
+        last_file = project_layout["last_file"]
+
+        # Запоминаем значение _global_paused внутри reset_state watcher
+        global_paused_during_reset: list[bool] = []
+        original_watcher_reset = session_watcher.reset_state
+
+        async def tracking_watcher_reset() -> None:
+            global_paused_during_reset.append(session_watcher._global_paused)
+            await original_watcher_reset()
+
+        with patch.object(config, "PROJECTS_ROOT_DIR", str(root)), \
+             patch.object(config, "WORKING_DIR", str(project_a)), \
+             patch.object(config, "LAST_PROJECT_FILE", last_file), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
+
+            await session_manager.load_bindings()
+            await daily_session_registry.load_registry()
+
+            with patch.object(
+                session_watcher, "reset_state", tracking_watcher_reset
+            ):
+                result = await project_manager.switch_project(str(project_b))
+
+            assert result.success is True
+            # Во время reset_state watcher был на глобальной паузе
+            assert global_paused_during_reset == [True]
+            # После завершения переключения пауза снята
+            assert session_watcher._global_paused is False
+
+    @pytest.mark.asyncio()
+    async def test_watcher_unpaused_after_rollback(
+        self, project_layout: dict[str, Path]
+    ) -> None:
+        """При ошибке и откате watcher всё равно разблокирован (try/finally)."""
+        root = project_layout["root"]
+        project_a = project_layout["project_a"]
+        project_b = project_layout["project_b"]
+        last_file = project_layout["last_file"]
+
+        with patch.object(config, "PROJECTS_ROOT_DIR", str(root)), \
+             patch.object(config, "WORKING_DIR", str(project_a)), \
+             patch.object(config, "LAST_PROJECT_FILE", last_file), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
+
+            await session_manager.load_bindings()
+            await daily_session_registry.load_registry()
+
+            # session_manager.reset_state бросает ошибку — переключение не удаётся
+            with patch.object(
+                session_manager, "reset_state",
+                AsyncMock(side_effect=RuntimeError("simulated")),
+            ):
+                result = await project_manager.switch_project(str(project_b))
+
+            assert result.success is False
+            # Watcher разблокирован — _global_paused снят благодаря finally
+            assert session_watcher._global_paused is False
 

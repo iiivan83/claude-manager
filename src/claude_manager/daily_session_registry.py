@@ -12,7 +12,7 @@ import os
 from datetime import date
 from pathlib import Path
 
-from claude_manager import config
+from claude_manager import config, session_reader
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +238,33 @@ def _remove_duplicate_entries() -> int:
     return total_removed
 
 
+def _remove_orphan_entries() -> int:
+    """Удаляет записи с session_id, для которых нет .jsonl файла на диске."""
+    sessions_path = session_reader.build_sessions_path(config.WORKING_DIR)
+    total_removed = 0
+
+    for day_key, day_entries in _registry.items():
+        orphan_keys = []
+        for number_str, session_id in day_entries.items():
+            # Записи с _new_ — временные ID, для них файлов нет по определению
+            if session_id.startswith("_new_"):
+                continue
+
+            file_path = os.path.join(sessions_path, f"{session_id}.jsonl")
+            if not os.path.exists(file_path):
+                orphan_keys.append(number_str)
+                logger.info(
+                    "Запись-сирота: день %s, #%s -> %s (файл не найден)",
+                    day_key, number_str, session_id,
+                )
+
+        for key in orphan_keys:
+            del day_entries[key]
+        total_removed += len(orphan_keys)
+
+    return total_removed
+
+
 async def load_registry() -> None:
     """Загружает реестр из файла daily_sessions.json в память."""
     global _registry, _registry_path, _loaded_from_disk
@@ -268,6 +295,17 @@ async def load_registry() -> None:
     duplicate_count = _remove_duplicate_entries()
     if duplicate_count > 0:
         logger.info("Удалено %d дублированных записей session_id", duplicate_count)
+
+    # Удаляем записи-сироты — session_id, для которых нет .jsonl файла
+    # в текущем проекте. Появляются из-за race condition при переключении
+    # проектов: watcher регистрирует сессию из нового проекта в реестр старого.
+    orphan_count = _remove_orphan_entries()
+    if orphan_count > 0:
+        logger.info("Удалено %d записей-сирот без файлов на диске", orphan_count)
+
+    # Если были удаления — сохраняем очищенный реестр
+    if _loaded_from_disk and (phantom_count > 0 or duplicate_count > 0 or orphan_count > 0):
+        await _save_registry()
 
     _ensure_today_registry()
 

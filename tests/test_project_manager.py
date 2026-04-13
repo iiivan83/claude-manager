@@ -174,6 +174,8 @@ class TestSwitchProject:
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
              patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all"), \
              patch.object(project_manager.unread_buffer, "save_snapshot"), \
              patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
              patch.object(project_manager.unread_buffer, "cleanup_expired"), \
@@ -270,6 +272,8 @@ class TestSwitchProject:
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
              patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", snapshot_mock), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all"), \
              patch.object(project_manager.unread_buffer, "save_snapshot", save_mock), \
              patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
              patch.object(project_manager.unread_buffer, "cleanup_expired"), \
@@ -298,6 +302,8 @@ class TestSwitchProject:
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
              patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all"), \
              patch.object(project_manager.unread_buffer, "save_snapshot"), \
              patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
              patch.object(project_manager.unread_buffer, "cleanup_expired"), \
@@ -321,6 +327,8 @@ class TestSwitchProject:
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
              patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all"), \
              patch.object(project_manager.unread_buffer, "save_snapshot"), \
              patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
              patch.object(project_manager.unread_buffer, "cleanup_expired"), \
@@ -346,6 +354,8 @@ class TestSwitchProject:
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
              patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all"), \
              patch.object(project_manager.unread_buffer, "save_snapshot"), \
              patch.object(project_manager.unread_buffer, "clear_snapshot"), \
              patch.object(project_manager.session_manager, "reset_state", failing_reset), \
@@ -378,6 +388,8 @@ class TestSwitchProject:
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
         with patches[0], patches[1], patches[2], \
              patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", tracked_snapshot), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all"), \
              patch.object(project_manager.unread_buffer, "save_snapshot"), \
              patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
              patch.object(project_manager.unread_buffer, "cleanup_expired"), \
@@ -394,6 +406,96 @@ class TestSwitchProject:
         # Второй: к этому моменту WORKING_DIR уже project_beta, а target_a=project_alpha — значит snapshot тоже вызывается.
         # Главное — блокировка сработала и оба вызова завершились без исключений
         assert len(call_order) >= 1
+
+
+    @pytest.mark.asyncio()
+    async def test_pause_all_called_before_working_dir_change(
+        self, projects_root: Path, last_project_file: Path
+    ) -> None:
+        """pause_all() вызывается ДО изменения config.WORKING_DIR."""
+        working_dir = projects_root / "project_alpha"
+        target = projects_root / "project_beta"
+
+        # Запоминаем WORKING_DIR в момент вызова pause_all
+        working_dir_at_pause_time: list[str] = []
+
+        def tracked_pause_all() -> None:
+            working_dir_at_pause_time.append(config.WORKING_DIR)
+
+        patches = _patch_config_paths(projects_root, working_dir, last_project_file)
+        with patches[0], patches[1], patches[2], \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.session_watcher, "pause_all", side_effect=tracked_pause_all), \
+             patch.object(project_manager.session_watcher, "resume_all"), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
+             patch.object(project_manager.unread_buffer, "cleanup_expired"), \
+             patch.object(project_manager.session_manager, "reset_state", AsyncMock()), \
+             patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
+             patch.object(project_manager.session_watcher, "reset_state", AsyncMock()):
+            await switch_project(str(target))
+
+        # pause_all видел старое значение WORKING_DIR (до переключения)
+        assert working_dir_at_pause_time == [str(working_dir)]
+
+    @pytest.mark.asyncio()
+    async def test_resume_all_called_after_reset(
+        self, projects_root: Path, last_project_file: Path
+    ) -> None:
+        """resume_all() вызывается ПОСЛЕ завершения _reset_all_state_modules()."""
+        working_dir = projects_root / "project_alpha"
+        target = projects_root / "project_beta"
+
+        call_order: list[str] = []
+
+        async def tracked_watcher_reset() -> None:
+            call_order.append("reset")
+
+        def tracked_resume_all() -> None:
+            call_order.append("resume")
+
+        patches = _patch_config_paths(projects_root, working_dir, last_project_file)
+        with patches[0], patches[1], patches[2], \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all", side_effect=tracked_resume_all), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "has_pending", return_value=False), \
+             patch.object(project_manager.unread_buffer, "cleanup_expired"), \
+             patch.object(project_manager.session_manager, "reset_state", AsyncMock()), \
+             patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
+             patch.object(project_manager.session_watcher, "reset_state", tracked_watcher_reset):
+            await switch_project(str(target))
+
+        # reset вызван раньше resume — порядок критичен
+        assert call_order == ["reset", "resume"]
+
+    @pytest.mark.asyncio()
+    async def test_resume_all_called_on_error(
+        self, projects_root: Path, last_project_file: Path
+    ) -> None:
+        """При ошибке в _reset_all_state_modules resume_all() всё равно вызывается (try/finally)."""
+        working_dir = projects_root / "project_alpha"
+        target = projects_root / "project_beta"
+
+        failing_reset = AsyncMock(side_effect=RuntimeError("simulated failure"))
+        resume_mock = MagicMock()
+
+        patches = _patch_config_paths(projects_root, working_dir, last_project_file)
+        with patches[0], patches[1], patches[2], \
+             patch.object(project_manager.session_watcher, "get_seen_counts_snapshot", return_value={}), \
+             patch.object(project_manager.session_watcher, "pause_all"), \
+             patch.object(project_manager.session_watcher, "resume_all", resume_mock), \
+             patch.object(project_manager.unread_buffer, "save_snapshot"), \
+             patch.object(project_manager.unread_buffer, "clear_snapshot"), \
+             patch.object(project_manager.session_manager, "reset_state", failing_reset), \
+             patch.object(project_manager.daily_session_registry, "reset_state", AsyncMock()), \
+             patch.object(project_manager.session_watcher, "reset_state", AsyncMock()):
+            result = await switch_project(str(target))
+
+        assert result.success is False
+        # resume_all вызван несмотря на ошибку — благодаря try/finally
+        resume_mock.assert_called_once()
 
 
 # --- Тесты load_last_selected_project ---

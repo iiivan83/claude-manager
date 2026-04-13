@@ -1,0 +1,125 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-13T12:20:00+03:00",
+  "result": {
+    "approach_summary": "Три независимых изменения, закрывающих race condition при переключении проектов: (1) глобальная пауза watcher — флаг _global_paused + функции pause_all()/resume_all() в session_watcher, вызов pause_all перед сменой WORKING_DIR и resume_all после полного сброса state-модулей в project_manager через try/finally; (2) кросс-проверка записей реестра при загрузке — новая функция _remove_orphan_entries() в daily_session_registry, которая удаляет записи без .jsonl файлов на диске (кроме _new_*); (3) защита от лог-спама — множество _missing_file_sessions в session_watcher, предотвращающее повторный WARNING для одной и той же сессии. Плюс обновление CLAUDE.md: новый принцип атомарности переключения и дополнение описания процесса переключения.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "diff_spec": [
+          {
+            "section": "Модульные переменные — новый флаг _global_paused",
+            "was": "После строки `_paused_sessions: set[str] = set()` (строка 45) нет глобального флага паузы.",
+            "becomes": "Добавить после `_paused_sessions: set[str] = set()` две новые переменные:\n\n```python\n# Глобальная пауза — watcher полностью приостановлен (при переключении проекта)\n_global_paused: bool = False\n\n# Сессии с отсутствующим файлом — защита от повторного WARNING в логах\n_missing_file_sessions: set[str] = set()\n```",
+            "reason": "_global_paused — механизм глобальной остановки watcher на время переключения проекта, аналогичный _paused_sessions для отдельных сессий, но действующий на весь цикл _poll_sessions. _missing_file_sessions — второй уровень защиты: если файл сессии не найден (например, сессия из другого проекта, или удалённая), session_id запоминается и повторный WARNING не генерируется."
+          },
+          {
+            "section": "Новая функция pause_all()",
+            "was": "Функция не существует.",
+            "becomes": "Добавить ПЕРЕД функцией `pause_session()` (строка 228):\n\n```python\ndef pause_all() -> None:\n    \"\"\"Приостанавливает мониторинг всех сессий (при переключении проекта).\"\"\"\n    global _global_paused\n    _global_paused = True\n    logger.info(\"Мониторинг всех сессий приостановлен (глобальная пауза)\")\n```\n\nСинхронная функция (без async) — по аналогии с pause_session(). Устанавливает флаг _global_paused = True.",
+            "reason": "Закрытие окна гонки: project_manager вызывает pause_all() ДО смены config.WORKING_DIR, чтобы watcher не мог проснуться и увидеть промежуточное состояние."
+          },
+          {
+            "section": "Новая функция resume_all()",
+            "was": "Функция не существует.",
+            "becomes": "Добавить сразу ПОСЛЕ pause_all():\n\n```python\ndef resume_all() -> None:\n    \"\"\"Возобновляет мониторинг всех сессий после переключения проекта.\"\"\"\n    global _global_paused\n    _global_paused = False\n    logger.info(\"Мониторинг всех сессий возобновлён (глобальная пауза снята)\")\n```\n\nСинхронная функция. Сбрасывает только _global_paused — per-session пауза (_paused_sessions) сохраняется неизменной.",
+            "reason": "Симметричная пара к pause_all(). Вызывается project_manager после завершения _reset_all_state_modules(). Не трогает _paused_sessions — если отдельная сессия была на паузе до переключения, она останется на паузе."
+          },
+          {
+            "section": "Проверка _global_paused в _poll_sessions()",
+            "was": "```python\nasync def _poll_sessions() -> None:\n    \"\"\"Выполняет один цикл проверки всех сессий.\"\"\"\n    session_ids = await _get_sessions_to_monitor()\n```",
+            "becomes": "```python\nasync def _poll_sessions() -> None:\n    \"\"\"Выполняет один цикл проверки всех сессий.\"\"\"\n    if _global_paused:\n        return\n\n    session_ids = await _get_sessions_to_monitor()\n```\n\nДобавляется ранний return в самом начале _poll_sessions — если _global_paused == True, весь цикл опроса пропускается целиком.",
+            "reason": "Это точка, где watcher получает управление каждые 2 секунды. Проверка _global_paused здесь гарантирует, что между pause_all() и resume_all() watcher не выполнит ни одного опроса — не прочитает сессии, не вызовет register_session(), не запишет в чужой daily_sessions.json."
+          },
+          {
+            "section": "Защита от повторного WARNING в _check_session()",
+            "was": "В функции _check_session() (строка 127) вызов get_session_messages возвращает пустой список, если файл не найден. При current_count=0 и already_seen=0 условие `current_count <= already_seen` выполняется и функция выходит без обработки. Но WARNING 'Файл сессии не найден' генерируется внутри session_reader.get_session_messages на каждый вызов (строка 271 session_reader.py).",
+            "becomes": "Добавить проверку _missing_file_sessions ПЕРЕД вызовом get_session_messages в _check_session():\n\n```python\nasync def _check_session(session_id: str) -> None:\n    \"\"\"Проверяет одну сессию на наличие новых сообщений Claude.\"\"\"\n    if session_id in _paused_sessions:\n        return\n\n    if session_id in _missing_file_sessions:\n        return\n\n    all_messages = await session_reader.get_session_messages(\n        session_id, config.WORKING_DIR\n    )\n\n    # Если файл не найден (пустой список) — запоминаем, чтобы не спамить WARNING\n    if not all_messages:\n        _missing_file_sessions.add(session_id)\n        return\n\n    current_count = len(all_messages)\n    ...\n```\n\nТо есть: (1) ранний return если session_id уже в _missing_file_sessions; (2) после get_session_messages — если результат пустой, добавить session_id в множество и выйти. Остальная логика функции (current_count, already_seen, extract, callback) — без изменений.",
+            "reason": "session_reader.get_session_messages() логирует WARNING 'Файл сессии не найден' каждый раз (строка 271 session_reader.py). Если сессия зарегистрирована в реестре, но файла нет — watcher будет генерировать этот WARNING каждые 2 секунды. За инцидент 13 апреля накопилось 32 954 таких записей. Множество _missing_file_sessions предотвращает повторные вызовы."
+          },
+          {
+            "section": "Очистка _missing_file_sessions и _global_paused в reset_state()",
+            "was": "```python\nasync def reset_state() -> None:\n    ...\n    _seen_message_counts.clear()\n    _seen_message_counts.update(new_counts)\n    _paused_sessions.clear()\n    ...\n```",
+            "becomes": "```python\nasync def reset_state() -> None:\n    ...\n    _seen_message_counts.clear()\n    _seen_message_counts.update(new_counts)\n    _paused_sessions.clear()\n    _missing_file_sessions.clear()\n    ...\n```\n\nДобавить `_missing_file_sessions.clear()` сразу после `_paused_sessions.clear()`. Флаг _global_paused НЕ сбрасывается в reset_state() — он управляется только через pause_all()/resume_all() в project_manager.",
+            "reason": "При переключении проекта множество _missing_file_sessions содержит session_id из старого проекта. В новом проекте эти ID неактуальны — нужно очистить, чтобы при возврате в старый проект watcher проверил файлы заново. _global_paused не сбрасывается здесь, потому что reset_state() вызывается ВНУТРИ окна pause_all/resume_all — сброс _global_paused произойдёт позже, когда project_manager вызовет resume_all()."
+          },
+          {
+            "section": "Очистка _missing_file_sessions в start()",
+            "was": "```python\nasync def start(...) -> None:\n    ...\n    global _callback, _get_current_session, _seen_message_counts, _paused_sessions\n\n    _callback = callback\n    _get_current_session = get_current_session\n    _seen_message_counts = {}\n    _paused_sessions = set()\n    ...\n```",
+            "becomes": "```python\nasync def start(...) -> None:\n    ...\n    global _callback, _get_current_session, _seen_message_counts, _paused_sessions, _global_paused, _missing_file_sessions\n\n    _callback = callback\n    _get_current_session = get_current_session\n    _seen_message_counts = {}\n    _paused_sessions = set()\n    _global_paused = False\n    _missing_file_sessions = set()\n    ...\n```\n\nДобавить в global-декларацию и инициализацию новые переменные.",
+            "reason": "При запуске watcher все переменные состояния должны быть инициализированы в чистое состояние."
+          }
+        ]
+      },
+      {
+        "file": "src/claude_manager/project_manager.py",
+        "type": "modify",
+        "diff_spec": [
+          {
+            "section": "Глобальная пауза watcher в _perform_switch()",
+            "was": "```python\nasync def _perform_switch(target_path: str) -> None:\n    ...\n    seen_snapshot = session_watcher.get_seen_counts_snapshot()\n    old_path = config.WORKING_DIR\n    unread_buffer.save_snapshot(old_path, seen_snapshot)\n\n    # Меняем WORKING_DIR ДО сброса state — модули при перезагрузке прочитают новый путь\n    config.WORKING_DIR = target_path\n\n    await _reset_all_state_modules()\n```",
+            "becomes": "```python\nasync def _perform_switch(target_path: str) -> None:\n    ...\n    seen_snapshot = session_watcher.get_seen_counts_snapshot()\n    old_path = config.WORKING_DIR\n    unread_buffer.save_snapshot(old_path, seen_snapshot)\n\n    # Приостанавливаем watcher ДО смены WORKING_DIR —\n    # чтобы фоновый цикл опроса не увидел промежуточное состояние\n    session_watcher.pause_all()\n\n    try:\n        # Меняем WORKING_DIR ДО сброса state — модули при перезагрузке прочитают новый путь\n        config.WORKING_DIR = target_path\n\n        await _reset_all_state_modules()\n    finally:\n        # Возобновляем watcher ПОСЛЕ полного сброса — даже при ошибке\n        session_watcher.resume_all()\n```\n\nОборачиваем блок `config.WORKING_DIR = target_path` + `await _reset_all_state_modules()` в try/finally, где pause_all() вызывается перед try, а resume_all() — в finally.",
+            "reason": "HIGH RISK из impact-analysis: если resume_all() не вызовется после ошибки, watcher заблокируется навсегда — бот перестанет отправлять уведомления. try/finally гарантирует вызов resume_all() в любом случае. pause_all() вызывается ДО смены config.WORKING_DIR — это полностью закрывает окно гонки: watcher не может проснуться и записать сессии из нового проекта в реестр старого."
+          },
+          {
+            "section": "resume_all() в _rollback_switch()",
+            "was": "```python\nasync def _rollback_switch(old_path: str) -> None:\n    \"\"\"Пытается восстановить старое значение WORKING_DIR после неудачного переключения.\"\"\"\n    config.WORKING_DIR = old_path\n    # При откате уход из проекта не произошёл — удаляем снапшот\n    unread_buffer.clear_snapshot(old_path)\n    try:\n        await _reset_all_state_modules()\n    except Exception:\n        ...\n```",
+            "becomes": "Без изменений. _rollback_switch() вызывается из _try_switch_with_rollback() только когда _perform_switch() бросил исключение. Но теперь _perform_switch() содержит try/finally, где resume_all() вызывается в finally-блоке. Значит, к моменту вызова _rollback_switch() watcher уже разблокирован. Добавлять resume_all() в _rollback_switch() не нужно — двойной вызов resume_all() безвреден (просто _global_paused = False повторно), но лишний код без причины нарушает принцип чистого кода.",
+            "reason": "Impact analysis помечал _rollback_switch как HIGH RISK. Но try/finally в _perform_switch() полностью решает проблему: resume_all() вызывается в finally ДО того, как исключение поднимется вверх и вызовет _rollback_switch(). Дополнительный resume_all() в _rollback_switch() не нужен."
+          }
+        ]
+      },
+      {
+        "file": "src/claude_manager/daily_session_registry.py",
+        "type": "modify",
+        "diff_spec": [
+          {
+            "section": "Импорт session_reader для кросс-проверки файлов",
+            "was": "```python\nfrom claude_manager import config\n```",
+            "becomes": "```python\nfrom claude_manager import config, session_reader\n```\n\nДобавить session_reader в импорт — нужен для вызова session_reader._build_sessions_path() в новой функции _remove_orphan_entries().",
+            "reason": "Кросс-проверка записей реестра должна использовать тот же путь к папке сессий, что и session_reader.get_session_messages(). Это MEDIUM RISK из impact analysis: ошибка в формировании пути удалит валидные записи. Использование session_reader._build_sessions_path() гарантирует идентичный путь."
+          },
+          {
+            "section": "Новая функция _remove_orphan_entries()",
+            "was": "Функция не существует.",
+            "becomes": "Добавить ПОСЛЕ функции _remove_duplicate_entries() (после строки 238):\n\n```python\ndef _remove_orphan_entries() -> int:\n    \"\"\"Удаляет записи с session_id, для которых нет .jsonl файла на диске.\"\"\"\n    sessions_path = session_reader._build_sessions_path(config.WORKING_DIR)\n    total_removed = 0\n\n    for day_key, day_entries in _registry.items():\n        orphan_keys = []\n        for number_str, session_id in day_entries.items():\n            # Записи с _new_ — временные ID, для них файлов нет по определению\n            if session_id.startswith(\"_new_\"):\n                continue\n\n            file_path = os.path.join(sessions_path, f\"{session_id}.jsonl\")\n            if not os.path.exists(file_path):\n                orphan_keys.append(number_str)\n                logger.info(\n                    \"Запись-сирота: день %s, #%s -> %s (файл не найден)\",\n                    day_key, number_str, session_id,\n                )\n\n        for key in orphan_keys:\n            del day_entries[key]\n        total_removed += len(orphan_keys)\n\n    return total_removed\n```\n\nСинхронная функция (без async). Итерирует по всем записям реестра. Для каждого session_id (кроме _new_*) проверяет, существует ли файл `{session_id}.jsonl` в папке сессий текущего проекта. Путь строится через session_reader._build_sessions_path(config.WORKING_DIR) — тот же алгоритм, что использует get_session_messages(). Записи без файлов удаляются.",
+            "reason": "Очищает существующие 'чужие' записи — session_id из других проектов, попавшие в реестр из-за race condition. Без этой функции при первом запуске после исправления 6 сиротских записей останутся в реестре и watcher будет пытаться их читать. Запись с _new_ пропускается — _remove_phantom_entries() уже обработала их раньше, но при случайном изменении порядка вызовов защита сохранится."
+          },
+          {
+            "section": "Вызов _remove_orphan_entries() в load_registry()",
+            "was": "```python\n    # Удаляем дубликаты — один session_id, зарегистрированный под несколькими номерами.\n    # Возникают из-за race condition между watcher и обработчиком сообщений.\n    duplicate_count = _remove_duplicate_entries()\n    if duplicate_count > 0:\n        logger.info(\"Удалено %d дублированных записей session_id\", duplicate_count)\n\n    _ensure_today_registry()\n```",
+            "becomes": "```python\n    # Удаляем дубликаты — один session_id, зарегистрированный под несколькими номерами.\n    # Возникают из-за race condition между watcher и обработчиком сообщений.\n    duplicate_count = _remove_duplicate_entries()\n    if duplicate_count > 0:\n        logger.info(\"Удалено %d дублированных записей session_id\", duplicate_count)\n\n    # Удаляем записи-сироты — session_id, для которых нет .jsonl файла\n    # в текущем проекте. Появляются из-за race condition при переключении\n    # проектов: watcher регистрирует сессию из нового проекта в реестр старого.\n    orphan_count = _remove_orphan_entries()\n    if orphan_count > 0:\n        logger.info(\"Удалено %d записей-сирот без файлов на диске\", orphan_count)\n\n    # Если были удаления — сохраняем очищенный реестр\n    if _loaded_from_disk and (phantom_count > 0 or duplicate_count > 0 or orphan_count > 0):\n        await _save_registry()\n\n    _ensure_today_registry()\n```\n\nВызов _remove_orphan_entries() ставится ПОСЛЕ _remove_duplicate_entries() и ПОСЛЕ _remove_phantom_entries(). После всех трёх очисток — единое сохранение, если хоть одна из них нашла что удалить.",
+            "reason": "Порядок вызовов критичен: _remove_phantom_entries() удаляет записи с _new_ → _remove_duplicate_entries() удаляет дубликаты среди оставшихся UUID → _remove_orphan_entries() проверяет файлы для оставшихся уникальных UUID. Единое сохранение в конце — одна запись на диск вместо трёх."
+          },
+          {
+            "section": "Удаление отдельных await _save_registry() после каждой очистки",
+            "was": "В текущем коде load_registry() не вызывает _save_registry() после phantom/duplicate очистки. Записи удаляются из _registry в памяти, но не сохраняются на диск до следующего register_session().",
+            "becomes": "Новый единый блок сохранения (описан выше) решает эту проблему: `if _loaded_from_disk and (phantom_count > 0 or duplicate_count > 0 or orphan_count > 0): await _save_registry()` — сохраняет очищенный реестр сразу при загрузке.",
+            "reason": "Без сохранения очистка теряется при перезапуске бота — фантомные/дублированные/сиротские записи появляются снова. Единый вызов _save_registry() в конце — эффективнее, чем три отдельных."
+          }
+        ]
+      },
+      {
+        "file": "CLAUDE.md",
+        "type": "modify",
+        "diff_spec": [
+          {
+            "section": "Новый принцип 'Атомарность переключения проекта'",
+            "was": "В разделе 'Архитектурные принципы' после подраздела '### Защита персистентных данных от затирания' (заканчивается фразой 'бот сообщает пользователю в Telegram') и перед подразделом '### Однопользовательский инвариант' нет подраздела об атомарности переключения.",
+            "becomes": "Добавить новый подраздел между '### Защита персистентных данных от затирания' и '### Однопользовательский инвариант':\n\n```markdown\n### Атомарность переключения проекта\n\nПереключение проекта затрагивает глобальное состояние нескольких модулей (`config.WORKING_DIR`, `daily_session_registry._registry_path`, `session_manager`, `session_watcher`). Фоновые asyncio-задачи (watcher) не должны видеть промежуточное состояние — когда одни модули уже переключены, а другие ещё нет. Перед изменением `config.WORKING_DIR` watcher приостанавливается через `session_watcher.pause_all()`, после полного сброса всех state-модулей — возобновляется через `session_watcher.resume_all()`. Блок переключения обёрнут в try/finally, чтобы resume_all() вызывался даже при ошибке.\n```",
+            "reason": "Документирование архитектурного принципа, нарушение которого привело к race condition. Без этого принципа при добавлении новых фоновых задач или изменении порядка переключения разработчик может повторить ту же ошибку."
+          },
+          {
+            "section": "Обновление описания переключения проектов в 'Важные детали'",
+            "was": "```\n- **Переключение проектов** (команда `/projects`, `/pN`) — меняет глобальную переменную `config.WORKING_DIR`, сохраняет снапшот счётчиков watcher через `unread_buffer.save_snapshot()` (чтобы при возврате знать, какие сообщения уже были обработаны), сбрасывает внутреннее состояние модулей через `session_manager.reset_state()`, `daily_session_registry.reset_state()`, `session_watcher.reset_state()`, перезагружает `sessions.json` и `daily_sessions.json` из нового проекта. **Процессы Claude НЕ останавливаются** ...\n```",
+            "becomes": "```\n- **Переключение проектов** (команда `/projects`, `/pN`) — приостанавливает watcher через `session_watcher.pause_all()`, меняет глобальную переменную `config.WORKING_DIR`, сбрасывает внутреннее состояние модулей через `session_manager.reset_state()`, `daily_session_registry.reset_state()`, `session_watcher.reset_state()`, возобновляет watcher через `session_watcher.resume_all()` (в finally-блоке). Перед переключением сохраняет снапшот счётчиков watcher через `unread_buffer.save_snapshot()` (чтобы при возврате знать, какие сообщения уже были обработаны). При загрузке реестра (`daily_sessions.json`) из нового проекта автоматически удаляются записи-сироты (session_id без .jsonl файла на диске). **Процессы Claude НЕ останавливаются** ...\n```\n\nВсё, что после '**Процессы Claude НЕ останавливаются**' — остаётся без изменений.",
+            "reason": "Текущее описание не упоминает глобальную паузу watcher и кросс-проверку файлов при загрузке реестра. Новое описание отражает реальный порядок операций: pause → switch → reset → resume, с finally-семантикой."
+          }
+        ]
+      }
+    ]
+  }
+}

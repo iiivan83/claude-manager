@@ -58,11 +58,15 @@ def _reset_watcher_state():
     """Сбрасывает внутреннее состояние watcher перед каждым тестом."""
     session_watcher._seen_message_counts = {}
     session_watcher._paused_sessions = set()
+    session_watcher._global_paused = False
+    session_watcher._missing_file_sessions = set()
     session_watcher._callback = None
     session_watcher._get_current_session = None
     yield
     session_watcher._seen_message_counts = {}
     session_watcher._paused_sessions = set()
+    session_watcher._global_paused = False
+    session_watcher._missing_file_sessions = set()
     session_watcher._callback = None
     session_watcher._get_current_session = None
 
@@ -1484,3 +1488,99 @@ class TestResetState:
         assert "old-sess" not in session_watcher._seen_message_counts
         assert session_watcher._seen_message_counts["new-sess-a"] == 3
         assert session_watcher._seen_message_counts["new-sess-b"] == 7
+
+
+
+
+
+# --- Тесты глобальной паузы pause_all/resume_all ---
+
+
+class TestPauseAllResumeAll:
+    """Тесты глобальной паузы watcher при переключении проекта."""
+
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.daily_session_registry")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_poll_sessions_skips_when_globally_paused(
+        self,
+        mock_reader,
+        mock_registry,
+    ) -> None:
+        """При _global_paused=True функция _poll_sessions() делает ранний return."""
+        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
+        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
+
+        session_watcher.pause_all()
+
+        await session_watcher._poll_sessions()
+
+        # _get_sessions_to_monitor не вызван — _poll_sessions вышла сразу
+        mock_reader.get_recent_sessions.assert_not_called()
+
+    def test_per_session_pause_preserved_after_resume_all(self) -> None:
+        """resume_all() не сбрасывает per-session паузу (_paused_sessions)."""
+        session_watcher.pause_session("s1")
+        session_watcher.pause_all()
+
+        session_watcher.resume_all()
+
+        # Глобальная пауза снята, но per-session пауза для 's1' на месте
+        assert session_watcher._global_paused is False
+        assert "s1" in session_watcher._paused_sessions
+
+
+# --- Тесты _missing_file_sessions ---
+
+
+class TestMissingFileSessions:
+    """Тесты защиты от повторного WARNING для сессий с отсутствующим файлом."""
+
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.config")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_empty_messages_adds_to_missing_file_sessions(
+        self,
+        mock_reader,
+        mock_config,
+    ) -> None:
+        """Если get_session_messages возвращает пустой список — session_id запоминается."""
+        mock_config.WORKING_DIR = "/fake/project"
+        mock_reader.get_session_messages = AsyncMock(return_value=[])
+
+        session_watcher._callback = AsyncMock()
+        session_watcher._get_current_session = AsyncMock(return_value=None)
+
+        await session_watcher._check_session("orphan-session")
+
+        assert "orphan-session" in session_watcher._missing_file_sessions
+
+    @pytest.mark.asyncio
+    @patch("claude_manager.session_watcher.config")
+    @patch("claude_manager.session_watcher.session_reader")
+    async def test_missing_file_session_no_repeated_check(
+        self,
+        mock_reader,
+        mock_config,
+    ) -> None:
+        """Session_id в _missing_file_sessions не вызывает повторный get_session_messages."""
+        mock_config.WORKING_DIR = "/fake/project"
+        mock_reader.get_session_messages = AsyncMock(return_value=[])
+
+        session_watcher._missing_file_sessions.add("known-missing")
+
+        await session_watcher._check_session("known-missing")
+
+        # get_session_messages НЕ вызван — ранний return
+        mock_reader.get_session_messages.assert_not_called()
+
+    async def test_reset_state_clears_missing_file_sessions(self) -> None:
+        """reset_state() очищает _missing_file_sessions."""
+        session_watcher._missing_file_sessions.add("orphan-1")
+        session_watcher._missing_file_sessions.add("orphan-2")
+
+        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
+             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
+            await session_watcher.reset_state()
+
+        assert len(session_watcher._missing_file_sessions) == 0

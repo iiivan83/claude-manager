@@ -191,10 +191,18 @@ async def _perform_switch(target_path: str) -> None:
     old_path = config.WORKING_DIR
     unread_buffer.save_snapshot(old_path, seen_snapshot)
 
-    # Меняем WORKING_DIR ДО сброса state — модули при перезагрузке прочитают новый путь
-    config.WORKING_DIR = target_path
+    # Приостанавливаем watcher ДО смены WORKING_DIR —
+    # чтобы фоновый цикл опроса не увидел промежуточное состояние
+    session_watcher.pause_all()
 
-    await _reset_all_state_modules()
+    try:
+        # Меняем WORKING_DIR ДО сброса state — модули при перезагрузке прочитают новый путь
+        config.WORKING_DIR = target_path
+
+        await _reset_all_state_modules()
+    finally:
+        # Возобновляем watcher ПОСЛЕ полного сброса — даже при ошибке
+        session_watcher.resume_all()
 
 
 async def _rollback_switch(old_path: str) -> None:

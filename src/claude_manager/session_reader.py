@@ -69,7 +69,7 @@ def _encode_project_path(project_dir: str) -> str:
     return SANITIZE_PATH_PATTERN.sub("-", project_dir)
 
 
-def _build_sessions_path(project_dir: str) -> str:
+def build_sessions_path(project_dir: str) -> str:
     """Строит абсолютный путь к папке сессий проекта."""
     home_dir = os.path.expanduser("~")
     encoded_name = _encode_project_path(project_dir)
@@ -247,7 +247,7 @@ async def _list_sorted_session_files(sessions_path: str) -> list[str] | None:
 
 async def get_recent_sessions(project_dir: str) -> list[SessionInfo]:
     """Возвращает список последних сессий проекта, новые первые."""
-    sessions_path = _build_sessions_path(project_dir)
+    sessions_path = build_sessions_path(project_dir)
     sorted_files = await _list_sorted_session_files(sessions_path)
     if sorted_files is None:
         return []
@@ -263,7 +263,7 @@ async def get_recent_sessions(project_dir: str) -> list[SessionInfo]:
 
 async def get_session_messages(session_id: str, project_dir: str) -> list[dict]:
     """Читает все сообщения из файла конкретной сессии."""
-    sessions_path = _build_sessions_path(project_dir)
+    sessions_path = build_sessions_path(project_dir)
     file_path = os.path.join(sessions_path, f"{session_id}.jsonl")
 
     file_exists = await asyncio.to_thread(os.path.exists, file_path)

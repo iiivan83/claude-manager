@@ -44,6 +44,12 @@ _seen_message_counts: dict[str, int] = {}
 # Сессии, мониторинг которых приостановлен (ответ отправляет обработчик)
 _paused_sessions: set[str] = set()
 
+# Глобальная пауза — watcher полностью приостановлен (при переключении проекта)
+_global_paused: bool = False
+
+# Сессии с отсутствующим файлом — защита от повторного WARNING в логах
+_missing_file_sessions: set[str] = set()
+
 # Ссылки на callback-функции (заполняются при вызове start)
 _callback: MessageCallback | None = None
 _get_current_session: CurrentSessionGetter | None = None
@@ -129,9 +135,18 @@ async def _check_session(session_id: str) -> None:
     if session_id in _paused_sessions:
         return
 
+    if session_id in _missing_file_sessions:
+        return
+
     all_messages = await session_reader.get_session_messages(
         session_id, config.WORKING_DIR
     )
+
+    # Если файл не найден (пустой список) — запоминаем, чтобы не спамить WARNING
+    if not all_messages:
+        _missing_file_sessions.add(session_id)
+        return
+
     current_count = len(all_messages)
     already_seen = _seen_message_counts.get(session_id, 0)
 
@@ -205,6 +220,9 @@ async def _check_session(session_id: str) -> None:
 
 async def _poll_sessions() -> None:
     """Выполняет один цикл проверки всех сессий."""
+    if _global_paused:
+        return
+
     session_ids = await _get_sessions_to_monitor()
 
     # Удаляем устаревшие записи — сессий, которых больше нет
@@ -223,6 +241,20 @@ async def _poll_sessions() -> None:
             logger.error(
                 "Ошибка проверки сессии %s", session_id, exc_info=True
             )
+
+
+def pause_all() -> None:
+    """Приостанавливает мониторинг всех сессий (при переключении проекта)."""
+    global _global_paused
+    _global_paused = True
+    logger.info("Мониторинг всех сессий приостановлен (глобальная пауза)")
+
+
+def resume_all() -> None:
+    """Возобновляет мониторинг всех сессий после переключения проекта."""
+    global _global_paused
+    _global_paused = False
+    logger.info("Мониторинг всех сессий возобновлён (глобальная пауза снята)")
 
 
 def pause_session(session_id: str) -> None:
@@ -272,6 +304,7 @@ async def reset_state() -> None:
     _seen_message_counts.clear()
     _seen_message_counts.update(new_counts)
     _paused_sessions.clear()
+    _missing_file_sessions.clear()
 
     logger.info(
         "Состояние session_watcher сброшено для переключения проекта (%d сессий)",
@@ -318,12 +351,14 @@ async def start(
     Каждые 2 секунды проверяет файлы сессий на диске
     и вызывает callback при обнаружении новых сообщений Claude.
     """
-    global _callback, _get_current_session, _seen_message_counts, _paused_sessions
+    global _callback, _get_current_session, _seen_message_counts, _paused_sessions, _global_paused, _missing_file_sessions
 
     _callback = callback
     _get_current_session = get_current_session
     _seen_message_counts = {}
     _paused_sessions = set()
+    _global_paused = False
+    _missing_file_sessions = set()
 
     # Первоначальное сканирование — запоминаем текущее количество сообщений,
     # чтобы не отправлять старые сообщения при первом запуске

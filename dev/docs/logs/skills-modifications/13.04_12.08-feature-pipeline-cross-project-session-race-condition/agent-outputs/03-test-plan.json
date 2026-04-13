@@ -1,0 +1,130 @@
+{
+  "agent": "feature-test-plan",
+  "status": "success",
+  "timestamp": "2026-04-13T12:25:00+03:00",
+  "result": {
+    "test_framework": "pytest + pytest-asyncio",
+    "scale": "medium",
+    "tests_to_update": [
+      {
+        "path": "tests/test_session_watcher.py",
+        "changes": "1) Обновить фикстуру _reset_watcher_state — добавить очистку _global_paused = False и _missing_file_sessions = set() в обе ветки (setup и teardown). Без этого новые модульные переменные протекают между тестами. 2) Добавить класс TestPauseAllResumeAll с 4 тестами для pause_all()/resume_all() и проверки _global_paused в _poll_sessions. 3) Добавить класс TestMissingFileSessions с 4 тестами для _missing_file_sessions, _check_session и reset_state/start."
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "changes": "1) Во ВСЕ тесты TestSwitchProject, которые реально выполняют переключение (test_happy_path, test_saves_snapshot_on_switch, test_resets_all_state_modules, test_saves_to_last_project_file, test_rollback_on_reset_error, test_concurrent_switches_serialized), добавить моки session_watcher.pause_all и session_watcher.resume_all. Без этого тесты будут менять глобальное состояние _global_paused в реальном модуле session_watcher. 2) Добавить 3 новых теста: test_pause_all_called_before_working_dir_change, test_resume_all_called_after_reset, test_resume_all_called_on_error."
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "changes": "1) В тестах TestLoadRegistry и test_load_registry_filters_phantoms (класс TestRemovePhantomEntries) добавить мок session_reader._build_sessions_path, чтобы новая функция _remove_orphan_entries() не падала при вызове load_registry(). Без этого существующие тесты load_registry сломаются после добавления кросс-проверки файлов. 2) Добавить класс TestRemoveOrphanEntries с 5 тестами."
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "changes": "1) В фикстуре _reset_all_module_state добавить очистку session_watcher._global_paused = False и session_watcher._missing_file_sessions = set(). 2) Добавить 2 интеграционных теста: test_watcher_paused_during_full_switch_cycle и test_watcher_unpaused_after_rollback."
+      }
+    ],
+    "tests_to_add": [
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestPauseAllResumeAll.test_pause_all_sets_global_flag — вызов pause_all() устанавливает _global_paused = True. Проверяет: session_watcher._global_paused is True после вызова.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestPauseAllResumeAll.test_resume_all_clears_global_flag — вызов resume_all() сбрасывает _global_paused = False. Проверяет: session_watcher._global_paused is False после pause_all() + resume_all().",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestPauseAllResumeAll.test_poll_sessions_skips_when_globally_paused — при _global_paused=True функция _poll_sessions() делает ранний return и не вызывает _get_sessions_to_monitor(). Мокируем _get_sessions_to_monitor, устанавливаем _global_paused=True, вызываем _poll_sessions(). Проверяет: мок _get_sessions_to_monitor не вызван, callback не вызван.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestPauseAllResumeAll.test_per_session_pause_preserved_after_resume_all — resume_all() не сбрасывает _paused_sessions. Проверяет: после pause_session('s1') + pause_all() + resume_all() сессия 's1' всё ещё в _paused_sessions. _global_paused=False, но per-session пауза нетронута.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestMissingFileSessions.test_empty_messages_adds_to_missing_file_sessions — если get_session_messages возвращает пустой список, session_id добавляется в _missing_file_sessions. Мокируем session_reader.get_session_messages → пустой список, вызываем _check_session('orphan-session'). Проверяет: 'orphan-session' in session_watcher._missing_file_sessions.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestMissingFileSessions.test_missing_file_session_no_repeated_check — session_id в _missing_file_sessions не вызывает повторный get_session_messages. Добавляем session_id в _missing_file_sessions, вызываем _check_session. Проверяет: мок get_session_messages НЕ вызван (ранний return).",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestMissingFileSessions.test_reset_state_clears_missing_file_sessions — reset_state() очищает _missing_file_sessions. Добавляем session_id, вызываем reset_state(). Проверяет: _missing_file_sessions пуст после сброса.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "TestMissingFileSessions.test_start_initializes_missing_file_sessions_empty — start() инициализирует _missing_file_sessions = set(). Добавляем значение в _missing_file_sessions, запускаем start() и отменяем. Проверяет: _missing_file_sessions пуст после start.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "description": "TestSwitchProject.test_pause_all_called_before_working_dir_change — pause_all() вызывается ДО изменения config.WORKING_DIR. Используем side_effect на pause_all для записи config.WORKING_DIR в момент вызова. Проверяет: записанный путь == исходный WORKING_DIR (pause_all видит старое значение).",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "description": "TestSwitchProject.test_resume_all_called_after_reset — resume_all() вызывается ПОСЛЕ завершения _reset_all_state_modules(). Используем call_order список и side_effect на session_watcher.reset_state и resume_all для трекинга порядка. Проверяет: порядок в call_order — ['reset', 'resume'].",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "description": "TestSwitchProject.test_resume_all_called_on_error — при RuntimeError в session_manager.reset_state() функция resume_all() всё равно вызывается (try/finally). Проверяет: result.success=False и resume_all mock.assert_called_once().",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "description": "TestRemoveOrphanEntries.test_entry_with_existing_file_kept — запись с session_id, для которого существует .jsonl файл на диске, остаётся в реестре. Создаём tmp_path/sessions/{session_id}.jsonl, заполняем реестр, вызываем _remove_orphan_entries(). Проверяет: запись на месте, возвращено 0.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "description": "TestRemoveOrphanEntries.test_entry_without_file_removed — запись с session_id, для которого НЕТ .jsonl файла, удаляется из реестра. Заполняем реестр без создания файла. Проверяет: запись удалена, возвращено 1.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "description": "TestRemoveOrphanEntries.test_new_prefix_entry_skipped — запись с _new_ пропускается при проверке и не удаляется, даже если файла нет. Проверяет: запись с '_new_0001' осталась в реестре.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "description": "TestRemoveOrphanEntries.test_empty_registry_returns_zero — пустой реестр возвращает 0 удалённых записей.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "description": "TestRemoveOrphanEntries.test_orphan_count_across_multiple_days — корректный суммарный счётчик при сиротах в нескольких днях. Создаём реестр с 2 днями, в каждом по 1 сироте. Проверяет: возвращено 2.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "description": "TestRemoveOrphanEntries.test_load_registry_removes_orphans_and_saves — при загрузке реестра записи-сироты удаляются и очищенный реестр сохраняется на диск. Создаём файл реестра с 1 валидной и 1 сиротской записью, вызываем load_registry(). Проверяет: файл на диске содержит только валидную запись.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "description": "TestFullSwitchCycle.test_watcher_paused_during_full_switch_cycle — при полном цикле переключения: _global_paused=True внутри _reset_all_state_modules (проверяется через side_effect на session_watcher.reset_state, внутри которого assert _global_paused is True), и _global_paused=False после завершения switch_project. Проверяет координацию session_watcher + project_manager без глубоких моков.",
+        "level": "integration"
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "description": "TestFullSwitchCycle.test_watcher_unpaused_after_rollback — при ошибке переключения и откате watcher разблокирован. Имитирует RuntimeError в session_manager.reset_state, проверяет: result.success=False и session_watcher._global_paused is False после отката.",
+        "level": "integration"
+      },
+      {
+        "path": "tests/e2e/test_project_switching.py",
+        "description": "test_no_orphan_sessions_after_switch_cycle — E2E регрессия на race condition: переключиться на другой проект через /pN, подождать 5 сек (чтобы watcher успел сделать несколько циклов), вернуться на исходный проект, проверить через /sessions что в списке нет чужих сессий из другого проекта. Требует минимум 2 проекта в PROJECTS_ROOT_DIR.",
+        "level": "e2e"
+      }
+    ],
+    "tests_to_delete": []
+  }
+}

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,8 @@ from claude_manager.daily_session_registry import (
     _get_today_key,
     _ensure_today_registry,
     _next_day_number,
+    _remove_orphan_entries,
+    _remove_phantom_entries,
     get_all_today_sessions,
     get_session_id_by_number,
     load_registry,
@@ -233,6 +236,8 @@ class TestLoadRegistry:
         """Отсутствие файла не вызывает ошибку — создаётся пустой реестр."""
         with patch.object(
             daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
+        ), patch.object(
+            daily_session_registry, "_remove_orphan_entries", return_value=0
         ):
             daily_session_registry._registry_path = None
             with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
@@ -252,6 +257,8 @@ class TestLoadRegistry:
 
         with patch.object(
             daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
+        ), patch.object(
+            daily_session_registry, "_remove_orphan_entries", return_value=0
         ):
             with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
                 await load_registry()
@@ -263,6 +270,8 @@ class TestLoadRegistry:
         """Данные сохраняются и корректно восстанавливаются."""
         with patch.object(
             daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
+        ), patch.object(
+            daily_session_registry, "_remove_orphan_entries", return_value=0
         ):
             with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
                 # Первая «жизнь» — регистрируем сессии
@@ -410,7 +419,8 @@ class TestResetState:
     @pytest.mark.asyncio()
     async def test_reset_clears_registry(self, tmp_path: Path) -> None:
         """После reset_state реестр сброшен и перезагружен из текущего WORKING_DIR."""
-        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
             await register_session("old-session")
             assert len(await get_all_today_sessions()) >= 1
 
@@ -427,18 +437,20 @@ class TestResetState:
         project_a.mkdir()
         project_b.mkdir()
 
-        with patch("claude_manager.config.WORKING_DIR", str(project_a)):
-            await register_session("session-in-a")
+        with patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
+            with patch("claude_manager.config.WORKING_DIR", str(project_a)):
+                await register_session("session-in-a")
 
-        with patch("claude_manager.config.WORKING_DIR", str(project_b)):
-            await reset_state()
-            sessions = await get_all_today_sessions()
-            assert "session-in-a" not in sessions.values()
+            with patch("claude_manager.config.WORKING_DIR", str(project_b)):
+                await reset_state()
+                sessions = await get_all_today_sessions()
+                assert "session-in-a" not in sessions.values()
 
     @pytest.mark.asyncio()
     async def test_reset_preserves_save_capability(self, tmp_path: Path) -> None:
         """После reset_state можно снова регистрировать сессии — _loaded_from_disk восстановлен."""
-        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
             await reset_state()
             # Должно корректно зарегистрировать сессию и записать файл
             await register_session("after-reset")
@@ -453,14 +465,218 @@ class TestResetState:
         project_a.mkdir()
         project_b.mkdir()
 
-        with patch("claude_manager.config.WORKING_DIR", str(project_a)):
-            await load_registry()
+        with patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
+            with patch("claude_manager.config.WORKING_DIR", str(project_a)):
+                await load_registry()
 
-        with patch("claude_manager.config.WORKING_DIR", str(project_b)):
-            await reset_state()
+            with patch("claude_manager.config.WORKING_DIR", str(project_b)):
+                await reset_state()
             await register_session("new-in-b")
 
             registry_in_b = project_b / REGISTRY_FILENAME
             assert registry_in_b.exists()
             content_b = json.loads(registry_in_b.read_text("utf-8"))
             assert "new-in-b" in str(content_b)
+
+
+class TestRemovePhantomEntries:
+    """Тесты фильтрации фантомных записей с временными ID (префикс _new_)."""
+
+    def test_removes_phantom_entries(self) -> None:
+        """Записи с префиксом _new_ удаляются из реестра."""
+        daily_session_registry._registry = {
+            FAKE_TODAY: {
+                "1": "real-session-aaa",
+                "2": "_new_0001",
+                "3": "real-session-bbb",
+                "4": "_new_0002",
+            }
+        }
+
+        removed = _remove_phantom_entries()
+
+        assert removed == 2
+        assert daily_session_registry._registry[FAKE_TODAY] == {
+            "1": "real-session-aaa",
+            "3": "real-session-bbb",
+        }
+
+    def test_no_phantom_entries_nothing_removed(self) -> None:
+        """Если фантомных записей нет — ничего не удаляется."""
+        daily_session_registry._registry = {
+            FAKE_TODAY: {
+                "1": "session-aaa",
+                "2": "session-bbb",
+            }
+        }
+
+        removed = _remove_phantom_entries()
+
+        assert removed == 0
+        assert len(daily_session_registry._registry[FAKE_TODAY]) == 2
+
+    def test_phantom_count_across_multiple_days(self) -> None:
+        """Счётчик удалённых записей корректен при фантомах в нескольких днях."""
+        daily_session_registry._registry = {
+            FAKE_TODAY: {
+                "1": "_new_0001",
+                "2": "real-session",
+            },
+            FAKE_YESTERDAY: {
+                "1": "_new_0002",
+                "2": "_new_0003",
+                "3": "another-real",
+            },
+        }
+
+        removed = _remove_phantom_entries()
+
+        assert removed == 3
+        assert daily_session_registry._registry[FAKE_TODAY] == {"2": "real-session"}
+        assert daily_session_registry._registry[FAKE_YESTERDAY] == {"3": "another-real"}
+
+    def test_normal_entries_preserved_after_removal(self) -> None:
+        """После удаления фантомных записей нормальные остаются на месте."""
+        daily_session_registry._registry = {
+            FAKE_TODAY: {
+                "1": "keep-me",
+                "2": "_new_temp",
+                "3": "keep-me-too",
+            }
+        }
+
+        _remove_phantom_entries()
+
+        remaining = daily_session_registry._registry[FAKE_TODAY]
+        assert remaining["1"] == "keep-me"
+        assert remaining["3"] == "keep-me-too"
+        assert "2" not in remaining
+
+    @pytest.mark.asyncio()
+    async def test_load_registry_filters_phantoms(self, tmp_path: Path) -> None:
+        """При загрузке реестра с диска фантомные записи автоматически удаляются."""
+        registry_data = {
+            FAKE_TODAY: {
+                "1": "real-session",
+                "2": "_new_0001",
+                "3": "_new_0002",
+            }
+        }
+        registry_file = tmp_path / REGISTRY_FILENAME
+        registry_file.write_text(json.dumps(registry_data), "utf-8")
+
+        with patch.object(
+            daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
+        ), patch.object(
+            daily_session_registry, "_remove_orphan_entries", return_value=0
+        ):
+            with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+                await load_registry()
+
+        today_entries = daily_session_registry._registry[FAKE_TODAY]
+        assert today_entries == {"1": "real-session"}
+
+    def test_empty_registry_returns_zero(self) -> None:
+        """Пустой реестр — счётчик возвращает 0."""
+        daily_session_registry._registry = {}
+
+        removed = _remove_phantom_entries()
+
+        assert removed == 0
+
+
+class TestRemoveOrphanEntries:
+    """Тесты удаления записей-сирот без .jsonl файла на диске."""
+
+    def test_entry_with_existing_file_kept(self, tmp_path: Path) -> None:
+        """Запись с session_id, для которого есть .jsonl файл, остаётся в реестре."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / "valid-session-abc.jsonl").write_text("{}", "utf-8")
+
+        daily_session_registry._registry = {
+            FAKE_TODAY: {"1": "valid-session-abc"}
+        }
+
+        with patch(
+            "claude_manager.session_reader.build_sessions_path",
+            return_value=str(sessions_dir),
+        ):
+            removed = _remove_orphan_entries()
+
+        assert removed == 0
+        assert daily_session_registry._registry[FAKE_TODAY]["1"] == "valid-session-abc"
+
+    def test_entry_without_file_removed(self, tmp_path: Path) -> None:
+        """Запись с session_id без .jsonl файла удаляется из реестра."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        # Файл НЕ создаём — запись-сирота
+
+        daily_session_registry._registry = {
+            FAKE_TODAY: {"1": "orphan-session-xyz"}
+        }
+
+        with patch(
+            "claude_manager.session_reader.build_sessions_path",
+            return_value=str(sessions_dir),
+        ):
+            removed = _remove_orphan_entries()
+
+        assert removed == 1
+        assert "1" not in daily_session_registry._registry[FAKE_TODAY]
+
+    def test_new_prefix_entry_skipped(self, tmp_path: Path) -> None:
+        """Запись с _new_ пропускается — не удаляется, даже если файла нет."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        daily_session_registry._registry = {
+            FAKE_TODAY: {"1": "_new_0001"}
+        }
+
+        with patch(
+            "claude_manager.session_reader.build_sessions_path",
+            return_value=str(sessions_dir),
+        ):
+            removed = _remove_orphan_entries()
+
+        assert removed == 0
+        assert daily_session_registry._registry[FAKE_TODAY]["1"] == "_new_0001"
+
+    @pytest.mark.asyncio()
+    async def test_load_registry_removes_orphans_and_saves(
+        self, tmp_path: Path
+    ) -> None:
+        """При загрузке реестра записи-сироты удаляются и результат сохраняется на диск."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        # Создаём файл только для валидной сессии
+        (sessions_dir / "valid-session.jsonl").write_text("{}", "utf-8")
+
+        registry_data = {
+            FAKE_TODAY: {
+                "1": "valid-session",
+                "2": "orphan-no-file",
+            }
+        }
+        registry_file = tmp_path / REGISTRY_FILENAME
+        registry_file.write_text(json.dumps(registry_data), "utf-8")
+
+        with patch.object(
+            daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
+        ), patch(
+            "claude_manager.session_reader.build_sessions_path",
+            return_value=str(sessions_dir),
+        ), patch(
+            "claude_manager.config.WORKING_DIR", str(tmp_path)
+        ):
+            await load_registry()
+
+        # В памяти — только валидная запись
+        today_entries = daily_session_registry._registry[FAKE_TODAY]
+        assert today_entries == {"1": "valid-session"}
+
+        # На диске — тоже только валидная запись (сохранение произошло)
+        saved_data = json.loads(registry_file.read_text("utf-8"))
+        assert "2" not in saved_data.get(FAKE_TODAY, {})

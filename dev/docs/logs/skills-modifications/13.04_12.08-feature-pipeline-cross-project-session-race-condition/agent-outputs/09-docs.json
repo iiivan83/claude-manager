@@ -1,0 +1,15 @@
+{
+  "agent": "feature-docs",
+  "status": "success",
+  "timestamp": "2026-04-13T15:18:00+03:00",
+  "result": {
+    "documents_created": [
+      {"type": "changelog", "path": "dev/docs/changelog/13.04_12.08-cross-project-session-race-condition.md", "action": "created"},
+      {"type": "docs_index", "path": "dev/docs/docs-index.md", "action": "updated"}
+    ],
+    "documents_skipped": [
+      {"type": "claude_md", "reason": "Уже обновлён — принцип 'Атомарность переключения проекта' (строка 119) и описание переключения проектов с pause_all/resume_all корректны и на месте"},
+      {"type": "brd", "reason": "CJM-11 уже содержит полное описание: глобальная пауза watcher, кросс-проверка записей-сирот при загрузке реестра, try/finally для resume_all, логи переключения — дополнять нечего"}
+    ]
+  }
+}

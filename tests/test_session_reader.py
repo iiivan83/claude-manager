@@ -11,7 +11,7 @@ import pytest
 from claude_manager.session_reader import (
     MAX_RECENT_SESSIONS,
     SessionInfo,
-    _build_sessions_path,
+    build_sessions_path,
     _clean_preview,
     _encode_project_path,
     _extract_first_user_message,
@@ -110,7 +110,7 @@ class TestEncodeProjectPath:
         assert result == "-Users-ivan-------"
 
 
-# --- Юнит-тесты _build_sessions_path ---
+# --- Юнит-тесты build_sessions_path ---
 
 
 class TestBuildSessionsPath:
@@ -118,7 +118,7 @@ class TestBuildSessionsPath:
 
     def test_builds_correct_path(self) -> None:
         """Путь содержит домашнюю директорию и закодированное имя проекта."""
-        result = _build_sessions_path("/Users/ivan/Desktop/claude-manager")
+        result = build_sessions_path("/Users/ivan/Desktop/claude-manager")
         home = os.path.expanduser("~")
         expected_suffix = ".claude/projects/-Users-ivan-Desktop-claude-manager"
         assert result.startswith(home)
@@ -126,7 +126,7 @@ class TestBuildSessionsPath:
 
     def test_builds_path_with_underscore(self) -> None:
         """Путь с подчёркиванием — итоговая папка содержит дефис вместо подчёркивания."""
-        result = _build_sessions_path(
+        result = build_sessions_path(
             "/Users/ivan/Desktop/claude-sandbox/claude_manager"
         )
         home = os.path.expanduser("~")
@@ -283,13 +283,13 @@ class TestGetRecentSessions:
     def sessions_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         """Временная папка, имитирующая директорию сессий Claude Code.
 
-        Подменяет _build_sessions_path, чтобы функции модуля
+        Подменяет build_sessions_path, чтобы функции модуля
         обращались к временной папке вместо реальной.
         """
         sessions_path = tmp_path / "sessions"
         sessions_path.mkdir()
         monkeypatch.setattr(
-            "claude_manager.session_reader._build_sessions_path",
+            "claude_manager.session_reader.build_sessions_path",
             lambda project_dir: str(sessions_path),
         )
         return sessions_path
@@ -390,7 +390,7 @@ class TestGetRecentSessions:
         """Папка сессий не существует — пустой список и предупреждение в логах."""
         nonexistent_path = str(tmp_path / "nonexistent")
         monkeypatch.setattr(
-            "claude_manager.session_reader._build_sessions_path",
+            "claude_manager.session_reader.build_sessions_path",
             lambda project_dir: nonexistent_path,
         )
 
@@ -426,7 +426,7 @@ class TestGetSessionMessages:
         sessions_path = tmp_path / "sessions"
         sessions_path.mkdir()
         monkeypatch.setattr(
-            "claude_manager.session_reader._build_sessions_path",
+            "claude_manager.session_reader.build_sessions_path",
             lambda project_dir: str(sessions_path),
         )
         return sessions_path

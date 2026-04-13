@@ -13,7 +13,9 @@
   - [changelog/2026-04.md](changelog/2026-04.md) — апрель 2026: asyncio.Lock в process_manager, watcher уведомляет только владельца сессии
   - [changelog/12.04_19.05-md-file-delivery.md](changelog/12.04_19.05-md-file-delivery.md) — 12.04.2026: отправка файлов из ответа Claude пользователю через маркеры `[SEND_FILE:path]` и telegramify-markdown
   - [changelog/12.04_21.17-session-id-callback.md](changelog/12.04_21.17-session-id-callback.md) — 12.04.2026: раннее уведомление о смене session_id через callback — закрытие гонки watcher/handler при создании новых сессий
-- **claude-md-updates/** — лог изменений CLAUDE.md (пока пусто)
+  - [changelog/13.04_12.08-cross-project-session-race-condition.md](changelog/13.04_12.08-cross-project-session-race-condition.md) — 13.04.2026: исправление гонки при переключении проектов — глобальная пауза watcher, кросс-проверка записей реестра, защита от лог-спама
+- **claude-md-updates/** — лог изменений CLAUDE.md
+  - [claude-md-updates/10.04_22.19-file-delivery-rule.md](claude-md-updates/10.04_22.19-file-delivery-rule.md) — 10.04.2026: глобальное правило File Delivery Rule в `~/.claude/CLAUDE.md` — маркеры `[SEND_FILE:path]` для доставки файлов через бот
 
 ## BRD и пользовательские пути
 
@@ -72,6 +74,7 @@
 Глубокий анализ первопричин багов — неизменяемые документы. Новые ошибки кладутся в корень `logs/root-cause-reports/`, после починки ссылка переезжает:
 
 - **Активные** (в корне `logs/root-cause-reports/`):
+  - [logs/root-cause-reports/13-04_10-44_cross-project-session-registration.md](logs/root-cause-reports/13-04_10-44_cross-project-session-registration.md) — сессии чужого проекта попадают в дневной реестр из-за гонки watcher при переключении проектов (исправлено через pause_all/resume_all и кросс-проверку записей)
   - [logs/root-cause-reports/12-04_20-41_duplicate-session-numbers.md](logs/root-cause-reports/12-04_20-41_duplicate-session-numbers.md) — дублирование дневных номеров сессий из-за гонки watcher/handler (исправлено через session_id_callback)
   - [logs/root-cause-reports/30-03_03-06_progress-icon-checkmark.md](logs/root-cause-reports/30-03_03-06_progress-icon-checkmark.md) — иконка прогресса не меняется на галочку
   - [logs/root-cause-reports/30-03_04-50_session-counter-reset.md](logs/root-cause-reports/30-03_04-50_session-counter-reset.md) — счётчик сессий сбрасывается
