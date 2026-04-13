@@ -268,7 +268,7 @@ async def get_session_messages(session_id: str, project_dir: str) -> list[dict]:
 
     file_exists = await asyncio.to_thread(os.path.exists, file_path)
     if not file_exists:
-        logger.warning("Файл сессии не найден: %s", file_path)
+        logger.debug("Файл сессии не найден: %s", file_path)
         return []
 
     try:

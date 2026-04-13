@@ -244,9 +244,13 @@ async def test_flow11_switch_to_current_is_noop(
 
 # --- FLOW-12: после переключения проекта watcher не спамит историей ---
 
-# Интервал опроса watcher — 2 сек. Ждём 4 цикла, чтобы дать ему время
-# ошибочно отправить исторические сообщения (если баг вернётся).
-WATCHER_SETTLE_SECONDS = 8
+# После переключения проекта watcher приостанавливается через pause_all(),
+# затем reset_state() заполняет счётчики для нового проекта, и resume_all()
+# возобновляет мониторинг. Ждём 8 полных циклов watcher (по 2 сек каждый),
+# чтобы дать ему достаточно времени обнаружить баг, если регрессия вернётся.
+# Запас увеличен с 12 до 16 секунд: resume_all() может совпасть с серединой
+# цикла watcher, и первый полный цикл начнётся только через ~2 сек после resume.
+WATCHER_SETTLE_SECONDS = 16
 
 
 async def test_flow12_no_ghost_messages_after_project_switch(
@@ -259,7 +263,12 @@ async def test_flow12_no_ghost_messages_after_project_switch(
     все сессии нового проекта с already_seen=0 и отправлял ВСЕ исторические
     сообщения как «новые».
 
-    Тест: переключиться → подождать 4 цикла watcher → проверить, что
+    Текущая защита: при переключении проекта бот вызывает pause_all()
+    (глобальная пауза watcher), затем reset_state() заполняет счётчики
+    для всех сессий нового проекта, и resume_all() снимает паузу.
+    Watcher просыпается уже с корректными счётчиками.
+
+    Тест: переключиться → подождать 8 циклов watcher → проверить, что
     не пришло ни одного сообщения с заголовком сессии (#N или /N).
     """
     projects = await _fetch_project_list(telegram_client)
@@ -272,7 +281,8 @@ async def test_flow12_no_ghost_messages_after_project_switch(
         )
 
     try:
-        # 1. Переключаемся на другой проект
+        # 1. Переключаемся на другой проект.
+        #    Бот вызывает pause_all() → reset_state() → resume_all() внутри.
         await telegram_client.send_command(f"/p{other.number}")
         await telegram_client.wait_for_matching_response(
             "Переключено на проект", timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
@@ -281,11 +291,15 @@ async def test_flow12_no_ghost_messages_after_project_switch(
         # 2. Сбрасываем буфер — нас интересуют только сообщения ПОСЛЕ switch
         telegram_client._reset_response_state()
 
-        # 3. Ждём несколько циклов watcher (polling interval = 2 сек)
+        # 3. Ждём несколько циклов watcher (polling interval = 2 сек).
+        #    За это время watcher уже работает с новыми счётчиками —
+        #    если баг вернётся, исторические сообщения появятся здесь.
         await asyncio.sleep(WATCHER_SETTLE_SECONDS)
 
         # 4. Проверяем: ни одного сообщения с заголовком сессии не должно прийти.
         # Формат заголовка: "#N ..." (ответ текущей) или "/N ..." (ответ чужой).
+        # Пропускаем сообщения, которые являются ответами на команды бота
+        # (например «Переключено на проект»), — они не от watcher.
         session_header_pattern = re.compile(r"^[#/](\d+)\b")
         ghost_messages = [
             f"Сессия #{m.group(1)}: {resp[:120]}"
@@ -293,9 +307,13 @@ async def test_flow12_no_ghost_messages_after_project_switch(
             if (m := session_header_pattern.match(resp))
         ]
 
+        # С глобальной паузой watcher (pause_all/resume_all) призрачных
+        # сообщений быть не должно. Если тест упал — это регрессия в механизме
+        # паузы, а не проблема тайминга.
         assert not ghost_messages, (
             f"После переключения на проект '{other.name}' watcher "
-            f"отправил исторические сообщения:\n"
+            f"отправил исторические сообщения (pause_all/resume_all "
+            f"не предотвратили утечку):\n"
             + "\n".join(ghost_messages)
         )
     finally:

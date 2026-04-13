@@ -884,7 +884,10 @@ async def handle_message(
         )
         return
 
-    await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    try:
+        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    except Exception as exc:
+        logger.warning("send_chat_action не удался в handle_message: %s", exc)
     await _send_to_claude_and_respond(chat_id, text)
 
 
@@ -917,7 +920,10 @@ async def handle_photo(
     caption = update.message.caption
     task_text = _build_file_task(file_path, caption, is_image=True)
 
-    await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    try:
+        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    except Exception as exc:
+        logger.warning("send_chat_action не удался в handle_photo: %s", exc)
     await _send_to_claude_and_respond(chat_id, task_text)
 
 
@@ -955,7 +961,10 @@ async def handle_document(
     is_image = extension in IMAGE_EXTENSIONS
     task_text = _build_file_task(file_path, caption, is_image)
 
-    await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    try:
+        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    except Exception as exc:
+        logger.warning("send_chat_action не удался в handle_document: %s", exc)
     await _send_to_claude_and_respond(chat_id, task_text)
 
 
@@ -986,6 +995,23 @@ def _register_handlers(application: Application) -> None:
     )
 
 
+async def _global_error_handler(
+    update: object, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Последний рубеж для необработанных исключений в обработчиках."""
+    logger.error(
+        "Необработанное исключение в обработчике: %s", context.error, exc_info=context.error
+    )
+    if update and hasattr(update, "effective_chat") and update.effective_chat:
+        try:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                "⚠️ Внутренняя ошибка. Попробуй ещё раз.",
+            )
+        except Exception:
+            logger.warning("Не удалось уведомить пользователя об ошибке")
+
+
 def setup_bot() -> Application:
     """Создаёт и настраивает экземпляр Telegram-бота."""
     global _application
@@ -999,5 +1025,6 @@ def setup_bot() -> Application:
     )
     _application = application
     _register_handlers(application)
+    application.add_error_handler(_global_error_handler)
 
     return application

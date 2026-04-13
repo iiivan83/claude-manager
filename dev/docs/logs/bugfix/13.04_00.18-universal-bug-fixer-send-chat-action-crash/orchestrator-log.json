@@ -1,0 +1,133 @@
+{
+  "pipeline": "bugfix",
+  "problem_summary": "send_chat_action(ChatAction.TYPING) в bot.py не обёрнут в try/except — при TimedOut от Telegram API весь handle_message падает, бот молчит на текстовые сообщения, хотя команды работают",
+  "created_at": "2026-04-13T00:18:00+03:00",
+  "last_completed_stage": 9,
+  "folder_timestamp": "13.04_00.18",
+  "file_timestamp": "13-04-00-18",
+  "backup_branch": "bugfix/13.04_00.18-send-chat-action-crash-backup",
+  "verification": null,
+  "available_skills": {
+    "required": {
+      "root-cause-analysis": {
+        "found": true,
+        "path": ".claude/skills/root-cause-analysis/SKILL.md"
+      },
+      "session-report": {
+        "found": true,
+        "path": "~/.claude/commands/session-report.md"
+      }
+    },
+    "conditional": {
+      "skill-creator": {
+        "found": true,
+        "path": ".claude/skills/skill-creator/SKILL.md"
+      },
+      "script-creator-pipeline": {
+        "found": true,
+        "path": ".claude/skills/script-creator-pipeline/SKILL.md"
+      }
+    }
+  },
+  "steps": [
+    {
+      "step_number": 1,
+      "start_time": "2026-04-13T00:18:00+03:00",
+      "end_time": "2026-04-13T00:20:00+03:00",
+      "agent": "intake",
+      "input": ["user_description", "dev/docs/session-reports/13-04/00-10_bot-not-responding-diagnosis.md"],
+      "success": true,
+      "comment": "Собраны 10 артефактов: 3 file_path (строки в bot.py), 4 записи из error.log, 3 текстовых описания. Основная проблема + побочная (watcher spam).",
+      "output": ["agent-outputs/01-intake.json"],
+      "next_agent": "understanding"
+    },
+    {
+      "step_number": 2,
+      "start_time": "2026-04-13T00:20:00+03:00",
+      "end_time": "2026-04-13T00:22:00+03:00",
+      "agent": "understanding",
+      "input": ["agent-outputs/01-intake.json"],
+      "success": true,
+      "comment": "Confidence: high. Проблема подтверждена: 3 обработчика без try/except на send_chat_action, нет глобального error handler. Побочная: watcher спамит лог.",
+      "output": ["agent-outputs/02-understanding.json"],
+      "next_agent": "root-cause-investigator"
+    },
+    {
+      "step_number": 3,
+      "start_time": "2026-04-13T00:39:00+03:00",
+      "end_time": "2026-04-13T00:50:00+03:00",
+      "agent": "root-cause-investigator",
+      "input": ["agent-outputs/01-intake.json", "agent-outputs/02-understanding.json"],
+      "success": true,
+      "comment": "3 отклонения: DEV-1 (send_chat_action без try/except, 3 места), DEV-2 (нет глобального error handler), DEV-3 (watcher спамит лог). Busy flag утечка проверена — NOT a bug.",
+      "output": ["agent-outputs/03-root-cause.json", "dev/docs/logs/root-cause-reports/13-04_00-39_send-chat-action-crash.md"],
+      "next_agent": "classifier"
+    },
+    {
+      "step_number": 4,
+      "start_time": "2026-04-13T00:55:00+03:00",
+      "end_time": "2026-04-13T00:56:00+03:00",
+      "agent": "classifier",
+      "input": ["agent-outputs/02-understanding.json", "agent-outputs/03-root-cause.json"],
+      "success": true,
+      "comment": "DEV-1: code_bug/widespread/blocking. DEV-2: code_bug/isolated/important. DEV-3: code_bug/isolated/minor. Порядок: DEV-1→DEV-2→DEV-3.",
+      "output": ["agent-outputs/04-classification.json"],
+      "next_agent": "test-strategist"
+    },
+    {
+      "step_number": 5,
+      "start_time": "2026-04-13T00:57:00+03:00",
+      "end_time": "2026-04-13T01:03:00+03:00",
+      "agent": "test-strategist",
+      "input": ["agent-outputs/01-intake.json", "agent-outputs/02-understanding.json", "agent-outputs/03-root-cause.json", "agent-outputs/04-classification.json"],
+      "success": true,
+      "comment": "Whitebox: 13 тестов (9 fail, 4 pass). Blackbox: 12 тестов (8 fail, 4 pass). Подтверждение: баги реальны, регрессионные тесты проходят.",
+      "output": ["agent-outputs/05-test-strategy.json", "pipeline-workspace/tests/test_whitebox_send_chat_action.py", "pipeline-workspace/tests/blackbox/test_blackbox_send_chat_action.py"],
+      "next_agent": "critical-verifier"
+    },
+    {
+      "step_number": 6,
+      "start_time": "2026-04-13T01:35:00+03:00",
+      "end_time": "2026-04-13T01:35:00+03:00",
+      "agent": "critical-verifier",
+      "input": ["agent-outputs/01-intake.json", "agent-outputs/02-understanding.json", "agent-outputs/03-root-cause.json", "agent-outputs/04-classification.json", "agent-outputs/05-test-strategy.json"],
+      "success": true,
+      "comment": "Все 3 отклонения approved. Порядок: DEV-1→DEV-2→DEV-3. Overall verdict: approved.",
+      "output": ["agent-outputs/06-verification.json"],
+      "next_agent": "fix-strategist"
+    },
+    {
+      "step_number": 7,
+      "start_time": "2026-04-13T14:20:00+03:00",
+      "end_time": "2026-04-13T14:21:30+03:00",
+      "agent": "fix-strategist",
+      "input": ["agent-outputs/01-intake.json", "agent-outputs/02-understanding.json", "agent-outputs/03-root-cause.json", "agent-outputs/04-classification.json", "agent-outputs/05-test-strategy.json", "agent-outputs/06-verification.json"],
+      "success": true,
+      "comment": "Стратегия: direct_fix для всех 3 DEV. DEV-1: try/except на send_chat_action в 3 обработчиках. DEV-2: global_error_handler + add_error_handler(). DEV-3: фильтрация несуществующих файлов + warning→debug.",
+      "output": ["agent-outputs/07-fix-strategy.json"],
+      "next_agent": "executor"
+    },
+    {
+      "step_number": 8,
+      "start_time": "2026-04-13T14:22:00+03:00",
+      "end_time": "2026-04-13T14:25:00+03:00",
+      "agent": "executor",
+      "input": ["agent-outputs/07-fix-strategy.json"],
+      "success": true,
+      "comment": "3 параллельных агента: DEV-1 (try/except на send_chat_action в 3 обработчиках), DEV-2 (global_error_handler + add_error_handler), DEV-3 (warning→debug + фильтрация _missing_file_sessions).",
+      "output": ["agent-outputs/08-execution.json"],
+      "next_agent": "test-runner"
+    },
+    {
+      "step_number": 9,
+      "start_time": "2026-04-13T14:25:00+03:00",
+      "end_time": "2026-04-13T14:26:00+03:00",
+      "agent": "test-runner",
+      "input": ["agent-outputs/08-execution.json"],
+      "success": true,
+      "comment": "604 passed, 3 warnings (PTBDeprecationWarning). Все тесты зелёные. Код верифицирован spot-check по всем 3 DEV.",
+      "output": ["agent-outputs/09-verification.json"],
+      "next_agent": "report-generator"
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "agent": "fix-strategist",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T01:55:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Стратегия исправления для трёх отклонений: DEV-1 (send_chat_action crash), DEV-2 (нет error handler), DEV-3 (watcher log spam)",
+    "files": ["orchestrator-log.json", "06-verification.json"]
+  },
+  "created_files": [],
+  "result": {
+    "deviation_strategies": [
+      {
+        "deviation_id": "DEV-1",
+        "strategy": "direct_fix",
+        "reasoning": "code_bug маленький — три одинаковых изменения в одном файле (bot.py). Каждый вызов send_chat_action (строки 887, 920, 958) нужно обернуть в try/except, чтобы ошибка декоративного вызова не прерывала обработку сообщения. Изменения локальные, не затрагивают логику выше и ниже — только добавление обёртки вокруг одной строки. Спецификация не нужна.",
+        "estimated_scope": {
+          "files_to_change": ["src/claude_manager/bot.py"],
+          "estimated_lines": 18,
+          "touches_adjacent_code": false
+        },
+        "spec_needed": false,
+        "execution_plan": [
+          {
+            "step": 1,
+            "action": "В handle_message (строка 887): обернуть `await context.bot.send_chat_action(chat_id, ChatAction.TYPING)` в try/except Exception — при ошибке логировать warning через logger.warning и продолжить выполнение (await _send_to_claude_and_respond остаётся без изменений). Шаблон: try: await context.bot.send_chat_action(...) except Exception: logger.warning('send_chat_action failed in handle_message (chat_id=%d)', chat_id, exc_info=True)",
+            "file": "src/claude_manager/bot.py"
+          },
+          {
+            "step": 2,
+            "action": "В handle_photo (строка 920): аналогичная обёртка try/except Exception вокруг send_chat_action. При ошибке — logger.warning('send_chat_action failed in handle_photo (chat_id=%d)', chat_id, exc_info=True), продолжить к _send_to_claude_and_respond",
+            "file": "src/claude_manager/bot.py"
+          },
+          {
+            "step": 3,
+            "action": "В handle_document (строка 958): аналогичная обёртка try/except Exception вокруг send_chat_action. При ошибке — logger.warning('send_chat_action failed in handle_document (chat_id=%d)', chat_id, exc_info=True), продолжить к _send_to_claude_and_respond",
+            "file": "src/claude_manager/bot.py"
+          }
+        ]
+      },
+      {
+        "deviation_id": "DEV-2",
+        "strategy": "direct_fix",
+        "reasoning": "code_bug маленький — добавить одну async-функцию global_error_handler и один вызов application.add_error_handler() в setup_bot(). Функция логирует ошибку через logger.error и отправляет пользователю сообщение об ошибке. Изменения в одном файле, ~15 строк. Спецификация не нужна.",
+        "estimated_scope": {
+          "files_to_change": ["src/claude_manager/bot.py"],
+          "estimated_lines": 15,
+          "touches_adjacent_code": false
+        },
+        "spec_needed": false,
+        "execution_plan": [
+          {
+            "step": 1,
+            "action": "Добавить async-функцию global_error_handler(update, context) перед setup_bot(). Функция: (1) логирует ошибку через logger.error('Необработанное исключение в обработчике', exc_info=context.error), (2) пытается отправить пользователю сообщение 'Произошла внутренняя ошибка. Попробуйте ещё раз' через _send_telegram_message (если update и update.effective_chat доступны), (3) оборачивает отправку в try/except чтобы ошибка отправки уведомления не затенила исходную ошибку",
+            "file": "src/claude_manager/bot.py"
+          },
+          {
+            "step": 2,
+            "action": "В setup_bot() после вызова _register_handlers(application) добавить строку: application.add_error_handler(global_error_handler)",
+            "file": "src/claude_manager/bot.py"
+          }
+        ]
+      },
+      {
+        "deviation_id": "DEV-3",
+        "strategy": "direct_fix",
+        "reasoning": "code_bug маленький — два точечных изменения в двух файлах. В session_reader.py: понизить уровень лога с warning до debug для отсутствующего файла сессии (строка 271) — для watcher это ожидаемая ситуация, а не предупреждение. В session_watcher.py: в _get_sessions_to_monitor() добавить проверку существования файла перед включением session_id из дневного реестра (строки 122-128) — отфильтровать stale-записи до вызова _check_session. Примечание: механизм _missing_file_sessions (строки 50-51, 138-148) уже существует и кеширует отсутствующие файлы после первого обращения, но сам вызов get_session_messages для несуществующего файла — лишняя работа. Фильтрация на уровне _get_sessions_to_monitor() предотвращает и лишний вызов reader, и логирование.",
+        "estimated_scope": {
+          "files_to_change": [
+            "src/claude_manager/session_reader.py",
+            "src/claude_manager/session_watcher.py"
+          ],
+          "estimated_lines": 10,
+          "touches_adjacent_code": false
+        },
+        "spec_needed": false,
+        "execution_plan": [
+          {
+            "step": 1,
+            "action": "В session_reader.py строка 271: изменить logger.warning('Файл сессии не найден: %s', file_path) на logger.debug('Файл сессии не найден: %s', file_path) — понижение уровня лога для ожидаемой ситуации (сессия удалена, watcher переберёт)",
+            "file": "src/claude_manager/session_reader.py"
+          },
+          {
+            "step": 2,
+            "action": "В session_watcher.py функция _get_sessions_to_monitor() (строки 122-128): перед добавлением session_id из дневного реестра проверить существование JSONL-файла через session_reader.build_sessions_path + os.path.exists. Добавить import os в начало файла (если не импортирован). Фильтрация: включать session_id из today_sessions только если файл {sessions_path}/{session_id}.jsonl существует на диске",
+            "file": "src/claude_manager/session_watcher.py"
+          }
+        ]
+      }
+    ],
+    "order_override": null,
+    "order_override_reasoning": null
+  },
+  "next_agent": "executor"
+}

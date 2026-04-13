@@ -127,6 +127,14 @@ async def _get_sessions_to_monitor() -> list[str]:
             session_ids.append(session_id)
             existing_ids.add(session_id)
 
+    # Отсеиваем сессии, которые уже помечены как отсутствующие на диске
+    # (удалённые сессии), чтобы watcher не пытался их читать каждые 2 секунды.
+    # Новые отсутствующие сессии помечаются в _check_session при первом чтении.
+    if _missing_file_sessions:
+        session_ids = [
+            sid for sid in session_ids if sid not in _missing_file_sessions
+        ]
+
     return session_ids
 
 
