@@ -1,0 +1,201 @@
+{
+  "pipeline": "feature-pipeline",
+  "pipeline_name": "file-send-header-overflow-fix",
+  "timestamp_start": "2026-04-17T12:58:00+03:00",
+  "timestamp_end": null,
+  "status": "in_progress",
+  "scale": "small",
+  "rollbacks_count": 0,
+  "entries": [
+    {
+      "timestamp": "2026-04-17T12:58:00+03:00",
+      "phase": "0",
+      "agent": "feature-intake",
+      "action": "start",
+      "details": "Запуск классификации задачи: баг в _send_text_file — заголовок приклеивается после разбивки на чанки, превышая лимит Telegram",
+      "output_file": "agent-outputs/00-feature-intake.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 43319
+    },
+    {
+      "timestamp": "2026-04-17T12:59:00+03:00",
+      "phase": "0",
+      "agent": "feature-intake",
+      "action": "complete",
+      "details": "Классификация завершена: scale=small, задача — фикс переполнения первого чанка при отправке текстового файла",
+      "output_file": "agent-outputs/00-feature-intake.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 43319
+    },
+    {
+      "timestamp": "2026-04-17T12:59:01+03:00",
+      "phase": "1",
+      "agent": "feature-impact-analysis",
+      "action": "start",
+      "details": "Запуск анализа влияния: координатор + 3 суб-агента (код, спеки, тесты)",
+      "output_file": "agent-outputs/01-impact-analysis.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 136782
+    },
+    {
+      "timestamp": "2026-04-17T13:02:00+03:00",
+      "phase": "1",
+      "agent": "feature-impact-analysis",
+      "action": "complete",
+      "details": "Анализ влияния завершён: 2 файла кода, 4 файла тестов, 2 зоны среднего риска (split_entities с уменьшенным лимитом, UTF-16 расчёт), 4 новых теста нужны",
+      "output_file": "agent-outputs/01-impact-analysis.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 136782
+    },
+    {
+      "timestamp": "2026-04-17T13:02:01+03:00",
+      "phase": "2",
+      "agent": "feature-spec",
+      "action": "start",
+      "details": "Запуск спецификации изменений",
+      "output_file": "agent-outputs/02-feature-spec.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 100044
+    },
+    {
+      "timestamp": "2026-04-17T13:10:00+03:00",
+      "phase": "2",
+      "agent": "feature-spec",
+      "action": "complete",
+      "details": "Спецификация завершена: 4 изменения (file_sender.py, bot.py, test_file_sender.py, test_bot.py). Подход — first_chunk_reserve параметр.",
+      "output_file": "agent-outputs/02-feature-spec.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 100044
+    },
+    {
+      "timestamp": "2026-04-17T13:10:01+03:00",
+      "phase": "3",
+      "agent": "feature-test-plan",
+      "action": "start",
+      "details": "Запуск планирования тестов",
+      "output_file": "agent-outputs/03-test-plan.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 72896
+    },
+    {
+      "timestamp": "2026-04-17T13:12:00+03:00",
+      "phase": "3",
+      "agent": "feature-test-plan",
+      "action": "complete",
+      "details": "Тест-план: 5 новых юнит-тестов, 0 обновлений, 0 удалений",
+      "output_file": "agent-outputs/03-test-plan.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 72896
+    },
+    {
+      "timestamp": "2026-04-17T13:12:01+03:00",
+      "phase": "3.5",
+      "agent": "feature-test-plan-review",
+      "action": "start",
+      "details": "Верификация тест-плана",
+      "output_file": "agent-outputs/03-5-test-plan-review.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 82492
+    },
+    {
+      "timestamp": "2026-04-17T13:14:00+03:00",
+      "phase": "3.5",
+      "agent": "feature-test-plan-review",
+      "action": "complete",
+      "details": "Тест-план одобрен (verdict=approved). 1 warning: тест с длинным именем файла частично дублирует базовый контрактный тест.",
+      "output_file": "agent-outputs/03-5-test-plan-review.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 82492
+    },
+    {
+      "timestamp": "2026-04-17T13:14:01+03:00",
+      "phase": "4",
+      "agent": "feature-implement",
+      "action": "start",
+      "details": "Запуск реализации: 2 продакшен-файла + 2 тестовых файла",
+      "output_file": "agent-outputs/04-implementation.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 203885
+    },
+    {
+      "timestamp": "2026-04-17T13:18:00+03:00",
+      "phase": "4",
+      "agent": "feature-implement",
+      "action": "complete",
+      "details": "Реализация завершена: 4 файла изменены, 5 тестов добавлены, 624 теста проходят, 0 fix cycles",
+      "output_file": "agent-outputs/04-implementation.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 203885
+    },
+    {
+      "timestamp": "2026-04-17T13:18:01+03:00",
+      "phase": "5",
+      "agent": "feature-unit-test",
+      "action": "start",
+      "details": "Запуск верификационного прогона юнит-тестов",
+      "output_file": "agent-outputs/05-unit-test.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 42946
+    },
+    {
+      "timestamp": "2026-04-17T13:19:00+03:00",
+      "phase": "5",
+      "agent": "feature-unit-test",
+      "action": "complete",
+      "details": "624 тестов пройдены, 0 падений, 0 fix cycles, откат не нужен",
+      "output_file": "agent-outputs/05-unit-test.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 42946
+    },
+    {
+      "timestamp": "2026-04-17T13:19:01+03:00",
+      "phase": "8",
+      "agent": "feature-review",
+      "action": "start",
+      "details": "Запуск ревью (5 проходов): качество, безопасность, архитектура, соответствие спеке, регрессия. Фазы 6-7 пропущены (scale=small)",
+      "output_file": "agent-outputs/08-review.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 157548
+    },
+    {
+      "timestamp": "2026-04-17T13:22:00+03:00",
+      "phase": "8",
+      "agent": "feature-review",
+      "action": "complete",
+      "details": "Ревью чистое: все 5 проходов (quality, security, architecture, spec_compliance, regression) без замечаний. 0 fix cycles.",
+      "output_file": "agent-outputs/08-review.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 157548
+    },
+    {
+      "timestamp": "2026-04-17T13:22:01+03:00",
+      "phase": "9",
+      "agent": "feature-docs",
+      "action": "start",
+      "details": "Запуск документации: changelog + docs-index (scale=small, без ADR/BRD/CLAUDE.md)",
+      "output_file": "agent-outputs/09-docs.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 74924
+    },
+    {
+      "timestamp": "2026-04-17T13:24:00+03:00",
+      "phase": "9",
+      "agent": "feature-docs",
+      "action": "complete",
+      "details": "Документация: changelog создан, docs-index обновлён. ADR/BRD/CLAUDE.md пропущены (scale=small).",
+      "output_file": "agent-outputs/09-docs.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 74924
+    },
+    {
+      "timestamp": "2026-04-17T13:24:01+03:00",
+      "phase": "10",
+      "agent": "feature-finalizer",
+      "action": "start",
+      "details": "Финальная проверка, structural-validator, коммит",
+      "output_file": "agent-outputs/10-finalizer.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 0
+    }
+  ]
+}

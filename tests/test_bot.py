@@ -1673,6 +1673,65 @@ class TestProcessFileMarkers:
         _setup_application.bot.send_document.assert_not_called()
 
 
+# --- Тесты _send_text_file (контракт передачи резерва в file_sender) ---
+
+
+class TestSendTextFile:
+    """Тесты контракта между _send_text_file (bot.py) и render_file_for_telegram (file_sender)."""
+
+    @pytest.mark.asyncio()
+    @patch.object(file_sender, "convert_entities", return_value=[])
+    @patch.object(file_sender, "render_file_for_telegram")
+    @patch.object(file_sender, "read_file_content")
+    async def test_passes_header_reserve(
+        self,
+        mock_read: MagicMock,
+        mock_render: MagicMock,
+        mock_convert: MagicMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """render_file_for_telegram вызывается с first_chunk_reserve, равным UTF-16 длине заголовка."""
+        mock_read.return_value = ("file content", None)
+        mock_render.return_value = [("rendered text", [])]
+
+        filename = "report.md"
+        header = FILE_CONTENT_HEADER_TEMPLATE.format(filename=filename)
+        expected_reserve = len(header.encode("utf-16-le")) // 2
+
+        await _send_text_file(TEST_CHAT_ID, f"/path/to/{filename}")
+
+        mock_render.assert_called_once_with(
+            "file content", first_chunk_reserve=expected_reserve,
+        )
+
+    @pytest.mark.asyncio()
+    @patch.object(file_sender, "convert_entities", return_value=[])
+    @patch.object(file_sender, "render_file_for_telegram")
+    @patch.object(file_sender, "read_file_content")
+    async def test_long_filename_passes_correct_reserve(
+        self,
+        mock_read: MagicMock,
+        mock_render: MagicMock,
+        mock_convert: MagicMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Длинное имя файла (200 символов) — резерв корректно учитывает все части заголовка."""
+        mock_read.return_value = ("file content", None)
+        mock_render.return_value = [("rendered text", [])]
+
+        # Имя файла из 200 ASCII-символов
+        long_filename = "a" * 200
+        header = FILE_CONTENT_HEADER_TEMPLATE.format(filename=long_filename)
+        # Заголовок: emoji U+1F4CE (2 UTF-16 units) + пробел (1) + filename (200) + \n\n (2) = 205
+        expected_reserve = len(header.encode("utf-16-le")) // 2
+
+        await _send_text_file(TEST_CHAT_ID, f"/path/to/{long_filename}")
+
+        actual_reserve = mock_render.call_args.kwargs["first_chunk_reserve"]
+        assert actual_reserve == expected_reserve
+        assert actual_reserve == 205
+
+
 # --- Тесты session_id_callback (раннее обновление привязок) ---
 
 

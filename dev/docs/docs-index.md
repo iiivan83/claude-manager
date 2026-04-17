@@ -14,6 +14,7 @@
   - [changelog/12.04_19.05-md-file-delivery.md](changelog/12.04_19.05-md-file-delivery.md) — 12.04.2026: отправка файлов из ответа Claude пользователю через маркеры `[SEND_FILE:path]` и telegramify-markdown
   - [changelog/12.04_21.17-session-id-callback.md](changelog/12.04_21.17-session-id-callback.md) — 12.04.2026: раннее уведомление о смене session_id через callback — закрытие гонки watcher/handler при создании новых сессий
   - [changelog/13.04_12.08-cross-project-session-race-condition.md](changelog/13.04_12.08-cross-project-session-race-condition.md) — 13.04.2026: исправление гонки при переключении проектов — глобальная пауза watcher, кросс-проверка записей реестра, защита от лог-спама
+  - [changelog/17.04_12.58-feature-pipeline-file-send-header-overflow-fix.md](changelog/17.04_12.58-feature-pipeline-file-send-header-overflow-fix.md) — 17.04.2026: фикс переполнения первого чанка при отправке текстового файла — резервирование места под заголовок в `render_file_for_telegram`
 - **claude-md-updates/** — лог изменений CLAUDE.md
   - [claude-md-updates/10.04_22.19-file-delivery-rule.md](claude-md-updates/10.04_22.19-file-delivery-rule.md) — 10.04.2026: глобальное правило File Delivery Rule в `~/.claude/CLAUDE.md` — маркеры `[SEND_FILE:path]` для доставки файлов через бот
 

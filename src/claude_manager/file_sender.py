@@ -118,14 +118,33 @@ def read_file_content(file_path: str) -> tuple[str, str | None]:
     return (content, None)
 
 
-def render_file_for_telegram(content: str) -> list[tuple[str, list]]:
-    """Рендерит текстовое содержимое через telegramify-markdown и разбивает на чанки."""
+def render_file_for_telegram(
+    content: str, first_chunk_reserve: int = 0,
+) -> list[tuple[str, list]]:
+    """Рендерит текстовое содержимое через telegramify-markdown и разбивает на чанки.
+
+    first_chunk_reserve — количество UTF-16 code units, которое нужно зарезервировать
+    под заголовок перед первым чанком. Уменьшает лимит для ВСЕХ чанков (split_entities
+    не поддерживает отдельный лимит для первого). Потеря места в чанках 2+ минимальна.
+    """
     if not content:
         return [(EMPTY_FILE_PLACEHOLDER, [])]
 
+    effective_limit = TELEGRAM_MESSAGE_LIMIT
+    if first_chunk_reserve > 0:
+        if first_chunk_reserve >= TELEGRAM_MESSAGE_LIMIT:
+            logger.warning(
+                "first_chunk_reserve (%d) >= TELEGRAM_MESSAGE_LIMIT (%d), "
+                "используем fallback (половина лимита)",
+                first_chunk_reserve, TELEGRAM_MESSAGE_LIMIT,
+            )
+            effective_limit = TELEGRAM_MESSAGE_LIMIT // 2
+        else:
+            effective_limit = TELEGRAM_MESSAGE_LIMIT - first_chunk_reserve
+
     text, entities = telegramify_markdown.convert(content)
     chunks = telegramify_markdown.split_entities(
-        text, entities, TELEGRAM_MESSAGE_LIMIT,
+        text, entities, effective_limit,
     )
     return chunks
 

@@ -1,0 +1,114 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-17T13:02:00Z",
+  "result": {
+    "affected_files": [
+      {
+        "path": "src/claude_manager/bot.py",
+        "type": "modify",
+        "reason": "Функция _send_text_file (строки 283-307): заголовок FILE_CONTENT_HEADER_TEMPLATE приклеивается к первому чанку после разбивки. Нужно учитывать длину заголовка при вызове render_file_for_telegram или уменьшить лимит первого чанка."
+      },
+      {
+        "path": "src/claude_manager/file_sender.py",
+        "type": "modify",
+        "reason": "Функция render_file_for_telegram (строка 121): нужен опциональный параметр для уменьшения лимита первого чанка (header_reserve). Передаётся в split_entities как уменьшенный лимит для первого чанка. Константа TELEGRAM_MESSAGE_LIMIT (строка 48) остаётся без изменений — она используется как дефолт."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "type": "modify",
+        "reason": "Тесты класса TestSendResponseFileMarkers и TestSendWatcherMessageFileMarkers мокают _send_text_file целиком — не ломаются. Но нужен новый тест, проверяющий что первый чанк с заголовком не превышает 4096."
+      },
+      {
+        "path": "tests/test_file_sender.py",
+        "type": "modify",
+        "reason": "Класс TestRenderFileForTelegram: нужен тест с параметром header_reserve, проверяющий что первый чанк короче на величину резерва."
+      }
+    ],
+    "affected_functions": [
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_send_text_file",
+        "impact": "Основное место бага. Вызывает file_sender.render_file_for_telegram(content) без указания длины заголовка. Затем приклеивает заголовок к первому чанку (строки 296-304), увеличивая его длину сверх 4096. Нужно передавать длину заголовка в render_file_for_telegram, чтобы первый чанк был короче."
+      },
+      {
+        "file": "src/claude_manager/file_sender.py",
+        "function": "render_file_for_telegram",
+        "impact": "Вызывает telegramify_markdown.split_entities(text, entities, TELEGRAM_MESSAGE_LIMIT). Нужен опциональный параметр first_chunk_limit (или header_reserve), чтобы первый чанк разбивался по уменьшенному лимиту. Альтернатива — два вызова split_entities с разными лимитами, но это сложнее."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_shift_entity",
+        "impact": "Чистая утилита (строки 275-280), сдвигает offset entity. Логика не меняется — она уже корректно сдвигает на длину заголовка. Но если первый чанк станет короче, entity будут правильно распределены по чанкам самой split_entities — сдвиг по-прежнему нужен."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "_process_file_markers",
+        "impact": "Вызывает _send_text_file (строка 329). Логика маршрутизации не меняется — она только определяет тип файла и делегирует. Не затронута."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "function": "send_response",
+        "impact": "Вызывает _process_file_markers (строка 519). Не затронута напрямую — маркеры обрабатываются до message_splitter.prepare_message. Но важно: send_response тоже добавляет заголовок к первой части (строка 528: parts[0] = header + parts[0]). Это другой заголовок (номер сессии), и он применяется к HTML-частям через message_splitter, не к file chunks. Пересечения нет."
+      }
+    ],
+    "affected_tests": [
+      {
+        "path": "tests/test_bot.py",
+        "action": "keep",
+        "reason": "Класс TestSendResponseFileMarkers (5 тестов, строки 1472-1605): мокают _send_text_file целиком через @patch. Не ломаются — тестируют маршрутизацию маркеров, а не внутреннюю логику _send_text_file."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "action": "keep",
+        "reason": "Класс TestSendWatcherMessageFileMarkers (2 теста, строки 1611-1654): аналогично мокают _send_text_file. Не ломаются."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "action": "keep",
+        "reason": "Класс TestProcessFileMarkers (1 тест, строки 1660-1673): тестирует текст без маркеров. Не затронут."
+      },
+      {
+        "path": "tests/test_file_sender.py",
+        "action": "update",
+        "reason": "Класс TestRenderFileForTelegram (3 теста, строки 209-236): test_long_content_splits проверяет что чанки не превышают TELEGRAM_MESSAGE_LIMIT, но не учитывает header_reserve. Если сигнатура render_file_for_telegram меняется (добавляется опциональный параметр) — существующие тесты продолжат работать (дефолт без резерва). Но нужен новый тест с резервом."
+      },
+      {
+        "path": "tests/integration/test_message_path.py",
+        "action": "keep",
+        "reason": "Класс TestMessagePathWithFileMarkers (1 тест, строки 323-346): тестирует strip/extract маркеров и прохождение через message_splitter. Не связан с _send_text_file — не затронут."
+      }
+    ],
+    "risk_zones": [
+      {
+        "area": "Поведение telegramify_markdown.split_entities с уменьшенным лимитом",
+        "risk_level": "medium",
+        "reason": "split_entities — внешняя библиотека. Нужно проверить, что она корректно работает с лимитом меньше 4096 (например, 4050). Если она имеет внутренний минимальный лимит или округление — чанк может всё равно превысить заданный размер. Контракт с внешней системой — проверить эмпирически."
+      },
+      {
+        "area": "Расчёт длины заголовка в UTF-16 code units vs символы",
+        "risk_level": "medium",
+        "reason": "TELEGRAM_MESSAGE_LIMIT считается в UTF-16 code units (строка 48 file_sender.py), а заголовок FILE_CONTENT_HEADER_TEMPLATE содержит emoji скрепки (U+1F4CE) — это 2 UTF-16 code units. Резерв должен считаться тоже в UTF-16 units, иначе при длинных именах файлов с Unicode-символами разница может привести к переполнению."
+      },
+      {
+        "area": "message_splitter.py — дублирование константы TELEGRAM_MESSAGE_LIMIT",
+        "risk_level": "low",
+        "reason": "Константа TELEGRAM_MESSAGE_LIMIT = 4096 определена в двух модулях: file_sender.py (строка 48) и message_splitter.py (строка 15). Они используются в разных контекстах (entities vs HTML), но если в будущем лимит изменится — нужно менять в двух местах. Текущий фикс не затрагивает message_splitter."
+      },
+      {
+        "area": "Длинные имена файлов",
+        "risk_level": "low",
+        "reason": "Заголовок содержит имя файла: emoji (4 bytes UTF-8 / 2 UTF-16 units) + пробел + filename + два переноса строки. При очень длинном имени файла (200+ символов) заголовок может занять значительную часть лимита. Safety margin должен учитывать максимально реалистичную длину имени файла."
+      }
+    ],
+    "spec_conflicts": [
+      "Конфликтов со спецификациями не обнаружено. В dev/docs/specs/ нет отдельной спецификации для file_sender или _send_text_file. CLAUDE.md описывает file_sender как 'утилита без состояния' и маркеры [SEND_FILE:path] — описание поведения не противоречит планируемым изменениям. Добавление опционального параметра в render_file_for_telegram совместимо с описанием в CLAUDE.md: 'Текстовые файлы рендерятся через telegramify-markdown'."
+    ],
+    "new_tests_needed": [
+      "test_send_text_file_header_plus_content_within_limit (test_bot.py) — проверить, что _send_text_file с длинным контентом отправляет первый чанк (заголовок + текст) не длиннее 4096 UTF-16 units. Мокнуть file_sender.render_file_for_telegram чтобы вернуть один чанок длиной ровно (4096 - len_header), убедиться что после приклеивания заголовка итого ровно 4096.",
+      "test_render_file_for_telegram_with_header_reserve (test_file_sender.py) — вызвать render_file_for_telegram с header_reserve=100, убедиться что первый чанк не длиннее 4096-100=3996 UTF-16 units, а остальные чанки — стандартные 4096.",
+      "test_render_file_for_telegram_without_reserve_backward_compatible (test_file_sender.py) — вызвать render_file_for_telegram без header_reserve (дефолтное значение), убедиться что поведение идентично текущему (все чанки до 4096).",
+      "test_send_text_file_long_filename_header_reserve (test_bot.py) — имя файла 200 символов, проверить что резерв корректно рассчитывается и первый чанк не переполняется."
+    ]
+  }
+}

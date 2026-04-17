@@ -287,19 +287,24 @@ async def _send_text_file(chat_id: int, file_path: str) -> None:
         await _send_telegram_message(chat_id, error, parse_mode=None)
         return
 
-    chunks = file_sender.render_file_for_telegram(content)
     filename = Path(file_path).name
+    header = FILE_CONTENT_HEADER_TEMPLATE.format(filename=filename)
+    # Длина заголовка в UTF-16 code units — резерв, чтобы первый чанк + заголовок
+    # не превысил лимит Telegram (4096 UTF-16 code units)
+    header_utf16_length = len(header.encode("utf-16-le")) // 2
+
+    chunks = file_sender.render_file_for_telegram(
+        content, first_chunk_reserve=header_utf16_length,
+    )
 
     for index, (text, entities) in enumerate(chunks):
         ptb_entities = file_sender.convert_entities(entities)
         # Заголовок с именем файла — только перед первым чанком
         if index == 0:
-            header = FILE_CONTENT_HEADER_TEMPLATE.format(filename=filename)
             text = header + text
             # Сдвигаем offset всех entities на длину заголовка (в UTF-16 code units)
-            header_utf16_len = len(header.encode("utf-16-le")) // 2
             ptb_entities = [
-                _shift_entity(entity, header_utf16_len)
+                _shift_entity(entity, header_utf16_length)
                 for entity in ptb_entities
             ]
         await _application.bot.send_message(

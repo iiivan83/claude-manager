@@ -1,0 +1,51 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-17T13:10:00Z",
+  "result": {
+    "approach_summary": "Передаём длину заголовка (в UTF-16 code units) из bot.py в file_sender.render_file_for_telegram через новый опциональный параметр first_chunk_reserve. Внутри render_file_for_telegram вычитаем резерв из TELEGRAM_MESSAGE_LIMIT перед вызовом split_entities — все чанки становятся чуть короче, зато первый гарантированно помещается с заголовком. Потеря места в чанках 2+ минимальна (≈2-3%), зато решение простое и надёжное — не нужно менять логику split_entities или делать двойной вызов.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/file_sender.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "render_file_for_telegram(content: str) принимает только контент. Вызывает split_entities с жёстким лимитом TELEGRAM_MESSAGE_LIMIT (4096). Не знает про заголовок, который добавится к первому чанку позже в bot.py.",
+          "becomes": "render_file_for_telegram(content: str, first_chunk_reserve: int = 0) — новый опциональный параметр first_chunk_reserve (в UTF-16 code units). Вычисляет effective_limit = TELEGRAM_MESSAGE_LIMIT - first_chunk_reserve и передаёт его в split_entities вместо TELEGRAM_MESSAGE_LIMIT. Если first_chunk_reserve <= 0 — поведение идентично текущему (backward-compatible). Добавить валидацию: если first_chunk_reserve >= TELEGRAM_MESSAGE_LIMIT — логировать warning и использовать TELEGRAM_MESSAGE_LIMIT // 2 как fallback (защита от абсурдных значений).",
+          "reason": "split_entities из telegramify_markdown принимает единый лимит для всех чанков — нет возможности задать отдельный лимит для первого. Уменьшение лимита для ВСЕХ чанков — простейшее решение. Потеря ~100 UTF-16 units в чанках 2+ при типичном имени файла несущественна (менее 3% от лимита)."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "В _send_text_file (строки 290-304): сначала вызывает render_file_for_telegram(content) без резерва, получает чанки. Потом для первого чанка формирует заголовок FILE_CONTENT_HEADER_TEMPLATE.format(filename=filename), приклеивает его к тексту и сдвигает entities. Итоговый первый чанк может превысить 4096 UTF-16 units.",
+          "becomes": "В _send_text_file: сначала формирует заголовок и считает его длину в UTF-16 code units (header_utf16_length). Затем вызывает render_file_for_telegram(content, first_chunk_reserve=header_utf16_length) — передаёт резерв. Остальная логика (приклеивание заголовка, сдвиг entities) не меняется — она по-прежнему нужна, потому что split_entities ничего не знает про заголовок. Разница: теперь первый чанк УЖЕ учитывает место под заголовок. Порядок действий в изменённой функции: (1) прочитать файл, (2) сформировать заголовок и вычислить его UTF-16 длину, (3) вызвать render_file_for_telegram с резервом, (4) цикл по чанкам — приклеить заголовок к первому, сдвинуть entities.",
+          "reason": "Корень бага: заголовок добавляется ПОСЛЕ разбивки, но место под него не резервировалось. Теперь место резервируется ДО разбивки через параметр first_chunk_reserve."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "tests/test_file_sender.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Класс TestRenderFileForTelegram: 3 теста. Нет тестов с параметром first_chunk_reserve.",
+          "becomes": "Добавить 2 новых теста в TestRenderFileForTelegram: (1) test_first_chunk_reserve_reduces_first_chunk — вызвать render_file_for_telegram с длинным контентом и first_chunk_reserve=200, проверить что все чанки не превышают (TELEGRAM_MESSAGE_LIMIT - 200) UTF-16 units. (2) test_first_chunk_reserve_zero_backward_compatible — вызвать с first_chunk_reserve=0, проверить что поведение идентично вызову без параметра (все чанки до 4096). Существующие 3 теста не меняются — дефолтное значение 0 гарантирует обратную совместимость.",
+          "reason": "Покрытие нового параметра: проверяем что резерв реально уменьшает лимит чанков, и что дефолтное значение 0 не ломает старое поведение."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "tests/test_bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Нет теста, который проверяет что первый чанк с заголовком не превышает 4096.",
+          "becomes": "Добавить 2 новых теста: (1) test_send_text_file_first_chunk_with_header_within_limit — мокнуть file_sender.render_file_for_telegram, проверить что он вызывается с first_chunk_reserve равным длине заголовка в UTF-16 units. Это assertion на контракт: bot.py корректно передаёт длину заголовка в file_sender. (2) test_send_text_file_long_filename_passes_correct_reserve — имя файла 200 символов, проверить что first_chunk_reserve корректно рассчитан для длинного заголовка (emoji 2 UTF-16 units + пробел 1 + filename 200 + два переноса 2 = 205).",
+          "reason": "Проверяем контракт между bot.py и file_sender.py: bot.py должен передавать длину заголовка в UTF-16 code units как first_chunk_reserve. Без этих тестов регрессия может вернуть баг (например, если кто-то уберёт передачу резерва)."
+        },
+        "full_spec": null
+      }
+    ]
+  }
+}

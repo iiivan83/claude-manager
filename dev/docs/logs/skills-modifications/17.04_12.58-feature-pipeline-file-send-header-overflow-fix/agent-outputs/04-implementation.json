@@ -1,0 +1,38 @@
+{
+  "agent": "feature-implement",
+  "status": "success",
+  "timestamp": "2026-04-17T13:35:00Z",
+  "result": {
+    "changes_completed": [
+      {
+        "file": "src/claude_manager/file_sender.py",
+        "type": "modify",
+        "status": "done",
+        "description": "render_file_for_telegram: добавлен параметр first_chunk_reserve: int = 0. Вычисляет effective_limit = TELEGRAM_MESSAGE_LIMIT - first_chunk_reserve. При абсурдном значении (>= TELEGRAM_MESSAGE_LIMIT) — fallback на TELEGRAM_MESSAGE_LIMIT // 2 с warning в лог."
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "type": "modify",
+        "status": "done",
+        "description": "_send_text_file: заголовок формируется ДО вызова render_file_for_telegram. UTF-16 длина заголовка передаётся как first_chunk_reserve. Переменная header_utf16_len переименована в header_utf16_length для ясности."
+      },
+      {
+        "file": "tests/test_file_sender.py",
+        "type": "modify",
+        "status": "done",
+        "description": "Добавлены 3 теста в TestRenderFileForTelegram: (1) test_first_chunk_reserve_reduces_effective_limit — резерв 200 уменьшает лимит всех чанков. (2) test_first_chunk_reserve_zero_is_backward_compatible — резерв 0 идентичен вызову без параметра. (3) test_first_chunk_reserve_absurd_value_uses_fallback — резерв >= TELEGRAM_MESSAGE_LIMIT использует fallback."
+      },
+      {
+        "file": "tests/test_bot.py",
+        "type": "modify",
+        "status": "done",
+        "description": "Добавлен класс TestSendTextFile с 2 тестами: (1) test_passes_header_reserve — render_file_for_telegram вызывается с first_chunk_reserve, равным UTF-16 длине заголовка. (2) test_long_filename_passes_correct_reserve — имя файла 200 символов, резерв = 205 (emoji 2 + пробел 1 + filename 200 + два переноса 2)."
+      }
+    ],
+    "changes_failed": [],
+    "unit_tests_passed": true,
+    "total_tests": 624,
+    "new_tests_added": 5,
+    "fix_cycles_used": 0
+  }
+}

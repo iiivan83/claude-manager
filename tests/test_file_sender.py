@@ -235,6 +235,44 @@ class TestRenderFileForTelegram:
         chunks = render_file_for_telegram("")
         assert chunks == [(EMPTY_FILE_PLACEHOLDER, [])]
 
+    def test_first_chunk_reserve_reduces_effective_limit(self) -> None:
+        """Резерв уменьшает допустимый размер каждого чанка на указанное значение."""
+        reserve = 200
+        long_content = "\n".join(
+            f"Line {i}: some text here" for i in range(500)
+        )
+        chunks = render_file_for_telegram(long_content, first_chunk_reserve=reserve)
+        assert len(chunks) > 1
+        reduced_limit = TELEGRAM_MESSAGE_LIMIT - reserve
+        for text, _ in chunks:
+            utf16_length = len(text.encode("utf-16-le")) // 2
+            assert utf16_length <= reduced_limit
+
+    def test_first_chunk_reserve_zero_is_backward_compatible(self) -> None:
+        """Резерв 0 даёт тот же результат, что и вызов без параметра."""
+        long_content = "\n".join(
+            f"Line {i}: some text here" for i in range(500)
+        )
+        chunks_default = render_file_for_telegram(long_content)
+        chunks_zero = render_file_for_telegram(long_content, first_chunk_reserve=0)
+        assert len(chunks_default) == len(chunks_zero)
+        for (text_default, _), (text_zero, _) in zip(chunks_default, chunks_zero):
+            assert len(text_default) == len(text_zero)
+
+    def test_first_chunk_reserve_absurd_value_uses_fallback(self) -> None:
+        """Резерв >= лимита Telegram — fallback на половину лимита, без падения."""
+        long_content = "\n".join(
+            f"Line {i}: some text here" for i in range(500)
+        )
+        fallback_limit = TELEGRAM_MESSAGE_LIMIT // 2
+        chunks = render_file_for_telegram(
+            long_content, first_chunk_reserve=TELEGRAM_MESSAGE_LIMIT,
+        )
+        assert len(chunks) >= 1
+        for text, _ in chunks:
+            utf16_length = len(text.encode("utf-16-le")) // 2
+            assert utf16_length <= fallback_limit
+
 
 # --- Тесты convert_entities ---
 
