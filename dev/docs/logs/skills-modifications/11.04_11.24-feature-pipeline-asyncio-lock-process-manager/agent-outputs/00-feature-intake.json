@@ -1,0 +1,22 @@
+{
+  "agent": "feature-intake",
+  "status": "success",
+  "timestamp": "2026-04-11T11:24:00+03:00",
+  "result": {
+    "task_title": "asyncio.Lock для _busy_flags в process_manager",
+    "task_description": "Добавить asyncio.Lock в process_manager.py для атомарной проверки и установки _busy_flags. Сейчас _validate_process_ready() проверяет флаг занятости, а _prepare_for_send() устанавливает его — между ними нет гарантии атомарности. При concurrent_updates=256 и смене session_id через update_session_id() возникает реальная гонка: два запроса могут одновременно пройти проверку и запустить параллельные retry-циклы.",
+    "goal": "Устранить race condition в _busy_flags: обернуть проверку и установку флага занятости в единый атомарный блок через asyncio.Lock",
+    "expected_result": "Функция send_message атомарно проверяет и устанавливает busy-флаг — два одновременных запроса к одной сессии не могут оба пройти проверку. update_session_id тоже защищён тем же Lock. Существующие тесты проходят, новые тесты покрывают конкурентный сценарий.",
+    "constraints": [
+      "Только файл process_manager.py — не трогать другие модули",
+      "Не менять публичный API (сигнатуры функций)",
+      "Не менять поведение для пользователя",
+      "asyncio.Lock, не threading.Lock — бот полностью async",
+      "Lock должен покрывать: send_message (check+set busy), stop_process (clear busy), update_session_id (move busy)"
+    ],
+    "scale": "small",
+    "scale_reasoning": "Изолированное изменение в одном файле (process_manager.py). Не меняет интерфейсы между модулями. Затрагивает 1-2 файла (модуль + тесты). Не требует новых абстракций — asyncio.Lock стандартный примитив.",
+    "skipped_phases": ["6", "7"],
+    "pipeline_log_dir": "dev/docs/logs/skills-modifications/11.04_11.24-feature-pipeline-asyncio-lock-process-manager"
+  }
+}

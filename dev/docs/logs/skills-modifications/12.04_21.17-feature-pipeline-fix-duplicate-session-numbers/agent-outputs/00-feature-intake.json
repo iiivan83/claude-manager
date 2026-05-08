@@ -1,0 +1,22 @@
+{
+  "agent": "feature-intake",
+  "status": "success",
+  "timestamp": "2026-04-12T21:17:00+03:00",
+  "result": {
+    "task_title": "Раннее уведомление о смене session_id (закрытие race condition watcher/handler)",
+    "task_description": "Из двух задач root-cause отчёта задача 2 (очистка дубликатов _remove_duplicate_entries) уже реализована и вызывается в load_registry(). Остаётся задача 1: добавить параметр session_id_callback в process_manager.send_message() и _process_events(), чтобы при обнаружении нового session_id в потоке событий Claude бот мгновенно переносил паузу watcher с временного ID на реальный UUID и обновлял session_manager и daily_session_registry. Это закрывает окно гонки, когда watcher видит файл сессии на диске раньше, чем бот обновляет привязки.",
+    "goal": "Устранить race condition между session_watcher и обработчиком сообщений, из-за которого один UUID регистрируется под двумя дневными номерами",
+    "expected_result": "При создании новой сессии watcher не создаёт дубликат номера, потому что паузу переносят на реальный UUID мгновенно при первом событии от Claude, а не после завершения всего потока",
+    "constraints": [
+      "Задача 2 (_remove_duplicate_entries) уже реализована — повторно её делать НЕ нужно",
+      "Не нарушать слоёную архитектуру: callback передаётся сверху (bot.py) вниз (process_manager), а не наоборот",
+      "session_id_callback — опциональный параметр (None по умолчанию), чтобы не ломать существующие вызовы",
+      "Callback должен быть async (Callable[[str, str], Awaitable[None]]) — принимает old_session_id и new_session_id",
+      "Обновление документации (CLAUDE.md, BRD) — делегировано оркестратору, не входит в scope кодовой задачи"
+    ],
+    "scale": "medium",
+    "scale_reasoning": "Задача затрагивает 5 файлов (process_manager.py, bot.py, session_watcher.py, session_manager.py, daily_session_registry.py). Изменяется публичный API send_message() и внутренний API _process_events() — добавляется новый параметр. Затрагивает взаимодействие между компонентами: bot.py должен передать callback, который координирует три модуля (session_watcher, session_manager, daily_session_registry). Потребуются новые юнит-тесты для callback-логики и обновление существующих тестов send_message/process_events. Есть риск регрессии в координации watcher/handler. Всё это соответствует критериям medium: 3-10 файлов, изменение API модуля, взаимодействие между компонентами.",
+    "skipped_phases": [],
+    "pipeline_log_dir": "dev/docs/logs/skills-modifications/12.04_21.17-feature-pipeline-fix-duplicate-session-numbers/"
+  }
+}

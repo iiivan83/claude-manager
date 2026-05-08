@@ -1,0 +1,29 @@
+{
+  "agent": "feature-docs",
+  "status": "success",
+  "timestamp": "2026-04-12T23:10:00+03:00",
+  "result": {
+    "documents_created": [
+      {
+        "type": "changelog",
+        "path": "dev/docs/changelog/12.04_21.17-session-id-callback.md",
+        "action": "created"
+      },
+      {
+        "type": "docs_index",
+        "path": "dev/docs/docs-index.md",
+        "action": "updated"
+      }
+    ],
+    "documents_skipped": [
+      {
+        "type": "claude_md",
+        "reason": "Пункт «Единство идентификатора сессии (temp → real)» с описанием session_id_callback уже присутствует в разделе «Важные детали для разработки» (строка 202). Дублирование не требуется."
+      },
+      {
+        "type": "brd",
+        "reason": "Граничный случай «Задача раздвоилась на два номера» уже добавлен в CJM-07, раздел «Что может пойти не так» (строка 305). Описывает и причину (watcher видит файл раньше обновления привязок), и решение (callback в process_manager). Дублирование не требуется."
+      }
+    ]
+  }
+}

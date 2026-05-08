@@ -1,0 +1,86 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-11T03:25:00+03:00",
+  "result": {
+    "affected_files": [
+      {"path": "src/claude_manager/project_manager.py", "type": "modify", "reason": "_perform_switch: убрать stop_all_processes, заменить _reset_all_state_modules на переключение контекста. SwitchResult: заменить stopped_processes_count на background_processes_count"},
+      {"path": "src/claude_manager/session_watcher.py", "type": "modify", "reason": "Центральный модуль фичи. Мультипроектный мониторинг: _check_session решает — отправить callback или буферизировать. _get_sessions_to_monitor итерирует по всем проектам. reset_state переключает контекст вместо полной очистки. Новые функции: flush_buffer, add_background_project, remove_background_project. TTL-очистка буфера"},
+      {"path": "src/claude_manager/bot.py", "type": "modify", "reason": "handle_switch_project: после switch_project вызвать flush буфера. _format_switch_result_message: новые шаблоны. send_watcher_message: маркер буферизованных сообщений"},
+      {"path": "src/claude_manager/unread_buffer.py", "type": "create", "reason": "Новый модуль: буфер непрочитанных сообщений с TTL. Ответственности: add_message, flush, cleanup_expired, get_count. In-memory хранение, привязка к project_path"},
+      {"path": "src/claude_manager/process_manager.py", "type": "modify", "reason": "stop_all_processes перестаёт вызываться при переключении. Нужна привязка процессов к project_path для идентификации фоновых процессов"},
+      {"path": "src/claude_manager/claude_runner.py", "type": "modify", "reason": "start_process: принимать working_dir как параметр вместо чтения config.WORKING_DIR. Критично для ретраев фоновых процессов"},
+      {"path": "src/claude_manager/session_manager.py", "type": "modify", "reason": "reset_state: сохранять привязки старого проекта вместо полного стирания. Нужен мультипроектный реестр привязок"},
+      {"path": "src/claude_manager/daily_session_registry.py", "type": "modify", "reason": "reset_state: сохранять реестр старого проекта. Watcher использует register_session для нумерации фоновых сессий — нумерация должна быть per-project"},
+      {"path": "src/claude_manager/config.py", "type": "modify", "reason": "Новая константа UNREAD_BUFFER_TTL_HOURS = 3"},
+      {"path": "tests/test_unread_buffer.py", "type": "create", "reason": "Юнит-тесты нового модуля unread_buffer: add, flush, TTL, лимиты, пустой буфер"}
+    ],
+    "affected_functions": [
+      {"file": "src/claude_manager/project_manager.py", "function": "_perform_switch", "impact": "Убрать stop_all_processes, заменить на сохранение контекста старого проекта + переключение watcher в буферный режим"},
+      {"file": "src/claude_manager/project_manager.py", "function": "_reset_all_state_modules", "impact": "Переименовать в _switch_project_context. Вместо reset — save_context + load_context"},
+      {"file": "src/claude_manager/project_manager.py", "function": "switch_project", "impact": "SwitchResult.stopped_processes_count → background_processes_count. Добавить flush буфера при возврате"},
+      {"file": "src/claude_manager/project_manager.py", "function": "_rollback_switch", "impact": "Упрощается — нет перезапуска процессов, но нужен откат watcher из буферного режима"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "_check_session", "impact": "Решает: если проект сессии != текущий → буферизировать вместо callback"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "_get_sessions_to_monitor", "impact": "Мониторит сессии всех проектов (активный + фоновые), а не только config.WORKING_DIR"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "_poll_sessions", "impact": "Итерирует по нескольким проектам, передаёт project_path в _check_session"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "reset_state", "impact": "Не стирает данные, а переключает контекст. Сохраняет счётчики старого проекта"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "start", "impact": "Инициализация для мультипроектного мониторинга"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "pause_session", "impact": "Привязка к project_path для безопасности"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "resume_session", "impact": "Принимает project_path вместо чтения config.WORKING_DIR"},
+      {"file": "src/claude_manager/process_manager.py", "function": "stop_all_processes", "impact": "Перестаёт вызываться при переключении, остаётся для graceful shutdown"},
+      {"file": "src/claude_manager/process_manager.py", "function": "create_process", "impact": "Привязка к project_path для идентификации фоновых процессов"},
+      {"file": "src/claude_manager/process_manager.py", "function": "_restart_process", "impact": "Передавать project_path в claude_runner.start_process"},
+      {"file": "src/claude_manager/claude_runner.py", "function": "start_process", "impact": "Параметр working_dir вместо config.WORKING_DIR"},
+      {"file": "src/claude_manager/session_manager.py", "function": "reset_state", "impact": "Сохранение привязок вместо стирания"},
+      {"file": "src/claude_manager/daily_session_registry.py", "function": "reset_state", "impact": "Сохранение реестра старого проекта"},
+      {"file": "src/claude_manager/daily_session_registry.py", "function": "register_session", "impact": "Нумерация per-project при мультипроектном мониторинге"},
+      {"file": "src/claude_manager/bot.py", "function": "handle_switch_project", "impact": "Flush буфера после switch_project"},
+      {"file": "src/claude_manager/bot.py", "function": "_format_switch_result_message", "impact": "Новые шаблоны без stopped_processes_count"},
+      {"file": "src/claude_manager/bot.py", "function": "send_watcher_message", "impact": "Маркер буферизованных сообщений при flush"}
+    ],
+    "affected_tests": [
+      {"path": "tests/test_project_manager.py", "action": "update", "reason": "5 тестов: test_stops_all_processes, test_happy_path, test_resets_all_state_modules, test_rollback_on_reset_error, test_concurrent_switches_serialized — все завязаны на stop_all_processes и полный reset"},
+      {"path": "tests/test_session_watcher.py", "action": "update", "reason": "11 тестов: весь TestResetState (4 теста), TestDetectNewMessages (6 тестов привязаны к единственному WORKING_DIR), TestStart (1 тест)"},
+      {"path": "tests/integration/test_project_switching.py", "action": "update", "reason": "2 теста: test_switch_stops_running_processes (проверяет stopped_count==2), test_switch_between_two_projects (проверяет полный сброс)"},
+      {"path": "tests/e2e/test_project_switching.py", "action": "update", "reason": "2 теста: test_flow09 (ищет 'Остановлено процессов'), test_flow12 (ghost-messages после switch)"},
+      {"path": "tests/test_bot.py", "action": "update", "reason": "Тесты handle_switch_project — обновление шаблонов сообщений, добавление flush"},
+      {"path": "tests/test_main.py", "action": "keep", "reason": "Тесты запуска и блокировки не зависят от переключения проектов"},
+      {"path": "tests/e2e/test_session_flow.py", "action": "keep", "reason": "Работают внутри одного проекта"},
+      {"path": "tests/integration/test_session_lifecycle.py", "action": "keep", "reason": "Не зависят от переключения"},
+      {"path": "tests/integration/test_concurrent_access.py", "action": "keep", "reason": "Не затрагивают переключение"},
+      {"path": "tests/integration/test_watcher_handler_coordination.py", "action": "keep", "reason": "Механизм pause/resume сохраняется"}
+    ],
+    "risk_zones": [
+      {"area": "Дедупликация при flush буфера", "risk_level": "high", "reason": "Если watcher и flush используют разные счётчики, сообщения могут дублироваться. Нужен единый источник истины: _seen_message_counts отслеживает ВСЕ отправленные и буферизованные сообщения"},
+      {"area": "config.WORKING_DIR как глобальная точка привязки", "risk_level": "high", "reason": "Все модули читают config.WORKING_DIR. При мультипроектном режиме любой модуль, который читает эту переменную во время обработки фоновой сессии, получит неправильный путь. Особенно опасно в claude_runner.start_process (cwd) и session_reader"},
+      {"area": "Ретраи фоновых процессов", "risk_level": "high", "reason": "process_manager._restart_process вызывает claude_runner.start_process, который берёт cwd из config.WORKING_DIR. Если процесс фонового проекта делает ретрай, cwd будет указывать на текущий проект, а не на проект процесса"},
+      {"area": "Переполнение ресурсов", "risk_level": "medium", "reason": "5 проектов × 3 процесса = 15 процессов Claude одновременно. Нужен лимит на фоновые процессы или хотя бы warning"},
+      {"area": "Race condition при быстром переключении", "risk_level": "medium", "reason": "Быстрое A→B→A может вызвать гонку: flush буфера A ещё не завершился, а пользователь уже переключился обратно. _switch_lock защищает от параллельных switch, но flush может быть асинхронным"},
+      {"area": "daily_session_registry нумерация", "risk_level": "medium", "reason": "При мультипроектном мониторинге register_session из разных проектов может давать пересекающиеся номера. Нумерация должна быть per-project"}
+    ],
+    "spec_conflicts": [
+      "CLAUDE.md: 'останавливает все процессы Claude старого проекта' — прямой конфликт с фичей",
+      "BRD CJM-11: 'Остановка процессов Claude — вызывается process_manager.stop_all_processes()' — нужно переписать",
+      "project_manager_spec.md: алгоритм switch_project описывает stop_all_processes + reset_state",
+      "session_watcher_spec.md: watcher привязан к единственному config.WORKING_DIR",
+      "SwitchResult.stopped_processes_count теряет смысл",
+      "BRD CJM-11 сообщение 'Остановлено процессов: N' не соответствует новому поведению",
+      "process_manager_spec.md: stop_all_processes описан как часть переключения"
+    ],
+    "new_tests_needed": [
+      "Юнит: unread_buffer — add, flush, TTL, лимиты, пустой буфер, дедупликация",
+      "Юнит: project_manager — switch НЕ вызывает stop_all_processes",
+      "Юнит: project_manager — switch переводит watcher в режим буферизации",
+      "Юнит: session_watcher — мультипроектный мониторинг (активный + фоновые)",
+      "Юнит: session_watcher — _check_session буферизует для неактивного проекта",
+      "Юнит: session_watcher — flush_buffer доставляет все и очищает",
+      "Юнит: session_watcher — TTL очистка 3 часа",
+      "Интеграционный: полный цикл A→B→A с фоновыми процессами и flush буфера",
+      "Интеграционный: watcher + project_manager мониторят оба проекта",
+      "Интеграционный: TTL буфера — старые сообщения не доставляются",
+      "Интеграционный: конкурентный flush без дубликатов",
+      "E2E: переключение без 'Остановлено процессов'",
+      "E2E: буферизованные сообщения при возврате"
+    ]
+  }
+}

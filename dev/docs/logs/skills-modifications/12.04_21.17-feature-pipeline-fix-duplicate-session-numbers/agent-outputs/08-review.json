@@ -1,0 +1,54 @@
+{
+  "agent": "feature-review",
+  "status": "success",
+  "timestamp": "2026-04-12T23:10:00+03:00",
+  "result": {
+    "passes": {
+      "quality": {
+        "issues": [
+          {
+            "file": "src/claude_manager/process_manager.py",
+            "line": 244,
+            "severity": "info",
+            "description": "Тернарное выражение result_text if got_result else result_text всегда возвращает result_text — обе ветки идентичны. Это предсуществующий код, не введённый текущим изменением.",
+            "suggestion": "Заменить на просто text=result_text. Вне скоупа текущей фичи, но стоит отметить."
+          }
+        ],
+        "status": "clean"
+      },
+      "security": {
+        "issues": [],
+        "status": "clean"
+      },
+      "architecture": {
+        "issues": [],
+        "status": "clean"
+      },
+      "spec_compliance": {
+        "issues": [],
+        "status": "clean"
+      },
+      "regression": {
+        "issues": [],
+        "status": "clean"
+      }
+    },
+    "total_issues_found": 1,
+    "total_issues_fixed": 0,
+    "fix_cycles_used": 0,
+    "needs_rollback": false,
+    "review_summary": {
+      "quality": "Код чистый, следует стандартам проекта. Новые типы (SessionIdCallback), параметры и тесты соблюдают паттерны существующего кода. Функции в пределах 20 строк, именование понятное, docstrings присутствуют. Единственное замечание — предсуществующее тернарное выражение (info, не в скоупе).",
+      "security": "Никаких уязвимостей. Callback-механизм не создаёт новых векторов атаки. Секреты не зашиты, пользовательский ввод не затрагивается изменениями.",
+      "architecture": "Слоёная архитектура соблюдена. process_manager (инфраструктура) не импортирует bot (транспорт) или session_manager (бизнес-логика). Callback-паттерн консистентен с существующими ProgressCallback и RetryCallback. Направление зависимостей корректно: bot создаёт callback, process_manager его вызывает.",
+      "spec_compliance": "Все 13 пунктов спецификации реализованы: тип SessionIdCallback, проброс через цепочку (_process_events -> _execute_single_retry -> _retry_loop -> _execute_send -> send_message), замыкание _on_session_id_changed в bot.py, упрощённый _handle_claude_result, fallback в send_message, 6 новых тестов process_manager, 4 новых теста bot.py, обратная совместимость интеграционных тестов.",
+      "regression": "Обратная совместимость полностью сохранена. Все новые параметры имеют default None. 590 тестов проходят. Единственный вызывающий код _handle_claude_result (функция _send_to_claude_and_respond) настраивает callback — зависимости от старого поведения нет."
+    },
+    "tests_result": {
+      "total": 590,
+      "passed": 590,
+      "failed": 0,
+      "command": "python -m pytest tests/ --ignore=tests/e2e -v"
+    }
+  }
+}

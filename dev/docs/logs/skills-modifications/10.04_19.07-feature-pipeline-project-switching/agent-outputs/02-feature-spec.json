@@ -1,0 +1,278 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-10T19:15:30+05:00",
+  "result": {
+    "approach_summary": "Фича переключения проектов строится на одном новом модуле project_manager.py и минимальных расширениях существующих модулей. Ключевой принцип: все state-модули (session_manager, daily_session_registry, session_watcher, process_manager) получают одну новую функцию reset_state/stop_all_processes для координированного сброса. project_manager.switch_project выступает оркестратором — валидирует новый путь, останавливает процессы, сбрасывает state, обновляет config.WORKING_DIR, перезагружает файлы состояния, сохраняет выбор в ~/.claude-manager-current-project. Транзакционная семантика: при любой ошибке в середине переключения пытаемся восстановить старый WORKING_DIR. Защита от path traversal — через os.path.realpath и сравнение префикса. Для UI используются команды вида /pN — единообразно с существующим /N для сессий. Сохраняем минимализм: никаких inline keyboard, никаких callback_data, никакой модификации .env из кода.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/project_manager.py",
+        "type": "create",
+        "full_spec": {
+          "purpose": "Центральный модуль фичи. Отвечает за три задачи: сканировать папку с проектами и возвращать список, атомарно переключать бот на другой проект, восстанавливать выбранный проект при старте. Не знает о Telegram API — только работа с файловой системой и координация со state-модулями.",
+          "api": [
+            "class ProjectInfo (frozen dataclass): name: str, absolute_path: str, is_current: bool",
+            "class SwitchResult (frozen dataclass): success: bool, already_active: bool, old_path: str, new_path: str, stopped_processes_count: int, error_message: str (пустая строка если success)",
+            "class ProjectSwitchError (Exception): общая ошибка переключения, содержит понятное сообщение",
+            "async def scan_available_projects() -> list[ProjectInfo]: возвращает отсортированный по имени список проектов из config.PROJECTS_ROOT_DIR. Фильтры: только директории, не скрытые (имя не начинается с точки), не символические ссылки на внешние директории. ProjectInfo.is_current=True для проекта, чей realpath совпадает с realpath config.WORKING_DIR. При OSError возвращает пустой список, логирует warning.",
+            "async def switch_project(target_path: str) -> SwitchResult: атомарное переключение. Захватывает asyncio.Lock (модульный _switch_lock). Алгоритм см. в algorithms.",
+            "def get_current_project_path() -> str: тонкая обёртка над config.WORKING_DIR",
+            "async def load_last_selected_project() -> str | None: читает файл config.LAST_PROJECT_FILE (~/.claude-manager-current-project). Возвращает путь строкой или None. Валидирует что путь существует, это директория, лежит внутри PROJECTS_ROOT_DIR. При любой ошибке возвращает None и логирует warning. Асинхронная, чтение файла через asyncio.to_thread.",
+            "async def save_selected_project(path: str) -> None: записывает путь в config.LAST_PROJECT_FILE атомарно (tmp + rename). Если запись упала — логирует error, но не бросает исключение (невозможность сохранить выбор не должна отменять успешное переключение)."
+          ],
+          "algorithms": "scan_available_projects: (1) if not os.path.isdir(config.PROJECTS_ROOT_DIR): return []; (2) entries = os.listdir(config.PROJECTS_ROOT_DIR) через asyncio.to_thread; (3) для каждой entry — full_path = join(root, entry); (4) skip если entry начинается с точки; (5) skip если os.path.islink(full_path); (6) skip если not os.path.isdir(full_path); (7) current_real = realpath(config.WORKING_DIR); entry_real = realpath(full_path); is_current = current_real == entry_real; (8) добавить ProjectInfo(name=entry, absolute_path=full_path, is_current); (9) отсортировать по name; (10) вернуть. Ошибки ловить через try/except OSError, логировать и возвращать пустой список.\n\nswitch_project: (1) async with _switch_lock; (2) валидация — _validate_target_path(target_path) — может бросить ProjectSwitchError с понятным сообщением; (3) проверка already_active: os.path.realpath(target) == os.path.realpath(config.WORKING_DIR) → вернуть SwitchResult(success=True, already_active=True, ...); (4) запомнить old_path = config.WORKING_DIR; (5) остановить процессы: stopped_count = await process_manager.stop_all_processes(); (6) обновить config.WORKING_DIR = target_path; (7) в try-блок: await session_manager.reset_state(); await daily_session_registry.reset_state(); session_watcher.reset_state(); (8) await save_selected_project(target_path); (9) logger.info(...); (10) return SwitchResult(success=True, already_active=False, old_path=old_path, new_path=target_path, stopped_processes_count=stopped_count); (11) except Exception as e — try: config.WORKING_DIR = old_path (восстановить); logger.error ..., return SwitchResult(success=False, error_message=...).\n\n_validate_target_path: (1) если not os.path.exists(target) → ProjectSwitchError('Папка не существует: ...'); (2) если not os.path.isdir(target) → ProjectSwitchError('Это не папка: ...'); (3) real_target = os.path.realpath(target); real_root = os.path.realpath(config.PROJECTS_ROOT_DIR); (4) если not real_target.startswith(real_root + os.sep) and real_target != real_root → ProjectSwitchError('Путь вне корневой папки проектов'); (5) проверка доступа на чтение: os.access(target, os.R_OK). Если нет — ProjectSwitchError('Нет прав на чтение папки').\n\nload_last_selected_project: (1) если not LAST_PROJECT_FILE.exists() → return None; (2) try: content = await asyncio.to_thread(LAST_PROJECT_FILE.read_text, 'utf-8'); (3) path = content.strip(); (4) если не пустой → валидировать через _validate_target_path в try/except; (5) при любой ошибке — logger.warning, return None; (6) при успехе — return path.\n\nsave_selected_project: (1) tmp = LAST_PROJECT_FILE.with_suffix('.tmp'); (2) tmp.write_text(path, 'utf-8') через asyncio.to_thread; (3) os.replace(tmp, LAST_PROJECT_FILE) через asyncio.to_thread; (4) в except — logger.error, не бросать.",
+          "dependencies": [
+            "os (стандартная библиотека) — path, realpath, isdir, islink, access, listdir",
+            "asyncio — Lock, to_thread",
+            "logging — logger",
+            "dataclasses — dataclass",
+            "pathlib — Path",
+            "claude_manager.config — WORKING_DIR, PROJECTS_ROOT_DIR, LAST_PROJECT_FILE",
+            "claude_manager.process_manager — stop_all_processes (импорт внутри функции для избежания циклического импорта, если нужно)",
+            "claude_manager.session_manager — reset_state",
+            "claude_manager.daily_session_registry — reset_state",
+            "claude_manager.session_watcher — reset_state"
+          ]
+        },
+        "diff_spec": {
+          "was": "Файла нет",
+          "becomes": "Новый файл около 180-220 строк: dataclasses ProjectInfo/SwitchResult, исключение ProjectSwitchError, публичные async функции scan_available_projects/switch_project/get_current_project_path/load_last_selected_project/save_selected_project, приватная _validate_target_path, модульный _switch_lock = asyncio.Lock(). Модуль не использует глобальное состояние сверх _switch_lock — работает как оркестратор поверх state других модулей.",
+          "reason": "Центральное место новой функциональности. Без отдельного модуля логика переключения размажется по bot.py и config.py, что нарушит слоёную архитектуру проекта."
+        }
+      },
+      {
+        "file": "src/claude_manager/config.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Модуль экспортирует BOT_TOKEN, ALLOWED_USER_IDS, WORKING_DIR. В load_config читает только три переменные окружения: TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS, CLAUDE_WORKING_DIR. Функция _resolve_working_dir валидирует папку.",
+          "becomes": "Добавить две новые константы модуля: PROJECTS_ROOT_DIR: str = '' (заполняется при load_config) и LAST_PROJECT_FILE: Path = Path.home() / '.claude-manager-current-project' (статическая, известна при импорте). Добавить константу _ENV_PROJECTS_ROOT = 'PROJECTS_ROOT_DIR'. Добавить константу DEFAULT_PROJECTS_ROOT = '/Users/ivan/Desktop/claude-sandbox'. В load_config после обработки CLAUDE_WORKING_DIR добавить чтение PROJECTS_ROOT_DIR: raw = os.environ.get(_ENV_PROJECTS_ROOT) or DEFAULT_PROJECTS_ROOT; вызвать новую _resolve_projects_root(raw); записать в PROJECTS_ROOT_DIR. Добавить функцию _resolve_projects_root(raw_value: str) -> str — аналог _resolve_working_dir, но default не os.getcwd(), а DEFAULT_PROJECTS_ROOT. Также проверяет существование директории и бросает ConfigError. В global объявлении load_config добавить PROJECTS_ROOT_DIR. В логах после успешной загрузки добавить 'корень проектов=%s' к info-сообщению.",
+          "reason": "Новая переменная нужна для сканирования проектов. LAST_PROJECT_FILE — путь для сохранения последнего выбранного проекта, используется project_manager. Default-значение DEFAULT_PROJECTS_ROOT делает фичу работоспособной без явного конфигурирования."
+        }
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Модуль управляет процессами Claude: create_process, send_message, stop_process (по одному session_id). Есть _processes dict, _busy_flags dict, _stop_events dict.",
+          "becomes": "Добавить публичную async функцию stop_all_processes() -> int. Алгоритм: (1) session_ids = list(_processes.keys()) — копия списка, чтобы итерация не конфликтовала с модификацией; (2) для каждого session_id в списке вызвать await stop_process(session_id) в try/except Exception (чтобы одна ошибка не прерывала остановку остальных, логировать error и продолжать); (3) вернуть len(session_ids). Docstring: 'Останавливает все запущенные процессы Claude и возвращает количество остановленных.' Размер функции — около 15 строк. Существующая stop_process не меняется.",
+          "reason": "project_manager.switch_project должен останавливать все процессы старого проекта перед переключением. Инкапсулируем логику обхода _processes здесь, чтобы project_manager не лез в приватное состояние process_manager."
+        }
+      },
+      {
+        "file": "src/claude_manager/session_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Модуль хранит _bindings dict и _bindings_path Path. load_bindings заполняет _bindings_path при первом вызове. Повторный вызов с другим config.WORKING_DIR не обновит путь автоматически.",
+          "becomes": "Добавить публичную async функцию reset_state() -> None. Алгоритм: (1) async with _lock; (2) global _bindings, _bindings_path; (3) _bindings = {}; (4) _bindings_path = None; (5) вне lock — await load_bindings() (сам захватит lock внутри себя, через внутренние обращения к _lock). Важно: в конце функции _bindings может быть перезаполнен — это нормально. Docstring: 'Сбрасывает состояние привязок и перезагружает их из нового пути config.WORKING_DIR.' Размер функции — около 8-10 строк.",
+          "reason": "При переключении проекта _bindings_path кэшируется и не обновится. Без явного сброса новый проект будет читать и писать привязки в старый sessions.json."
+        }
+      },
+      {
+        "file": "src/claude_manager/daily_session_registry.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Модуль хранит _registry dict, _registry_path Path, _loaded_from_disk bool. Флаг _loaded_from_disk защищает от затирания: _save_registry отказывается писать если флаг False.",
+          "becomes": "Добавить публичную async функцию reset_state() -> None. Алгоритм: (1) async with _lock; (2) global _registry, _registry_path, _loaded_from_disk; (3) _registry = {}; (4) _registry_path = None; (5) _loaded_from_disk = False; (6) вне lock — await load_registry(). load_registry сам установит _loaded_from_disk в True при успехе. Docstring: 'Сбрасывает реестр и перезагружает его из нового пути config.WORKING_DIR.'",
+          "reason": "Аналогично session_manager, но с дополнительным сбросом _loaded_from_disk. Без правильного сброса _save_registry будет тихо ничего не делать после переключения."
+        }
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Модуль хранит _seen_message_counts dict, _paused_sessions set. Счётчики относятся к сессиям конкретного проекта.",
+          "becomes": "Добавить публичную функцию reset_state() -> None (синхронная, не async — просто очистка двух коллекций). Алгоритм: (1) global _seen_message_counts, _paused_sessions; (2) _seen_message_counts.clear(); (3) _paused_sessions.clear(); (4) logger.info('Watcher: состояние сброшено для переключения проекта'). Функция не блокирующая — использование clear() гарантирует что ссылки на dict/set остаются валидными. Watcher на следующей итерации _poll_sessions прочитает актуальный config.WORKING_DIR и перескан сессий нового проекта.",
+          "reason": "Счётчики _seen_message_counts относятся к сессиям старого проекта. Без сброса возможна ситуация, когда новый проект случайно имеет session_id, совпадающий со старым — тогда watcher пропустит реальные сообщения."
+        }
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "BOT_COMMANDS содержит 4 пункта (new, sessions, all, stop). Есть обработчики handle_new/handle_sessions/handle_stop/handle_all/handle_switch_session/handle_message/handle_photo/handle_document. В _register_handlers регистрируются все хендлеры.",
+          "becomes": "1) Импорты: добавить from claude_manager import project_manager. 2) В BOT_COMMANDS добавить ('projects', 'Список проектов для переключения') — будет пятый пункт в меню Telegram. 3) Добавить константу PROJECT_CURRENT_MARKER = '\\u25cf' (символ ●) — визуальная метка текущего проекта. 4) Добавить константы сообщений: EMPTY_PROJECTS_TEMPLATE = 'Проекты не найдены в {root}'; INVALID_PROJECT_NUMBER_TEMPLATE = 'Проект #{number} не найден'; PROJECT_SWITCH_SUCCESS_TEMPLATE = 'Переключено на проект: {name}\\nОстановлено процессов: {count}'; PROJECT_SWITCH_ERROR_TEMPLATE = 'Ошибка переключения: {error}'; PROJECT_ALREADY_ACTIVE_TEMPLATE = 'Уже работаю в проекте: {name}'. 5) Добавить async def handle_projects(update, context) — проверка доступа; вызов project_manager.scan_available_projects(); если пустой — сообщение EMPTY_PROJECTS_TEMPLATE; иначе — формирование текста: для каждого проекта (с индексом от 1) строка вида '{marker} /p{N} {name}' где marker = PROJECT_CURRENT_MARKER если is_current, иначе ''. Отправка через _send_telegram_message(chat_id, text, parse_mode=None) — plain text, чтобы /pN были кликабельными. 6) Добавить async def handle_switch_project(update, context) — проверка доступа; извлечь номер из update.message.text (формат /pN, убрать первые 2 символа и int); получить список проектов через scan_available_projects(); если номер вне диапазона [1, len] — отправить INVALID_PROJECT_NUMBER_TEMPLATE; иначе — вызвать project_manager.switch_project(projects[number-1].absolute_path); по результату — 3 ветки: already_active (PROJECT_ALREADY_ACTIVE_TEMPLATE), success (PROJECT_SWITCH_SUCCESS_TEMPLATE), fail (PROJECT_SWITCH_ERROR_TEMPLATE). Все сообщения отправлять с parse_mode=None. 7) В _register_handlers добавить application.add_handler(CommandHandler('projects', handle_projects)) и application.add_handler(MessageHandler(filters.Regex(r'^/p\\d+$'), handle_switch_project)). Порядок важен: /p\\d+ должен быть зарегистрирован ДО общего TEXT-обработчика handle_message (уже так).",
+          "reason": "Это транспортный слой новой функциональности — единственное место, где пользователь взаимодействует с фичей. Размер каждой функции — до 20 строк. Сообщения вынесены в константы для единообразия и возможности тестирования."
+        }
+      },
+      {
+        "file": "src/claude_manager/main.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "В main() вызывается config.load_config(), затем _acquire_lock, затем _run_bot(). После load_config сразу логируется 'Рабочая директория: %s' со значением config.WORKING_DIR.",
+          "becomes": "После config.load_config() и перед _acquire_lock добавить блок восстановления последнего проекта: try: import asyncio from claude_manager import project_manager; last_project = asyncio.run(project_manager.load_last_selected_project()); if last_project: config.WORKING_DIR = last_project; logger.info('Восстановлен последний проект: %s', last_project); except Exception: logger.warning('Не удалось восстановить последний проект, используется значение из .env', exc_info=True). Строка с логом 'Рабочая директория: %s' остаётся, но теперь будет отражать итоговое значение после восстановления.",
+          "reason": "Чтобы бот после перезапуска запускался в том же проекте, на котором закончил работу. Попытка не критична для старта — при любой ошибке используется значение из .env."
+        }
+      },
+      {
+        "file": ".env.example",
+        "type": "modify",
+        "diff_spec": {
+          "was": "В секции 'Необязательные настройки' есть закомментированная переменная CLAUDE_WORKING_DIR.",
+          "becomes": "Под CLAUDE_WORKING_DIR добавить новый блок: комментарий '# Корневая папка для поиска проектов (для команды /projects)' и '# PROJECTS_ROOT_DIR=/Users/ivan/Desktop/claude-sandbox'. Обе строки закомментированы — переменная опциональная, default указан в коде.",
+          "reason": "Документирование новой переменной для пользователей, которые копируют .env.example в .env."
+        }
+      },
+      {
+        "file": "tests/test_project_manager.py",
+        "type": "create",
+        "full_spec": {
+          "purpose": "Юнит-тесты нового модуля project_manager. Покрывают все публичные функции: scan_available_projects, switch_project, load_last_selected_project, save_selected_project, get_current_project_path.",
+          "api": [
+            "TestScanAvailableProjects: 6 тестов (фильтрует файлы, скрытые, симлинки; пустая папка; ошибки прав; отмечает текущий)",
+            "TestSwitchProject: 11 тестов (happy path, already_active, path traversal, not directory, nonexistent, not in root, stops processes, resets state, saves last, rollback on error, concurrent calls)",
+            "TestLoadLastSelectedProject: 4 теста (no file, corrupted, invalid path, valid)",
+            "TestSaveSelectedProject: 2 теста (success, IO error)",
+            "TestGetCurrentProjectPath: 1 тест (возвращает config.WORKING_DIR)"
+          ],
+          "algorithms": "Каждый тест использует tmp_path pytest fixture для создания временных директорий. config.PROJECTS_ROOT_DIR, config.WORKING_DIR, config.LAST_PROJECT_FILE мокаются через patch.object или monkeypatch. Для мокирования state-модулей используется patch на функции reset_state и stop_all_processes. Проверяется что: (1) функции вызываются, (2) state обновляется, (3) при ошибках возвращается корректный SwitchResult.",
+          "dependencies": [
+            "pytest, pytest-asyncio",
+            "unittest.mock (AsyncMock, MagicMock, patch)",
+            "pathlib.Path",
+            "claude_manager.project_manager (весь публичный API)",
+            "claude_manager.config"
+          ]
+        },
+        "diff_spec": {
+          "was": "Файла нет",
+          "becomes": "Новый файл тестов, около 400-500 строк. Структура: импорты, константы, фикстуры, 24 теста в 5 тест-классах (по одному на публичную функцию). Следует паттернам из существующих test_session_manager.py и test_config.py.",
+          "reason": "Полное покрытие нового модуля юнит-тестами."
+        }
+      },
+      {
+        "file": "tests/test_config.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты проверяют загрузку BOT_TOKEN, ALLOWED_USER_IDS, WORKING_DIR.",
+          "becomes": "Добавить 4 теста в новом классе TestProjectsRootDir: (1) test_projects_root_dir_default — без переменной окружения, config.PROJECTS_ROOT_DIR получает DEFAULT_PROJECTS_ROOT (мокать существование папки); (2) test_projects_root_dir_from_env — с переменной, значение из env; (3) test_projects_root_dir_nonexistent — несуществующая папка, ConfigError; (4) test_projects_root_dir_is_file — путь на файл вместо папки, ConfigError. В _make_env добавить параметр projects_root. Переиспользовать существующие паттерны (patch.dict, patch load_dotenv).",
+          "reason": "Покрытие новой переменной окружения и функции _resolve_projects_root."
+        }
+      },
+      {
+        "file": "tests/test_process_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты проверяют create_process, send_message, stop_process, has_process, is_busy.",
+          "becomes": "Добавить тест-класс TestStopAllProcesses с 5 тестами: (1) test_stop_all_empty — пустой _processes, возвращает 0; (2) test_stop_all_single — один процесс, возвращает 1, процесс удалён из _processes; (3) test_stop_all_multiple — три процесса, все остановлены; (4) test_stop_all_with_error — один из процессов бросает исключение в stop_process, остальные всё равно останавливаются, функция возвращает общее количество; (5) test_stop_all_busy_process — процесс с _busy_flags[sid]=True корректно останавливается (ProcessStoppedError обрабатывается внутри). Используется моки для ClaudeProcess.",
+          "reason": "Покрытие новой функции stop_all_processes."
+        }
+      },
+      {
+        "file": "tests/test_session_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты проверяют bind_session, unbind_session, switch_to_session, load_bindings, create_new_session.",
+          "becomes": "Добавить тест-класс TestResetState с 3 тестами: (1) test_reset_state_clears_bindings — после reset_state _bindings пустой; (2) test_reset_state_reloads_from_new_path — создать tmp_path_a/sessions.json, вызвать load_bindings с patch WORKING_DIR=a, потом patch WORKING_DIR=b (пустой), вызвать reset_state, проверить что _bindings пустой (прочитал из b); (3) test_reset_state_resets_internal_path — после reset_state повторный load_bindings использует текущий config.WORKING_DIR (а не сохранённый путь).",
+          "reason": "Покрытие новой функции reset_state и проверка ключевого сценария сброса закешированного _bindings_path."
+        }
+      },
+      {
+        "file": "tests/test_daily_session_registry.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты проверяют register_session, get_session_id_by_number, update_session_id, load_registry.",
+          "becomes": "Добавить тест-класс TestResetState с 4 тестами: (1) test_reset_state_clears_registry — после reset_state _registry пустой; (2) test_reset_state_resets_loaded_flag — после reset_state _loaded_from_disk сбрасывается (потом load_registry устанавливает его обратно в True при успехе); (3) test_reset_state_reloads_from_new_path — аналогично session_manager; (4) test_reset_state_preserves_save_capability — после reset_state вызов register_session + _save_registry проходит успешно, файл записывается в новый путь (доказательство что _loaded_from_disk правильно восстановился).",
+          "reason": "Покрытие функции reset_state и особенно важного сценария с _loaded_from_disk."
+        }
+      },
+      {
+        "file": "tests/test_session_watcher.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты проверяют _poll_sessions, _check_session, pause_session, resume_session, update_session_id.",
+          "becomes": "Добавить тест-класс TestResetState с 2 тестами: (1) test_reset_state_clears_seen_counts — заполнить _seen_message_counts, вызвать reset_state, проверить что пуст; (2) test_reset_state_clears_paused — добавить сессии в _paused_sessions, вызвать reset_state, проверить что пуст.",
+          "reason": "Покрытие простой синхронной функции reset_state."
+        }
+      },
+      {
+        "file": "tests/test_bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты проверяют handle_new, handle_sessions, handle_stop, handle_all, handle_switch_session, handle_message, handle_photo, handle_document.",
+          "becomes": "Добавить импорт handle_projects и handle_switch_project. Добавить тест-класс TestHandleProjects с 5 тестами: (1) test_access_denied — неавторизованный пользователь; (2) test_empty_list — пустой список проектов, показывается сообщение EMPTY_PROJECTS_TEMPLATE; (3) test_shows_list — список из 3 проектов, формат строк /pN name; (4) test_marks_current — один проект помечен маркером ●; (5) test_plain_text_for_clickable — parse_mode=None для кликабельности. Добавить тест-класс TestHandleSwitchProject с 7 тестами: (1) test_access_denied; (2) test_valid_number_calls_switch; (3) test_invalid_number_out_of_range; (4) test_already_active_message; (5) test_success_message_format; (6) test_error_message_format; (7) test_exception_in_switch_gracefully_handled. Мокать project_manager через patch.",
+          "reason": "Покрытие обоих новых обработчиков и их интеграции с project_manager."
+        }
+      },
+      {
+        "file": "tests/test_main.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты проверяют _setup_logging, _acquire_lock, main.",
+          "becomes": "Добавить 2 теста: (1) test_main_loads_last_selected_project — патчим project_manager.load_last_selected_project чтобы вернуть '/tmp/another_project', проверяем что config.WORKING_DIR обновился до этого значения перед запуском _run_bot; (2) test_main_continues_on_load_last_error — load_last_selected_project бросает исключение, main не падает, config.WORKING_DIR остаётся как было.",
+          "reason": "Покрытие интеграции с main.py."
+        }
+      },
+      {
+        "file": "tests/integration/test_project_switching.py",
+        "type": "create",
+        "full_spec": {
+          "purpose": "Интеграционный тест полного цикла переключения проектов. Создаёт две временные директории, эмулирует работу бота в проекте A, переключается на B, проверяет что state модулей действительно перезагрузился.",
+          "api": [
+            "test_switch_between_two_tmp_projects_full_cycle: создать tmp_path/a и tmp_path/b; PROJECTS_ROOT_DIR = tmp_path; WORKING_DIR = a; запустить load_bindings и load_registry в A; добавить привязку и зарегистрировать сессию; проверить что файлы sessions.json и daily_sessions.json созданы в A; вызвать project_manager.switch_project(str(tmp_path/b)); проверить (1) SwitchResult.success=True, (2) config.WORKING_DIR == str(tmp_path/b), (3) session_manager._bindings пустой, (4) daily_session_registry _registry не содержит старых сессий, (5) файлы LAST_PROJECT_FILE записаны с новым путём; вернуться обратно в A через switch_project(str(tmp_path/a)); проверить что привязка и реестр перезагрузились из A.",
+            "test_switch_to_same_project_is_noop: переключение на тот же проект возвращает already_active=True, state не сбрасывается (проверяется через неизменность _bindings)",
+            "test_switch_with_running_processes_stops_them: создать фейковые процессы в process_manager._processes, вызвать switch_project, проверить что _processes пуст",
+            "test_switch_to_nonexistent_project_fails_gracefully: попытка переключиться на несуществующий путь возвращает success=False с понятным error_message, config.WORKING_DIR не меняется",
+            "test_switch_with_path_traversal_blocked: попытка переключиться на /etc блокируется"
+          ],
+          "algorithms": "Тесты используют tmp_path fixture. PROJECTS_ROOT_DIR, WORKING_DIR, LAST_PROJECT_FILE мокаются через monkeypatch или patch. Между тестами состояние модулей сбрасывается вручную через reset_state или через автоматическую фикстуру сброса в начале каждого теста.",
+          "dependencies": [
+            "pytest, pytest-asyncio",
+            "unittest.mock.patch",
+            "pathlib.Path",
+            "claude_manager.project_manager",
+            "claude_manager.config",
+            "claude_manager.session_manager",
+            "claude_manager.daily_session_registry",
+            "claude_manager.session_watcher",
+            "claude_manager.process_manager"
+          ]
+        },
+        "diff_spec": {
+          "was": "Файла нет",
+          "becomes": "Новый файл интеграционных тестов, около 250-350 строк. 5 тестов, каждый покрывает отдельный сценарий полного цикла переключения.",
+          "reason": "Только интеграционный тест может проверить, что все модули действительно координируются при переключении. Юнит-тесты мокают зависимости и не ловят такие сценарии."
+        }
+      },
+      {
+        "file": "dev/docs/specs/project_manager_spec.md",
+        "type": "create",
+        "full_spec": {
+          "purpose": "Детальная спецификация нового модуля project_manager.py в формате существующих спеков из dev/docs/specs/realised/. Содержит полное описание API, алгоритмов, зависимостей, тест-плана.",
+          "api": [
+            "Секции: Назначение, Обслуживаемые сценарии (CJM-11), Публичный API, Внутренние функции, Алгоритм работы, Зависимости, Обработка ошибок, Константы, Тест-план (юнит, граничные, ошибки), Интеграционные тесты"
+          ],
+          "algorithms": "Документ на русском, стиль из writing-style-guide. Слой: 3 (зависит от state-модулей слоя 2). Обслуживаемый CJM — CJM-11: Переключение между проектами. Каждая публичная функция описана отдельным блоком с аргументами, возвращаемым значением, исключениями. Алгоритм каждой функции — нумерованный список шагов. Каждый тест описан с входом, ожидаемым результатом, типом.",
+          "dependencies": [
+            "Стандартная библиотека Python",
+            "config модуль",
+            "process_manager, session_manager, daily_session_registry, session_watcher модули"
+          ]
+        },
+        "diff_spec": {
+          "was": "Файла нет",
+          "becomes": "Новый MD-документ, около 400-500 строк. По формату session_manager_spec.md и config_spec.md из realised/.",
+          "reason": "Часть обязательной документации проекта. Модуль должен быть задокументирован на том же уровне, что и другие существующие модули."
+        }
+      },
+      {
+        "file": "CLAUDE.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Документ описывает проект, технологии, структуру, архитектурные принципы, правила разработки. Раздел 'Структура проекта' перечисляет модули в src/claude_manager/. Раздел 'Ключевые возможности' перечисляет функциональность бота.",
+          "becomes": "1) В раздел 'Ключевые возможности' добавить новый пункт: 'Переключение между проектами без перезапуска бота'. 2) В раздел 'Структура проекта' в секции src/claude_manager/ добавить строку: 'project_manager.py # Сканирование и переключение между проектами'. 3) Новый подраздел или упоминание переменной окружения PROJECTS_ROOT_DIR в соответствующем месте (там где перечислены переменные окружения). 4) Кратко описать поведение: команда /projects показывает список проектов из PROJECTS_ROOT_DIR, команды /p1, /p2 переключают бот, выбор сохраняется в ~/.claude-manager-current-project.",
+          "reason": "CLAUDE.md — главный документ проекта. Любая новая функциональность и переменная окружения должна быть отражена здесь."
+        }
+      },
+      {
+        "file": "dev/docs/brd/brd-user-journeys.md",
+        "type": "modify",
+        "diff_spec": {
+          "was": "BRD содержит 10 CJM (CJM-01 до CJM-10), последний — 'Живой стриминг промежуточных обновлений через watcher'.",
+          "becomes": "Добавить новый CJM-11 в конец документа (перед любыми финальными разделами, если они есть). Заголовок '## CJM-11: Переключение между проектами'. Структура идентична другим CJM: вводный абзац (зачем это нужно), '### Что делает пользователь' (открывает меню бота, выбирает /projects, кликает /p3), '### Что происходит внутри' (бот сканирует PROJECTS_ROOT_DIR, показывает список; при клике валидирует путь, останавливает процессы, сбрасывает state, перезагружает sessions.json и daily_sessions.json, сохраняет выбор), '### Что видит пользователь' (сообщение о переключении с именем проекта и количеством остановленных процессов), '### Что может пойти не так' (папка удалена, path traversal заблокирован, несуществующий номер, уже в проекте). Стиль — разговорный, согласно writing-style-guide.",
+          "reason": "BRD — источник правды о функциональности бота. Новая команда должна быть описана в терминах пользовательского опыта."
+        }
+      }
+    ]
+  }
+}

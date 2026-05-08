@@ -1,0 +1,24 @@
+{
+  "pipeline": "feature-pipeline",
+  "pipeline_name": "file-send-header-overflow-fix",
+  "timestamp": "17.04_12.58",
+  "status": "completed",
+  "scale": "small",
+  "current_phase": "10",
+  "rollbacks_to_spec": 0,
+  "backup_branches": [],
+  "rollback_feedback": null,
+  "phases": {
+    "0": {"status": "completed", "fix_cycles": 0},
+    "1": {"status": "completed", "fix_cycles": 0},
+    "2": {"status": "completed", "fix_cycles": 0},
+    "3": {"status": "completed", "fix_cycles": 0},
+    "4": {"status": "completed", "fix_cycles": 0},
+    "5": {"status": "completed", "fix_cycles": 0},
+    "6": {"status": "skipped", "fix_cycles": 0, "reason": "scale=small"},
+    "7": {"status": "skipped", "fix_cycles": 0, "reason": "scale=small"},
+    "8": {"status": "completed", "fix_cycles": 0},
+    "9": {"status": "completed", "fix_cycles": 0},
+    "10": {"status": "completed", "fix_cycles": 0}
+  }
+}

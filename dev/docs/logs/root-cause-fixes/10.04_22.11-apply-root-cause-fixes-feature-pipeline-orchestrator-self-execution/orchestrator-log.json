@@ -1,0 +1,174 @@
+{
+  "pipeline": "apply-root-cause-fixes",
+  "created_at": "2026-04-10T17:12:10Z",
+  "report_file": "/Users/ivan/Desktop/claude-sandbox/claude_manager/dev/docs/logs/root-cause-reports/10-04_20-21_feature-pipeline-orchestrator-self-execution.md",
+  "user_constraints": [
+    "не трогать ~/.claude/skill-templates/",
+    "не трогать проектные копии фабричных скиллов (feature-pipeline, pipeline-implementer, script-creator-pipeline, universal-bug-fixer в claude_manager/.claude/skills/)",
+    "применять только три активных проектных пункта из чек-листа отчёта"
+  ],
+  "active_recommendations": [
+    {
+      "id": 1,
+      "tag": "[DOC]",
+      "target": "/Users/ivan/Desktop/claude-sandbox/claude_manager/CLAUDE.md",
+      "location": "после строки 219 в секции «Стандарты разработки скиллов и пайплайнов»",
+      "change": "добавить ссылку на раздел 19 глобального референса ~/.claude/references/skills-agents-rules.md"
+    },
+    {
+      "id": 2,
+      "tag": "[SKILL]",
+      "target": "/Users/ivan/.claude/projects/-Users-ivan-Desktop-claude-sandbox-claude-manager/memory/feedback_no_step_questions.md",
+      "location": "секция How to apply:",
+      "change": "добавить 2-3 строки с явным списком исключений из основного правила (когда задавать вопрос обязательно)"
+    },
+    {
+      "id": 3,
+      "tag": "[SKILL]",
+      "target": [
+        "/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/autofix-e2e/SKILL.md",
+        "/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/pipeline-run/SKILL.md"
+      ],
+      "location": "тело SKILL.md",
+      "change": "добавить одну строку-ссылку на раздел 19 глобального референса"
+    }
+  ],
+  "steps": [
+    {
+      "phase": "phase-0",
+      "start_time": "2026-04-10T17:12:10Z",
+      "end_time": "2026-04-10T17:12:10Z",
+      "success": true,
+      "comment": "Парсинг отчёта завершён. Раздел 19 глобального референса подтверждён на строке 320 — ссылки будут валидными. Активных проектных пунктов: 3 (DOC в CLAUDE.md, SKILL в памяти feedback_no_step_questions, SKILL в двух тонких оркестраторах autofix-e2e + pipeline-run). Пункты со статусом ✓ делегировано пропускаются по указанию пользователя и по разметке самого отчёта."
+    },
+    {
+      "phase": "phase-1",
+      "start_time": "2026-04-10T17:13:00Z",
+      "end_time": "2026-04-10T17:15:30Z",
+      "success": true,
+      "verifier_model": "opus",
+      "total": 3,
+      "accepted": 3,
+      "rejected": 0,
+      "verdicts": [
+        {
+          "id": 1,
+          "tag": "[DOC]",
+          "target": "CLAUDE.md",
+          "verdict": "ОДОБРЕНО",
+          "comment": "Раздел 19 глобального референса подтверждён (строка 320). Правка состоит из двух частей: буллет в шпаргалке разделов и отдельный абзац-обязательство."
+        },
+        {
+          "id": 2,
+          "tag": "[SKILL]",
+          "target": "feedback_no_step_questions.md",
+          "verdict": "ОДОБРЕНО С ЗАМЕЧАНИЯМИ",
+          "comment": "Исключения нужно вынести в отдельный блок под секцией How to apply, а не смешивать с ней — чтобы сохранить структурную видимость.",
+          "correction": "4 строки: заголовок «Исключения — вопрос обязателен...» + 3 буллета"
+        },
+        {
+          "id": 3,
+          "tag": "[SKILL]",
+          "target": ["autofix-e2e/SKILL.md", "pipeline-run/SKILL.md"],
+          "verdict": "ОДОБРЕНО",
+          "comment": "Оба скилла — тонкие проектные оркестраторы. Точные места вставки найдены: autofix-e2e после строки 29 (заявление об автономности), pipeline-run после строки 77 (конец шаблона задачи агенту Правила 1)."
+        }
+      ]
+    },
+    {
+      "phase": "phase-2",
+      "start_time": "2026-04-10T17:15:30Z",
+      "end_time": "2026-04-10T17:20:00Z",
+      "success": true,
+      "model": "opus",
+      "agents": [
+        {
+          "id": 1,
+          "task": "[DOC] CLAUDE.md — ссылка на раздел 19",
+          "file": "/Users/ivan/Desktop/claude-sandbox/claude_manager/CLAUDE.md",
+          "status": "success",
+          "method": "Edit",
+          "result": "буллет добавлен на строку 220, абзац-обязательство на строку 222"
+        },
+        {
+          "id": 2,
+          "task": "[SKILL] feedback_no_step_questions.md — исключения в How to apply",
+          "file": "/Users/ivan/.claude/projects/-Users-ivan-Desktop-claude-sandbox-claude-manager/memory/feedback_no_step_questions.md",
+          "status": "success",
+          "method": "Edit",
+          "result": "блок исключений (4 строки) добавлен на строки 12-15, было 11 строк, стало 16"
+        },
+        {
+          "id": 3,
+          "task": "[SKILL] autofix-e2e/SKILL.md — исключение про раздел 19",
+          "file": "/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/autofix-e2e/SKILL.md",
+          "status": "success",
+          "method": "Edit",
+          "result": "абзац-исключение добавлен на строку 31, после заявления об автономности (строка 29)"
+        },
+        {
+          "id": 4,
+          "task": "[SKILL] pipeline-run/SKILL.md — исключение про раздел 19",
+          "file": "/Users/ivan/Desktop/claude-sandbox/claude_manager/.claude/skills/pipeline-run/SKILL.md",
+          "status": "success",
+          "method": "Edit",
+          "result": "абзац-исключение добавлен на строку 79, после шаблона задачи агенту в Правиле 1 (строка 77)"
+        }
+      ],
+      "errors": 0,
+      "comment": "Все четыре правки применены штатным Edit без шаблонов X.1/X.2 — hooks и разрешения позволили суб-агентам писать в .claude/skills/ напрямую. Каждый агент проверил результат на диске чтением и вернул фрагмент контекста вокруг правки."
+    },
+    {
+      "phase": "phase-3",
+      "start_time": "2026-04-10T17:20:00Z",
+      "end_time": "2026-04-10T17:21:00Z",
+      "success": true,
+      "completeness": "all 3 accepted recommendations applied (4 file changes total)",
+      "consistency": "все три ссылки на раздел 19 единообразны, правка в памяти использует другой формат (исключения — вопрос обязателен если) — это ожидаемо и не создаёт противоречий",
+      "tests_run": false,
+      "tests_skip_reason": "не было [CODE] изменений, правки затронули только документацию (CLAUDE.md) и конфиги скиллов (SKILL.md в autofix-e2e и pipeline-run) и память проекта (feedback_no_step_questions.md)",
+      "comment": "Все четыре файла перечитаны оркестратором лично после применения. Форматирование сохранено, соседние абзацы не тронуты, markdown-структура цела."
+    },
+    {
+      "phase": "phase-4",
+      "start_time": "2026-04-10T17:21:00Z",
+      "end_time": "2026-04-10T17:24:00Z",
+      "success": true,
+      "commit_sha": "dd37ecc",
+      "commit_message_header": "fix(root-cause): ссылки на раздел 19 об отказе инструмента делегирования + архив",
+      "files_in_commit": [
+        ".claude/skills/autofix-e2e/SKILL.md",
+        ".claude/skills/pipeline-run/SKILL.md",
+        "CLAUDE.md",
+        "dev/docs/logs/root-cause-fixes/10.04_22.11-apply-root-cause-fixes-feature-pipeline-orchestrator-self-execution/orchestrator-log.json",
+        "dev/docs/logs/root-cause-reports/realized/10-04_20-21_feature-pipeline-orchestrator-self-execution.md (rename + modify)"
+      ],
+      "files_skipped_not_in_commit": [
+        "tests/e2e/test_session_flow.py (чужие изменения до сессии)",
+        "dev/docs/session-reports/10-04/21-47_dedupe-rca-with-budgets-spec.md (чужой untracked)",
+        "dev/docs/session-reports/10-04/21-52_flow02-marker-fix.md (чужой untracked)"
+      ],
+      "archived_report": {
+        "from": "dev/docs/logs/root-cause-reports/10-04_20-21_feature-pipeline-orchestrator-self-execution.md",
+        "to": "dev/docs/logs/root-cause-reports/realized/10-04_20-21_feature-pipeline-orchestrator-self-execution.md",
+        "method": "git mv с сохранением пользовательской разметки делегирования"
+      },
+      "amend_used": false,
+      "amend_skip_reason": "Правило git safety: не использовать --amend без явной просьбы пользователя. Вместо amend сделан один коммит, куда включены и правки, и rename отчёта одновременно — чище и безопаснее."
+    },
+    {
+      "phase": "completed",
+      "end_time": "2026-04-10T17:24:00Z",
+      "total_recommendations": 11,
+      "delegated_to_budgets_spec": 3,
+      "delegated_to_skill_templates": 5,
+      "active_project_recommendations": 3,
+      "accepted": 3,
+      "rejected": 0,
+      "applied_successfully": 3,
+      "errors": 0,
+      "total_files_changed": 4,
+      "summary": "Все три проектных пункта применены без ошибок. Четыре файла изменены: CLAUDE.md, autofix-e2e/SKILL.md, pipeline-run/SKILL.md, feedback_no_step_questions.md (последний — вне репо). Коммит dd37ecc. Отчёт перенесён в realized/."
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "agent": "feature-docs",
+  "status": "success",
+  "timestamp": "2026-04-17T14:15:00Z",
+  "result": {
+    "documents_created": [
+      {
+        "type": "changelog",
+        "path": "dev/docs/changelog/17.04_12.58-feature-pipeline-file-send-header-overflow-fix.md",
+        "action": "created"
+      },
+      {
+        "type": "docs_index",
+        "path": "dev/docs/docs-index.md",
+        "action": "updated"
+      }
+    ],
+    "documents_skipped": [
+      {
+        "type": "adr",
+        "reason": "Масштаб small, нет архитектурных решений — только добавлен опциональный параметр к существующей функции"
+      },
+      {
+        "type": "claude_md",
+        "reason": "Структура модулей не изменилась, новых модулей или команд не появилось"
+      },
+      {
+        "type": "brd",
+        "reason": "Нет новых или изменённых пользовательских сценариев — внутренний багфикс"
+      }
+    ]
+  }
+}

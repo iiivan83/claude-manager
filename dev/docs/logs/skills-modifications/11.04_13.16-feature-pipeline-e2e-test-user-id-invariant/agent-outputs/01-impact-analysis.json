@@ -1,0 +1,42 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-11T13:18:00+03:00",
+  "result": {
+    "affected_files": [
+      {"path": "src/claude_manager/config.py", "type": "modify", "reason": "Добавить загрузку E2E_TEST_USER_ID из .env как отдельную константу (int | None). НЕ добавлять в ALLOWED_USER_IDS — чтобы не срабатывал warning о множественных пользователях и сохранить семантику 'отдельный тестовый аккаунт'"},
+      {"path": "src/claude_manager/bot.py", "type": "modify", "reason": "Расширить _check_access для проверки E2E_TEST_USER_ID. Отфильтровать E2E_TEST_USER_ID из цикла служебных уведомлений в _post_init"},
+      {"path": "src/claude_manager/session_watcher.py", "type": "modify", "reason": "Исключить E2E_TEST_USER_ID из fallback-broadcast в _check_session (когда нет владельца сессии)"},
+      {"path": ".env.example", "type": "modify", "reason": "Добавить E2E_TEST_USER_ID в секцию E2E тестирования"},
+      {"path": "CLAUDE.md", "type": "modify", "reason": "Добавить разделы: 'Однопользовательский инвариант' после 'Защита персистентных данных' и 'E2E тестирование и изоляция' в 'Важные детали для разработки'"},
+      {"path": "dev/docs/brd/brd-user-journeys.md", "type": "modify", "reason": "Добавить предупреждение про ALLOWED_USER_IDS после строки 32"},
+      {"path": ".claude/skills/test-e2e/SKILL.md", "type": "modify", "reason": "Добавить проверку инварианта и требование E2E_TEST_USER_ID"},
+      {"path": ".claude/skills/validate-brd/SKILL.md", "type": "modify", "reason": "Добавить проверку архитектурных ограничений в направление 3"},
+      {"path": ".claude/skills/review-code/SKILL.md", "type": "modify", "reason": "Добавить проверку изоляции состояния в проход 4"}
+    ],
+    "affected_functions": [
+      {"file": "src/claude_manager/config.py", "function": "load_config", "impact": "Добавить чтение E2E_TEST_USER_ID, сохранение в отдельную константу"},
+      {"file": "src/claude_manager/bot.py", "function": "_check_access", "impact": "Добавить проверку user_id == config.E2E_TEST_USER_ID"},
+      {"file": "src/claude_manager/bot.py", "function": "_post_init", "impact": "Исключить E2E_TEST_USER_ID из рассылки служебных уведомлений"},
+      {"file": "src/claude_manager/session_watcher.py", "function": "_check_session", "impact": "Исключить E2E_TEST_USER_ID из fallback target_chat_ids"}
+    ],
+    "affected_tests": [
+      {"path": "tests/test_config.py", "action": "update", "reason": "Добавить тесты загрузки E2E_TEST_USER_ID"},
+      {"path": "tests/test_bot.py", "action": "update", "reason": "Добавить тесты авторизации E2E_TEST_USER_ID"},
+      {"path": "tests/test_session_watcher.py", "action": "update", "reason": "Добавить тест исключения E2E из fallback-broadcast"},
+      {"path": "tests/test_process_manager.py", "action": "keep", "reason": "asyncio.Lock уже протестирован"},
+      {"path": "tests/test_daily_session_registry.py", "action": "keep", "reason": "Очистка _new_* уже протестирована"}
+    ],
+    "risk_zones": [
+      {"area": "Fallback broadcast в session_watcher._check_session", "risk_level": "medium", "reason": "Основная точка где E2E получит нежелательные уведомления если не отфильтровать"},
+      {"area": "Warning при множественных ALLOWED_USER_IDS", "risk_level": "low", "reason": "E2E_TEST_USER_ID хранится отдельно — warning не затронут"},
+      {"area": "Служебные уведомления в _post_init", "risk_level": "low", "reason": "Маловероятно что E2E поймает, но лучше исключить"}
+    ],
+    "new_tests_needed": [
+      "unit: TestE2eTestUserId в test_config.py — загрузка, отсутствие, невалидное значение",
+      "unit: TestE2eTestUserAccess в test_bot.py — авторизация, отправка сообщений",
+      "unit: test_e2e_user_excluded_from_fallback в test_session_watcher.py",
+      "integration: test_e2e_user_isolation.py — изоляция сессий, watcher, config"
+    ]
+  }
+}

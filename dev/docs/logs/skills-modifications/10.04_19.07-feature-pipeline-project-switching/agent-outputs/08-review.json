@@ -1,0 +1,57 @@
+{
+  "agent": "feature-review",
+  "status": "success",
+  "timestamp": "2026-04-10T20:00:00+05:00",
+  "result": {
+    "passes": {
+      "quality": {
+        "status": "has_issues",
+        "issues": [
+          {
+            "file": "src/claude_manager/project_manager.py",
+            "line": 180,
+            "severity": "info",
+            "type": "unused_parameter",
+            "description": "Функция _perform_switch принимала параметр old_path, но не использовала его",
+            "suggestion": "Убрать неиспользуемый параметр из сигнатуры и из места вызова в switch_project"
+          },
+          {
+            "file": "src/claude_manager/bot.py",
+            "line": 689,
+            "severity": "info",
+            "type": "misleading_naming",
+            "description": "Параметр _resolve_project_by_number назывался day_number, что вводит в заблуждение — это номер проекта, а не дневной номер сессии",
+            "suggestion": "Переименовать в project_number"
+          }
+        ]
+      },
+      "security": {
+        "status": "clean",
+        "issues": []
+      },
+      "architecture": {
+        "status": "clean",
+        "issues": []
+      },
+      "spec_compliance": {
+        "status": "clean",
+        "issues": []
+      },
+      "regression": {
+        "status": "clean",
+        "issues": []
+      }
+    },
+    "total_issues_found": 2,
+    "total_issues_fixed": 2,
+    "fix_cycles_used": 1,
+    "needs_rollback": false,
+    "pass_summaries": {
+      "quality_review": "Проверены: именование, размер функций, уровень вложенности, type hints, docstrings, магические значения, комментарии. Найдено 2 замечания — оба категории info (не критичные): неиспользуемый параметр old_path в _perform_switch и плохое имя параметра day_number в _resolve_project_by_number. Оба исправлены сразу. Длинная функция switch_project (~65 строк) оставлена как есть: она содержит линейную последовательность с несколькими return-ветками ошибок, разбиение ухудшило бы читаемость.",
+      "security_review": "Проверены: path traversal, валидация входов, права доступа, shell injection, XSS в сообщениях Telegram. Path traversal защита работает через os.path.realpath + startswith + os.sep. Символические ссылки в scan_available_projects исключены из результата — нельзя увидеть проекты вне корневой папки. Проверка os.access(target, R_OK) отсеивает папки без прав чтения. В сообщениях Telegram используется parse_mode=None — нет HTML-экранирования, но и нет риска XSS, т.к. текст уходит как plain text. Имена проектов попадают в сообщения без экранирования, но Telegram plain text устойчив к любому содержимому. Белый список пользователей (_check_access) применяется в обоих новых обработчиках. Нет никакого способа переключиться на произвольный путь через /projects — только из отфильтрованного списка.",
+      "architecture_review": "Проверены: слоёная архитектура, направление зависимостей, ответственности модулей, циклические импорты. project_manager.py — новый модуль в слое 3 (координация state-модулей). Зависит от config (слой 0), process_manager/session_manager/daily_session_registry/session_watcher (слой 2). bot.py (слой 4, транспортный) импортирует project_manager — корректное направление. Нет циклических импортов (проверено через python -m py_compile и import-тест). Single Responsibility соблюдён: project_manager НЕ знает о Telegram, bot.py НЕ знает о деталях state-модулей. Новые функции reset_state в state-модулях — минимальное расширение API, каждая реализует один сценарий. Dataclass frozen=True обеспечивает неизменяемость возвращаемых результатов.",
+      "spec_compliance_review": "Проверены все 20 пунктов спецификации (файл dev/docs/logs/skills-modifications/10.04_19.07-feature-pipeline-project-switching/agent-outputs/02-feature-spec.json). Все реализованы: (1) project_manager.py — все 5 публичных функций на месте (scan_available_projects, switch_project, get_current_project_path, load_last_selected_project, save_selected_project). (2) config.py — PROJECTS_ROOT_DIR, LAST_PROJECT_FILE, _resolve_projects_root, обновление load_config. (3) process_manager.stop_all_processes. (4) session_manager.reset_state. (5) daily_session_registry.reset_state с правильным сбросом _loaded_from_disk. (6) session_watcher.reset_state через clear(). (7) bot.py — handle_projects, handle_switch_project, регистрация, BOT_COMMANDS, константы сообщений, маркер ●. (8) main.py — _restore_last_selected_project. (9) .env.example — новая переменная. Тесты: все тест-классы из плана написаны и проходят.",
+      "regression_review": "Проверены: все существующие 384 теста продолжают работать (459 - 75 новых = 384). Ни один старый тест не сломан. Поведение существующих функций не изменилось — только добавлены новые функции. Модульное состояние session_manager, daily_session_registry, session_watcher теперь может быть сброшено, но это не затрагивает обычный поток работы (load_bindings и load_registry работают как раньше). Поведение bot.py не изменилось для существующих команд — добавлены только новые обработчики /projects и /pN. main.py теперь вызывает _restore_last_selected_project, но эта функция всегда возвращает None при отсутствии файла, так что поведение при первом запуске идентично прежнему."
+    }
+  }
+}

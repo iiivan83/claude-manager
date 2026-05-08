@@ -1,0 +1,160 @@
+{
+  "agent": "feature-test-plan-review",
+  "status": "success",
+  "timestamp": "2026-04-12T17:29:23+03:00",
+  "result": {
+    "verdict": "approved",
+    "issues": [
+      {
+        "type": "missing_coverage",
+        "description": "В тест-плане bot.py нет теста test_send_response_file_not_found_sends_error, который есть в спеке. Этот тест проверяет критичный путь: если файл не найден, бот отправляет пользователю сообщение об ошибке вместо крэша. Нужно добавить его вместо одного из избыточных no-markers тестов.",
+        "severity": "warning"
+      },
+      {
+        "type": "redundant",
+        "description": "test_send_response_no_markers_unchanged и test_send_watcher_message_no_markers_unchanged избыточны. Все существующие тесты TestSendResponse и TestSendWatcherMessage (6 штук) уже проверяют путь без маркеров — сам тест-план это признаёт: 'Существующие 3 теста... остаются без изменений — текст без маркеров проходит через _process_file_markers без изменений'. Явные no-markers тесты дублируют эту проверку.",
+        "severity": "warning"
+      },
+      {
+        "type": "missing_coverage",
+        "description": "В тест-плане bot.py нет теста test_process_file_markers_no_markers из спеки, который тестирует _process_file_markers напрямую (а не через send_response). Прямой тест точнее изолирует поведение функции. Нужно добавить его вместо второго избыточного no-markers теста.",
+        "severity": "warning"
+      }
+    ],
+    "approved_plan": {
+      "test_framework": "pytest + pytest-asyncio",
+      "scale": "medium",
+      "tests_to_update": [
+        {
+          "path": "tests/test_bot.py",
+          "changes": "Добавить 8 тестов в два новых класса. Класс TestSendResponseFileMarkers (5 тестов): 1) test_send_response_with_text_file_marker — send_response с текстом 'ответ [SEND_FILE:/tmp/test.md]' при is_final=True вызывает _process_file_markers, маркер вырезается из текста, _send_text_file вызван для текстового файла. Мок: patch _process_file_markers чтобы возвращал очищенный текст. 2) test_send_response_not_final_skips_file_markers — send_response с маркером при is_final=False НЕ вызывает _process_file_markers, маркер проходит в текст как есть. Мок: patch _process_file_markers, проверяем что НЕ вызван. 3) test_send_response_with_binary_file_marker — send_response с [SEND_FILE:/tmp/image.png] при is_final=True, file_sender.is_text_file возвращает False, вызывается _send_binary_file. Мок: patch _process_file_markers. 4) test_send_response_multiple_file_markers — текст с двумя маркерами, _process_file_markers вызван, оба маркера обработаны. Мок: patch _process_file_markers. 5) test_send_response_file_not_found_sends_error — send_response с маркером, file_sender.read_file_content возвращает ('', 'Файл не найден: ...'), пользователь получает сообщение об ошибке, бот не крашится. Класс TestSendWatcherMessageFileMarkers (2 теста): 1) test_send_watcher_message_with_file_marker — send_watcher_message с маркером при is_final=True, _process_file_markers вызван. 2) test_send_watcher_message_not_final_skips_markers — при is_final=False _process_file_markers НЕ вызван. Класс TestProcessFileMarkers (1 тест): 1) test_process_file_markers_no_markers — _process_file_markers с текстом без маркеров возвращает текст без изменений, никакие функции отправки не вызваны. Также добавить импорт _process_file_markers, _send_text_file, _send_binary_file, FILE_CONTENT_HEADER_TEMPLATE в блок импортов из claude_manager.bot."
+        },
+        {
+          "path": "tests/integration/test_message_path.py",
+          "changes": "Добавить 1 тест в новый класс TestMessagePathWithFileMarkers: test_response_with_send_file_marker_strips_marker — интеграционный тест полной цепочки. Ответ Claude содержит 'Вот файл [SEND_FILE:/tmp/readme.md] и пояснение'. Проходит через process_manager._process_events, получаем SendResult с текстом. Вызываем file_sender.extract_file_markers на тексте, получаем ['/tmp/readme.md']. Вызываем file_sender.strip_file_markers, маркер вырезан, текст 'Вот файл  и пояснение' (с нормализацией пробелов). Вызываем message_splitter.prepare_message на очищенном тексте, HTML без маркеров. Тест проверяет взаимодействие трёх модулей (process_manager + file_sender + message_splitter) в реальной цепочке. Мок: subprocess (как в остальных тестах файла), file_sender используется реальный (без мока). НЕ мокаем telegramify-markdown — пусть реально рендерит."
+        }
+      ],
+      "tests_to_add": [
+        {
+          "path": "tests/test_file_sender.py",
+          "description": "Юнит-тесты нового модуля file_sender.py — 32 теста в 7 классах. Все функции модуля покрыты: парсинг маркеров, определение типа, чтение файлов, рендеринг, конвертация entities, проверка бинарных файлов.",
+          "level": "unit",
+          "details": {
+            "classes": [
+              {
+                "name": "TestExtractFileMarkers",
+                "tests": [
+                  "test_single_marker — текст 'text [SEND_FILE:/path/to/file.md] more' -> ['/path/to/file.md']",
+                  "test_multiple_markers — текст с тремя маркерами -> список трёх путей в порядке появления",
+                  "test_no_markers — обычный текст без маркеров -> пустой список",
+                  "test_path_with_spaces — [SEND_FILE:/path/to my file.md] -> '/path/to my file.md'",
+                  "test_strips_whitespace — [SEND_FILE:  /path/file.md  ] -> '/path/file.md' (пробелы убраны)"
+                ]
+              },
+              {
+                "name": "TestStripFileMarkers",
+                "tests": [
+                  "test_removes_single_marker — маркер вырезан, текст до и после на месте",
+                  "test_collapses_empty_lines — после вырезки маркера на отдельной строке не остаётся больше двух пустых строк подряд",
+                  "test_no_markers_unchanged — текст без маркеров возвращается идентично",
+                  "test_removes_multiple_markers — несколько маркеров -> все вырезаны"
+                ]
+              },
+              {
+                "name": "TestIsTextFile",
+                "tests": [
+                  "test_markdown_is_text — /path/file.md -> True",
+                  "test_python_is_text — /path/file.py -> True",
+                  "test_json_is_text — /path/file.json -> True",
+                  "test_various_text_extensions — parametrize по sh, js, ts, html, css, yml, yaml, toml -> все True",
+                  "test_png_is_binary — /path/image.png -> False",
+                  "test_zip_is_binary — /path/archive.zip -> False",
+                  "test_pdf_is_binary — /path/doc.pdf -> False",
+                  "test_no_extension_is_binary — /path/randomfile (без расширения, не в TEXT_FILE_NAMES) -> False",
+                  "test_known_filenames_are_text — Makefile, Dockerfile, .gitignore, .env -> True",
+                  "test_case_insensitive — /path/FILE.MD, /path/script.PY -> True"
+                ]
+              },
+              {
+                "name": "TestReadFileContent",
+                "tests": [
+                  "test_reads_existing_file — реальный tmp-файл с содержимым -> (содержимое, None). Фикстура tmp_path создаёт файл",
+                  "test_file_not_found — несуществующий путь -> ('', 'Файл не найден: ...')",
+                  "test_permission_error — мок os.path.getsize бросает PermissionError -> ('', 'Нет доступа к файлу: ...')",
+                  "test_file_too_large — мок os.path.getsize возвращает MAX_TEXT_FILE_SIZE_BYTES + 1 -> ('', 'Файл слишком большой...')",
+                  "test_unicode_decode_error — мок Path.read_text бросает UnicodeDecodeError -> ('', 'Файл не является текстовым: ...')",
+                  "test_empty_file — реальный tmp-файл пустой -> ('', None)"
+                ]
+              },
+              {
+                "name": "TestRenderFileForTelegram",
+                "tests": [
+                  "test_simple_markdown — простой Markdown текст '**bold** text' -> список чанков, хотя бы один элемент, entities не пустые",
+                  "test_long_content_splits — текст длиннее 4096 символов -> len(result) > 1, каждый чанк text <= 4096",
+                  "test_empty_content — пустая строка -> [('(пустой файл)', [])]"
+                ]
+              },
+              {
+                "name": "TestConvertEntities",
+                "tests": [
+                  "test_basic_conversion — entity с type='bold', offset=0, length=4 -> telegram.MessageEntity с теми же полями",
+                  "test_entity_with_url — entity с url -> url сохраняется при конвертации",
+                  "test_empty_list — пустой список -> пустой список"
+                ]
+              },
+              {
+                "name": "TestCheckBinaryFile",
+                "tests": [
+                  "test_existing_file_ok — реальный tmp-файл нормального размера -> None",
+                  "test_file_not_found — несуществующий путь -> строка с ошибкой 'Файл не найден'",
+                  "test_file_too_large — мок os.path.getsize возвращает MAX_BINARY_FILE_SIZE_BYTES + 1 -> строка 'Файл слишком большой...'"
+                ]
+              }
+            ],
+            "mocking_strategy": "Файловую систему мокаем через tmp_path (реальные файлы в tmpdir) для happy path, через patch os.path.getsize / Path.read_text для ошибок. telegramify_markdown НЕ мокаем в render_file_for_telegram — вызываем реальную библиотеку, проверяем поведение (возвращает чанки правильной длины). convert_entities мокаем входные entity через MagicMock с атрибутами type, offset, length, url, language.",
+            "style_notes": "Стиль соответствует test_bot.py: классы группируют тесты по функции, каждый тест — один assert на одно поведение, docstring на русском объясняет что проверяется, фикстура autouse для общей настройки."
+          }
+        }
+      ],
+      "tests_to_delete": [],
+      "coverage_rationale": {
+        "unit_tests_file_sender": "32 теста покрывают все 7 публичных функций модуля. Фокус на граничных случаях: пустые входные данные, ошибки файловой системы, файлы без расширения, unicode-ошибки, превышение лимитов размера. Не тестируем приватные детали (конкретные regex, внутренние переменные) — только входы и выходы.",
+        "unit_tests_bot": "8 тестов покрывают интеграцию file_sender в bot.py. Ключевой guard: is_final=False не обрабатывает маркеры — тестируется для обеих функций (send_response, send_watcher_message). Тест ошибки чтения файла (file_not_found_sends_error) проверяет что бот не падает при проблемах с файловой системой. Прямой тест _process_file_markers без маркеров изолирует поведение функции.",
+        "integration_tests": "1 тест проверяет полный путь: ответ Claude с маркером -> process_manager -> file_sender.extract + strip -> message_splitter. Не дублирует юнит-тесты — проверяет именно взаимодействие модулей.",
+        "e2e_not_included": "E2E тест для отправки файлов не включён — для масштаба medium E2E покрытие опционально.",
+        "not_tested_and_why": [
+          "Безопасность путей (чтение /etc/passwd и т.п.) — бот однопользовательский и локальный, пользователь и так имеет доступ ко всей файловой системе.",
+          "_shift_entity — приватная вспомогательная функция, тестируется косвенно через _send_text_file.",
+          "_send_text_file, _send_binary_file как отдельные функции — тестируются косвенно через _process_file_markers и send_response."
+        ]
+      },
+      "review_corrections": [
+        {
+          "action": "removed",
+          "test": "test_send_response_no_markers_unchanged (TestSendResponseFileMarkers)",
+          "reason": "Избыточен. Все существующие тесты TestSendResponse уже проверяют путь без маркеров — extract_file_markers возвращает пустой список для текста без маркеров. Явный тест дублирует это."
+        },
+        {
+          "action": "removed",
+          "test": "test_send_watcher_message_no_markers_unchanged (TestSendWatcherMessageFileMarkers)",
+          "reason": "Избыточен по той же причине — существующие тесты TestSendWatcherMessage уже покрывают этот путь."
+        },
+        {
+          "action": "added",
+          "test": "test_send_response_file_not_found_sends_error (TestSendResponseFileMarkers)",
+          "reason": "Критичный путь из спеки: ошибка чтения файла не должна крашить бота. Пользователь должен получить понятное сообщение об ошибке."
+        },
+        {
+          "action": "added",
+          "test": "test_process_file_markers_no_markers (TestProcessFileMarkers)",
+          "reason": "Из спеки: прямой тест _process_file_markers без маркеров. Изолирует поведение функции лучше, чем тест через send_response."
+        },
+        {
+          "action": "restructured",
+          "test": "TestSendWatcherMessageFileMarkers",
+          "reason": "Сокращён с 3 до 2 тестов (убран no_markers_unchanged). Оставлены только тесты уникального поведения: маркер обрабатывается при is_final=True, игнорируется при is_final=False."
+        }
+      ]
+    }
+  }
+}

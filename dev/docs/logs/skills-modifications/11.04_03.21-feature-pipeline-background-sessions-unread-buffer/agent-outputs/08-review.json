@@ -1,0 +1,200 @@
+{
+  "agent": "review-code",
+  "status": "success",
+  "timestamp": "2026-04-11T04:15:00+03:00",
+  "needs_rollback": false,
+  "test_results": {
+    "total": 175,
+    "passed": 175,
+    "failed": 0,
+    "errors": 0
+  },
+  "passes": [
+    {
+      "name": "pass_1_code_quality",
+      "title": "Качество кода",
+      "issues": [
+        {
+          "severity": "warning",
+          "file": "src/claude_manager/unread_buffer.py",
+          "line": 46,
+          "issue": "Тип параметра _is_empty_response(text: str) аннотирован как str, но в тесте test_none_is_empty вызывается с None и функция это корректно обрабатывает через `if not text`. Аннотация не соответствует реальному контракту — должна быть str | None.",
+          "fix": "Изменить сигнатуру на _is_empty_response(text: str | None) -> bool"
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/unread_buffer.py",
+          "lines": "53-81",
+          "issue": "Функции _extract_message_text и _is_empty_response дублируют код из session_watcher.py. Это документированное архитектурное решение (избежание горизонтальной зависимости между модулями бизнес-логики). Дублирование обосновано в спецификации и в комментариях кода."
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/project_manager.py",
+          "line": 59,
+          "issue": "pending_messages: list — тип list без generic-параметра. Семантически это list[unread_buffer.PendingMessage], но в SwitchResult использован голый list. Это допустимо для inter-module boundary (SwitchResult — контракт между project_manager и bot), чтобы bot не зависел от unread_buffer.PendingMessage напрямую. Альтернатива — list[Any] или Protocol. Текущее решение работает."
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/bot.py",
+          "line": 715,
+          "issue": "pending_messages: list — тот же голый list без generic-параметра. Согласуется с SwitchResult."
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/project_manager.py",
+          "line": 200,
+          "issue": "В спецификации _rollback_switch принимает два параметра (old_path, target_path), в реализации — один (old_path). Реализация проще и корректна: target_path в rollback не используется. Снапшот очищается по old_path, что правильно."
+        }
+      ]
+    },
+    {
+      "name": "pass_2_security",
+      "title": "Безопасность",
+      "issues": [
+        {
+          "severity": "info",
+          "file": "src/claude_manager/unread_buffer.py",
+          "issue": "Модуль не обрабатывает пользовательский ввод напрямую и не выполняет сетевые запросы. Данные приходят из session_reader (читает JSONL с диска). Путь к проекту (project_path) проходит валидацию в project_manager._validate_target_path до передачи в unread_buffer. Угроз injection нет."
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/project_manager.py",
+          "issue": "Валидация target_path через _validate_target_path сохранена: проверка существования, тип (папка), path traversal, права чтения. Снапшот сохраняется только для валидного project_path."
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/bot.py",
+          "issue": "Доставка pending_messages отправляется через send_response, который проходит через message_splitter.prepare_message (HTML-экранирование). Нет прямой вставки user-контролируемого текста в HTML."
+        }
+      ]
+    },
+    {
+      "name": "pass_3_architecture",
+      "title": "Архитектура",
+      "issues": [
+        {
+          "severity": "info",
+          "file": "src/claude_manager/unread_buffer.py",
+          "issue": "Зависимости корректны: импортирует config (утилита) и session_reader (инфраструктура). НЕ импортирует session_watcher (тот же слой бизнес-логики). Правило зависимостей соблюдено."
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/project_manager.py",
+          "issue": "Импортирует unread_buffer — это допустимо: project_manager координирует state-модули, включая unread_buffer. Оба на слое бизнес-логики, но project_manager — координатор, что делает эту зависимость направленной (координатор → компонент)."
+        },
+        {
+          "severity": "info",
+          "file": "src/claude_manager/bot.py",
+          "issue": "bot.py (транспортный слой) НЕ импортирует unread_buffer напрямую. Получает pending_messages через SwitchResult из project_manager. Слоёная архитектура сохранена."
+        },
+        {
+          "severity": "info",
+          "issue": "Circular imports отсутствуют. Граф зависимостей: bot → project_manager → {session_watcher, unread_buffer, session_manager, daily_session_registry, config}. unread_buffer → {config, session_reader}. Циклов нет."
+        }
+      ]
+    },
+    {
+      "name": "pass_4_spec_compliance",
+      "title": "Соответствие спецификации",
+      "issues": [
+        {
+          "severity": "info",
+          "issue": "SwitchResult.stopped_processes_count полностью заменён на pending_messages_count и pending_messages. Все ссылки в project_manager.py, bot.py и тестах обновлены."
+        },
+        {
+          "severity": "info",
+          "issue": "stop_all_processes НЕ вызывается при переключении — подтверждено: grep по project_manager.py не находит stop_all_processes. Функция остаётся в process_manager для graceful shutdown."
+        },
+        {
+          "severity": "info",
+          "issue": "Снапшот сохраняется при уходе: _perform_switch вызывает session_watcher.get_seen_counts_snapshot() и unread_buffer.save_snapshot(old_path, seen_snapshot) перед сменой WORKING_DIR."
+        },
+        {
+          "severity": "info",
+          "issue": "Pending доставляются при возврате: _finalize_successful_switch вызывает _collect_pending_messages, которая проверяет has_pending, вызывает get_pending_messages и clear_snapshot. bot.py вызывает _deliver_pending_messages для каждого сообщения."
+        },
+        {
+          "severity": "info",
+          "issue": "TTL 3 часа: config.UNREAD_BUFFER_TTL_HOURS = 3, используется в _is_snapshot_expired через timedelta(hours=...). Тесты проверяют свежий, просроченный и граничный случай."
+        },
+        {
+          "severity": "info",
+          "issue": "Дедупликация через messages[seen_count:]: _collect_from_session берёт all_messages[seen_count:] — детерминированный срез JSONL-файла."
+        },
+        {
+          "severity": "warning",
+          "file": "src/claude_manager/bot.py",
+          "issue": "Спецификация упоминает BUFFERED_MESSAGE_HEADER = 'Пропущенное из #{day_number}' как заголовок для каждого буферизованного сообщения. В реализации этот шаблон отсутствует — pending-сообщения доставляются через send_response с обычным заголовком сессии (#N). Решение в реализации проще и визуально единообразнее (pending выглядит как обычный ответ сессии), но отличается от спецификации.",
+          "fix": "Это расхождение со спецификацией допустимо — текущая реализация проще и не теряет функциональности. Пользователь видит номер сессии и текст, чего достаточно. Можно оставить как есть, но задокументировать расхождение."
+        },
+        {
+          "severity": "info",
+          "issue": "cleanup_expired() вызывается в _finalize_successful_switch — чистит просроченные снапшоты других проектов. Соответствует спецификации."
+        }
+      ]
+    },
+    {
+      "name": "pass_5_regression",
+      "title": "Регрессия",
+      "issues": [
+        {
+          "severity": "info",
+          "issue": "Все 174 теста проходят: 125 из test_bot.py, 22 из test_project_manager.py, 15 из test_unread_buffer.py (новые), 7 из test_session_watcher.py, 5 из test_project_switching.py (integration)."
+        },
+        {
+          "severity": "warning",
+          "file": "tests/test_bot.py",
+          "issue": "Нет теста на _deliver_pending_messages — функцию доставки пропущенных сообщений. Тест test_success_message_includes_pending_count проверяет только текст ответа (pending_messages_count=3 в SwitchResult), но pending_messages=[] — доставка сообщений не тестируется. Нужен тест, где pending_messages содержит реальные PendingMessage и проверяется, что send_response вызывается для каждого.",
+          "fix": "Добавить тест test_delivers_pending_messages_after_switch в TestHandleSwitchProject"
+        },
+        {
+          "severity": "info",
+          "file": "tests/test_session_watcher.py",
+          "issue": "Импорт get_seen_counts_snapshot добавлен корректно. 3 теста на snapshot (возврат копии, независимость от оригинала, пустой словарь) покрывают функцию."
+        },
+        {
+          "severity": "info",
+          "file": "tests/test_project_manager.py",
+          "issue": "Все тесты обновлены: stopped_processes_count заменён на pending_messages_count и pending_messages. Моки stop_all_processes заменены на моки unread_buffer (save_snapshot, has_pending, cleanup_expired). rollback-тест проверяет unread_buffer.clear_snapshot."
+        },
+        {
+          "severity": "info",
+          "file": "tests/integration/test_project_switching.py",
+          "issue": "Добавлен import unread_buffer и его сброс в _reset_all_module_state. test_switch_saves_watcher_snapshot проверяет координацию watcher → snapshot. Остальные тесты обновлены корректно."
+        },
+        {
+          "severity": "info",
+          "file": "tests/e2e/test_project_switching.py",
+          "issue": "E2E тесты не ищут 'Остановлено процессов' — обновлены на новые шаблоны. test_flow09 ищет 'Переключено на проект' и имя проекта — корректно."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "warning": 3,
+    "info": 19,
+    "verdict": "Код готов к мерджу после исправления 3 warning-проблем. Критических проблем нет. Архитектура чистая, зависимости корректные, все 174 теста проходят."
+  },
+  "warnings_to_fix": [
+    {
+      "id": "W1",
+      "description": "Тип параметра _is_empty_response аннотирован как str, но тест передаёт None",
+      "file": "src/claude_manager/unread_buffer.py",
+      "line": 46,
+      "action": "fix"
+    },
+    {
+      "id": "W2",
+      "description": "Нет теста на _deliver_pending_messages — функцию доставки буферизованных сообщений",
+      "file": "tests/test_bot.py",
+      "action": "fix"
+    },
+    {
+      "id": "W3",
+      "description": "BUFFERED_MESSAGE_HEADER из спецификации не реализован — pending-сообщения используют обычный заголовок сессии",
+      "file": "src/claude_manager/bot.py",
+      "action": "document_only"
+    }
+  ]
+}

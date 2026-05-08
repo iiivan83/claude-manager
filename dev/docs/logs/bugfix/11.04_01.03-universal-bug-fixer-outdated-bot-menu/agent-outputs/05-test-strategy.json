@@ -1,0 +1,115 @@
+{
+  "agent": "test-strategist",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-11T01:30:00Z",
+  "status": "success",
+  "input": {
+    "description": "Стратегия тестирования для фикса строковых констант в BOT_COMMANDS и ответе handle_all",
+    "files": ["01-intake.json", "02-understanding.json", "03-root-cause.json"]
+  },
+  "created_files": [
+    "pipeline-workspace/tests/test_bot_commands_descriptions.py",
+    "pipeline-workspace/tests/blackbox/test_bot_commands_blackbox.py"
+  ],
+  "result": {
+    "environment_validated": {
+      "passed": true,
+      "validation_test": "python -m pytest tests/test_bot.py::TestPostInit::test_post_init_sets_commands -x -q",
+      "details": "1 passed in 0.14s — тестовое окружение работоспособно"
+    },
+    "project_test_framework": {
+      "tool": "pytest",
+      "discovered_at": "tests/test_bot.py, pyproject.toml (asyncio_mode = auto)"
+    },
+    "existing_patterns_found": [
+      {
+        "file": "tests/test_bot.py:980-994",
+        "pattern": "TestPostInit.test_post_init_sets_commands — проверяет, что set_my_commands вызывается с правильным количеством команд (len == len(BOT_COMMANDS)). НЕ проверяет содержимое описаний — только количество."
+      },
+      {
+        "file": "tests/test_bot.py:431-444",
+        "pattern": "TestHandleAll.test_handle_all_switches_to_monitoring — проверяет, что unbind_session вызывается и что в ответе есть слово «мониторинг». ВНИМАНИЕ: если описание DEV-1 изменит ответ handle_all (строка 654) и уберёт слово «мониторинг», этот тест упадёт. Нужно будет обновить assertion."
+      }
+    ],
+    "method_checklist": [
+      {
+        "method": "unit",
+        "chosen": false,
+        "reason": "Нет логики для юнит-тестирования. Изменяются строковые константы, не алгоритмы. Существующие юнит-тесты (test_post_init_sets_commands, test_handle_all_switches_to_monitoring) уже покрывают поведение — они проверяют вызовы функций, а не текст."
+      },
+      {
+        "method": "integration",
+        "chosen": false,
+        "reason": "Изменения не затрагивают взаимодействие модулей. Строковые константы не влияют на интеграцию."
+      },
+      {
+        "method": "e2e",
+        "chosen": false,
+        "reason": "Пропорционально избыточно. E2E тест для проверки текста в меню потребовал бы запуск бота + Telethon + реальный Telegram. Для двух строк это перебор."
+      },
+      {
+        "method": "comparative",
+        "chosen": false,
+        "reason": "Нет «до/после» в поведении — меняется только текст."
+      },
+      {
+        "method": "anchor_values",
+        "chosen": true,
+        "reason": "Идеальный метод для проверки строковых констант. Проверяем, что после фикса константы содержат правильные значения. Быстро, дёшево, точно."
+      },
+      {
+        "method": "idempotency",
+        "chosen": false,
+        "reason": "Неприменимо — строковые константы не имеют побочных эффектов."
+      },
+      {
+        "method": "contract",
+        "chosen": false,
+        "reason": "Контракт с Telegram API (формат BotCommand) не меняется — только текст описания."
+      },
+      {
+        "method": "snapshot",
+        "chosen": false,
+        "reason": "Избыточно для двух строк. Snapshot-тесты полезны когда меняется структура вывода, а здесь — только текст."
+      },
+      {
+        "method": "regression",
+        "chosen": true,
+        "reason": "Существующий тест test_handle_all_switches_to_monitoring проверяет «мониторинг» в ответе. Если фикс DEV-1 изменит ответ handle_all — тест сломается. Нужно убедиться, что существующие тесты адаптированы. Регрессионная проверка: все 5 команд по-прежнему передаются в set_my_commands."
+      },
+      {
+        "method": "stress_boundary",
+        "chosen": false,
+        "reason": "Строковые константы не имеют граничных условий."
+      },
+      {
+        "method": "trigger",
+        "chosen": false,
+        "reason": "Не скилл — не применимо."
+      }
+    ],
+    "chosen_approaches": ["anchor_values", "regression"],
+    "whitebox_tests": [
+      {
+        "file": "pipeline-workspace/tests/test_bot_commands_descriptions.py",
+        "description": "Якорные тесты: проверяют, что описания команд в BOT_COMMANDS содержат корректные тексты после фикса. Проверяют, что описание /all НЕ содержит вводящий в заблуждение текст «Мониторинг всех сессий». Проверяют, что описание /projects стало короче. Проверяют, что ответ handle_all (строка 654) соответствует обновлённому описанию.",
+        "test_count": 4
+      }
+    ],
+    "blackbox_tests": [
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_bot_commands_blackbox.py",
+        "description": "Чёрный ящик: проверяет, что все 5 команд присутствуют в BOT_COMMANDS и ни одна не содержит старых некорректных описаний. Дополнительно проверяет, что существующий тест test_handle_all по-прежнему проходит (регрессия).",
+        "test_count": 3
+      }
+    ],
+    "total_whitebox": 4,
+    "total_blackbox": 3,
+    "notes": {
+      "existing_test_impact": "Тест test_handle_all_switches_to_monitoring (строка 431) проверяет assert «мониторинг» in sent_text.lower(). Если фикс DEV-1 изменит ответ на строке 654 и уберёт слово «мониторинг» — этот тест упадёт. Исполнителю нужно будет обновить assertion в существующем тесте. Если слово «мониторинг» останется в ответе (например, «Режим наблюдения (мониторинг отключён)»), тест пройдёт без изменений.",
+      "proportionality": "Изменение строковых констант — самый простой класс багов. 4 whitebox + 3 blackbox тестов — достаточно. Не создаём integration/e2e тесты, потому что строки не влияют на поведение."
+    }
+  },
+  "next_agent": "critical-verifier"
+}

@@ -1,0 +1,177 @@
+{
+  "agent": "feature-impact-analysis",
+  "status": "success",
+  "timestamp": "2026-04-13T12:12:00+03:00",
+  "result": {
+    "affected_files": [
+      {
+        "path": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "reason": "Добавить _global_paused флаг, функции pause_all()/resume_all(), множество _missing_file_sessions для защиты от лог-спама. Добавить проверку _global_paused в _poll_sessions() перед опросом. Очистить _missing_file_sessions в reset_state()."
+      },
+      {
+        "path": "src/claude_manager/project_manager.py",
+        "type": "modify",
+        "reason": "В _perform_switch() вызвать session_watcher.pause_all() ПЕРЕД config.WORKING_DIR = target_path и session_watcher.resume_all() ПОСЛЕ _reset_all_state_modules(). В _rollback_switch() тоже вызвать resume_all() после отката."
+      },
+      {
+        "path": "src/claude_manager/daily_session_registry.py",
+        "type": "modify",
+        "reason": "В load_registry() добавить кросс-проверку session_id против .jsonl файлов на диске — ПОСЛЕ _remove_phantom_entries() и _remove_duplicate_entries(). Записи без файлов (кроме _new_*) удаляются."
+      },
+      {
+        "path": "CLAUDE.md",
+        "type": "modify",
+        "reason": "Добавить принцип 'Атомарность переключения проекта' в раздел 'Архитектурные принципы' после 'Состояние в памяти'. Обновить описание переключения проектов в 'Важные детали' — упомянуть глобальную паузу watcher."
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "type": "modify",
+        "reason": "Добавить тесты для pause_all()/resume_all(), _global_paused, _missing_file_sessions. Обновить фикстуру _reset_watcher_state для очистки новых полей."
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "type": "modify",
+        "reason": "Добавить мок/проверку вызовов session_watcher.pause_all()/resume_all() в тестах switch_project. Проверить порядок вызовов: pause_all → config.WORKING_DIR → reset → resume_all."
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "type": "modify",
+        "reason": "Добавить тесты для кросс-проверки файлов при load_registry(). Проверить что записи без .jsonl удаляются, записи с _new_ пропускаются, записи с валидными файлами остаются."
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "type": "modify",
+        "reason": "Добавить интеграционный тест: watcher не видит промежуточное состояние при переключении. Проверить что pause_all/resume_all вызываются в правильном порядке в полном цикле переключения."
+      }
+    ],
+    "affected_functions": [
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "function": "_poll_sessions",
+        "impact": "Добавить проверку _global_paused в начало — если True, пропускать весь цикл опроса (return сразу). Аналогично проверке _paused_sessions для отдельных сессий, но на глобальном уровне."
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "function": "pause_all (новая)",
+        "impact": "Новая функция: устанавливает _global_paused = True. Синхронная (без async), по аналогии с pause_session(). Логирует событие через logger.info."
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "function": "resume_all (новая)",
+        "impact": "Новая функция: сбрасывает _global_paused = False. Синхронная (без async), по аналогии с pause_session(). Логирует событие через logger.info."
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "function": "_check_session",
+        "impact": "Добавить session_id в множество _missing_file_sessions при отсутствии файла (когда get_session_messages возвращает пустой список или кидает исключение). При повторном попадании в это множество — не логировать WARNING повторно."
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "function": "reset_state",
+        "impact": "Добавить очистку _missing_file_sessions.clear() и _global_paused = False рядом с _paused_sessions.clear()."
+      },
+      {
+        "file": "src/claude_manager/project_manager.py",
+        "function": "_perform_switch",
+        "impact": "Обернуть переключение в pause_all/resume_all: вызвать session_watcher.pause_all() ПЕРЕД строкой config.WORKING_DIR = target_path (строка 195) и session_watcher.resume_all() ПОСЛЕ await _reset_all_state_modules() (строка 197). Это закрывает окно гонки полностью."
+      },
+      {
+        "file": "src/claude_manager/project_manager.py",
+        "function": "_rollback_switch",
+        "impact": "Добавить session_watcher.resume_all() в блок отката — если pause_all() был вызван до ошибки, watcher должен быть разблокирован после отката."
+      },
+      {
+        "file": "src/claude_manager/daily_session_registry.py",
+        "function": "load_registry",
+        "impact": "Добавить вызов новой функции _remove_orphan_entries() после _remove_duplicate_entries() — проверяет каждый session_id (кроме _new_*) на наличие .jsonl файла в директории сессий текущего проекта. Записи без файлов удаляются."
+      },
+      {
+        "file": "src/claude_manager/daily_session_registry.py",
+        "function": "_remove_orphan_entries (новая)",
+        "impact": "Новая функция: итерирует по всем записям реестра, для каждого session_id (не _new_*) проверяет существование .jsonl файла через session_reader или прямой glob. Возвращает количество удалённых записей."
+      }
+    ],
+    "affected_tests": [
+      {
+        "path": "tests/test_session_watcher.py",
+        "action": "update",
+        "reason": "Фикстура _reset_watcher_state: добавить очистку _global_paused = False и _missing_file_sessions = set(). Добавить новый класс TestPauseAllResumeAll с тестами: pause_all устанавливает флаг, resume_all сбрасывает, _poll_sessions пропускает цикл при _global_paused=True, другие сессии не проверяются при глобальной паузе. Добавить класс TestMissingFileSessions: повторный WARNING не генерируется, reset_state очищает множество."
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "action": "update",
+        "reason": "Все тесты TestSwitchProject с мокированием session_watcher: добавить мок session_watcher.pause_all и session_watcher.resume_all. Добавить тест test_pause_all_called_before_working_dir_change — проверяет порядок: pause_all → config.WORKING_DIR → reset → resume_all. Добавить тест test_resume_all_called_on_rollback — при ошибке в reset_state resume_all всё равно вызывается."
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "action": "update",
+        "reason": "Добавить класс TestRemoveOrphanEntries: тесты для кросс-проверки файлов при load_registry(). Сценарии: запись с существующим .jsonl остаётся, запись без .jsonl удаляется, запись с _new_ пропускается, счётчик удалённых корректен, пустой реестр — 0 удалённых."
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "action": "update",
+        "reason": "Добавить тест: полный цикл переключения вызывает pause_all/resume_all. Добавить тест: при откате после ошибки resume_all тоже вызывается."
+      },
+      {
+        "path": "tests/integration/test_watcher_handler_coordination.py",
+        "action": "keep",
+        "reason": "Тесты координации pause_session/resume_session не затрагиваются напрямую — они проверяют per-session паузу, а не глобальную. Новые тесты на pause_all/resume_all можно добавить здесь или в test_project_switching.py."
+      }
+    ],
+    "risk_zones": [
+      {
+        "area": "Порядок вызовов pause_all/resume_all в _perform_switch и _rollback_switch",
+        "risk_level": "high",
+        "reason": "Если resume_all() не вызовется после ошибки (забыт в rollback, исключение до resume), watcher остаётся заблокированным навсегда — бот перестаёт отправлять уведомления. Критично обеспечить resume_all в finally-блоке или в каждой ветке отката."
+      },
+      {
+        "area": "Кросс-проверка файлов в load_registry() зависит от формата пути к сессиям",
+        "risk_level": "medium",
+        "reason": "Функция _remove_orphan_entries должна знать, где лежат .jsonl файлы для текущего проекта. Путь формируется через session_reader или config — нужно использовать тот же путь, что и session_reader.get_session_messages(). Ошибка в формировании пути удалит валидные записи."
+      },
+      {
+        "area": "Взаимодействие _global_paused и _paused_sessions при resume_all",
+        "risk_level": "low",
+        "reason": "resume_all() сбрасывает только _global_paused. Если отдельная сессия была на per-session паузе (через pause_session) до глобальной паузы, она должна остаться на паузе после resume_all. Текущий дизайн это обеспечивает: _global_paused — отдельный флаг от _paused_sessions."
+      },
+      {
+        "area": "reset_state() вызывает _get_sessions_to_monitor() который использует config.WORKING_DIR",
+        "risk_level": "medium",
+        "reason": "В _perform_switch: config.WORKING_DIR уже изменён ПЕРЕД _reset_all_state_modules(). Внутри session_watcher.reset_state() вызывается _get_sessions_to_monitor() → session_reader.get_recent_sessions(config.WORKING_DIR) — это правильно (уже новый путь). Но если watcher не на паузе, он тоже увидит новый WORKING_DIR — именно поэтому pause_all обязателен."
+      },
+      {
+        "area": "Существующие тесты test_project_manager.py не мокируют pause_all/resume_all",
+        "risk_level": "medium",
+        "reason": "После добавления pause_all/resume_all в _perform_switch, все существующие тесты switch_project будут вызывать реальные pause_all/resume_all на модуле session_watcher. Нужно добавить мок для этих функций во все тесты, иначе они будут менять глобальное состояние session_watcher."
+      }
+    ],
+    "spec_conflicts": [
+      {
+        "document": "CLAUDE.md — раздел 'Переключение проектов' в 'Важные детали'",
+        "conflict": "Текущее описание не упоминает глобальную паузу watcher. После реализации нужно добавить: 'Перед сменой WORKING_DIR watcher приостанавливается через pause_all(), после полного сброса state-модулей — возобновляется через resume_all()'. Это не конфликт, а пробел в документации.",
+        "resolution": "Обновить описание переключения проектов в CLAUDE.md"
+      },
+      {
+        "document": "CLAUDE.md — раздел 'Архитектурные принципы'",
+        "conflict": "Нет принципа атомарности переключения проекта. Существующие принципы не противоречат, но не покрывают случай координации фоновых задач при смене глобального состояния.",
+        "resolution": "Добавить подраздел 'Атомарность переключения проекта' после 'Состояние в памяти'"
+      }
+    ],
+    "new_tests_needed": [
+      "test_pause_all_sets_global_flag — pause_all() устанавливает _global_paused = True",
+      "test_resume_all_clears_global_flag — resume_all() сбрасывает _global_paused = False",
+      "test_poll_sessions_skips_when_globally_paused — _poll_sessions() не делает ничего при _global_paused=True",
+      "test_global_pause_does_not_affect_per_session_pause — per-session пауза сохраняется после resume_all",
+      "test_missing_file_session_no_repeated_warning — session_id с отсутствующим файлом не генерирует повторный WARNING",
+      "test_missing_file_sessions_cleared_on_reset — reset_state() очищает множество _missing_file_sessions",
+      "test_switch_calls_pause_all_before_working_dir_change — pause_all() вызывается ДО config.WORKING_DIR = target_path",
+      "test_switch_calls_resume_all_after_reset — resume_all() вызывается ПОСЛЕ _reset_all_state_modules()",
+      "test_rollback_calls_resume_all — при ошибке переключения resume_all() вызывается в блоке отката",
+      "test_load_registry_removes_orphan_entries — записи без .jsonl файлов удаляются при загрузке реестра",
+      "test_load_registry_keeps_entries_with_files — записи с существующими .jsonl файлами не удаляются",
+      "test_load_registry_skips_new_prefix_in_orphan_check — записи с _new_ не проверяются на наличие файла",
+      "test_integration_watcher_paused_during_switch — интеграционный: watcher не опрашивает файлы между pause_all и resume_all"
+    ]
+  }
+}

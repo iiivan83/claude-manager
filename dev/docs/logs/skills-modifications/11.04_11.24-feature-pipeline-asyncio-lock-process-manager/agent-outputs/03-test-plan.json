@@ -1,0 +1,84 @@
+{
+  "agent": "feature-test-plan",
+  "status": "success",
+  "timestamp": "2026-04-11T11:45:00+03:00",
+  "result": {
+    "test_framework": "pytest + pytest-asyncio",
+    "scale": "small",
+    "existing_tests_impact": "Все 30 существующих тестов в test_process_manager.py остаются БЕЗ изменений. asyncio.Lock прозрачен для одиночных последовательных вызовов — каждый существующий тест работает с одной корутиной, конкуренции нет. Фикстура reset_module_state (pm_module._busy_flags.clear()) корректна: asyncio.Lock stateless после release, сбрасывать не нужно. Интеграционная фикстура _reset_process_manager_state в test_message_path.py тоже не затронута.",
+    "tests_to_update": [],
+    "tests_to_add": [
+      {
+        "name": "test_concurrent_send_and_stop",
+        "path": "tests/test_process_manager.py",
+        "level": "unit",
+        "description": "Конкурентный send_message + stop_process через asyncio.gather. Создаём процесс, запускаем send_message с медленным mock _process_events (asyncio.sleep(0.1) внутри) и stop_process параллельно. Проверяем: (1) send_message завершается — либо с ProcessStoppedError, либо с результатом (зависит от timing); (2) после завершения обоих session_id НЕТ в _busy_flags — зомби-ключ не создан. Покрывает risk_zone: 'stop_process vs send_message.finally — race на _busy_flags'.",
+        "covers_risk_zone": "stop_process vs send_message.finally — race на _busy_flags",
+        "setup": "patch('claude_manager.process_manager.start_process') для создания mock-процесса. Оборачиваем pm_module._process_events в медленную версию с asyncio.sleep(0.1), чтобы stop_process успел выполниться во время обработки send_message.",
+        "assertions": [
+          "session_id отсутствует в pm_module._busy_flags после завершения обоих корутин",
+          "session_id отсутствует в pm_module._processes после завершения обоих корутин",
+          "session_id отсутствует в pm_module._stop_events после завершения обоих корутин",
+          "send_message бросает ProcessStoppedError ИЛИ возвращает результат (оба исхода допустимы)"
+        ]
+      },
+      {
+        "name": "test_concurrent_two_sends_same_session",
+        "path": "tests/test_process_manager.py",
+        "level": "unit",
+        "description": "Два send_message для одного session_id через asyncio.gather. Первый должен пройти check-and-set busy атомарно, второй — получить ProcessManagerError ('уже занят'). Проверяем атомарность: ровно один из двух успешен, ровно один получает ошибку. Покрывает risk_zone: 'send_message удерживает Lock — атомарный check-and-set busy'.",
+        "covers_risk_zone": "send_message удерживает Lock на всё время выполнения (включая ретраи до 10 минут) — конкретно: атомарность check + set busy",
+        "setup": "patch('claude_manager.process_manager.start_process') для создания mock-процесса с success-событиями. Первый send_message получает медленный _process_events (asyncio.sleep(0.05)), чтобы второй гарантированно попробовал войти, пока первый обрабатывает.",
+        "assertions": [
+          "Ровно один из двух вызовов возвращает SendResult (успех)",
+          "Ровно один из двух вызовов бросает ProcessManagerError с текстом про 'занят'",
+          "После завершения обоих: is_busy(session_id) is False"
+        ]
+      },
+      {
+        "name": "test_stop_does_not_leave_zombie_busy_flag",
+        "path": "tests/test_process_manager.py",
+        "level": "unit",
+        "description": "Имитация сценария зомби-ключа: устанавливаем _busy_flags[session_id] = True напрямую, вызываем stop_process (он делает pop), затем имитируем finally-блок send_message (async with _busy_lock: if session_id in _busy_flags: ...). Проверяем: session_id полностью отсутствует в _busy_flags — finally не воскресил ключ. Покрывает risk_zone: 'stop_process vs send_message.finally — зомби-ключи'.",
+        "covers_risk_zone": "stop_process vs send_message.finally — race на _busy_flags",
+        "setup": "Напрямую заполняем pm_module._processes, pm_module._busy_flags, pm_module._stop_events для session_id. Не используем create_process — тестируем только логику pop + conditional write.",
+        "assertions": [
+          "После stop_process: session_id отсутствует в pm_module._busy_flags",
+          "После имитации finally (проверка 'in' + условная запись): session_id всё ещё отсутствует в pm_module._busy_flags",
+          "stop_process.was_retrying is True (потому что _busy_flags был True)"
+        ]
+      },
+      {
+        "name": "test_update_session_id_atomic_under_lock",
+        "path": "tests/test_process_manager.py",
+        "level": "unit",
+        "description": "Атомарный перенос ключей в update_session_id. Создаём процесс через create_process, вызываем update_session_id(old, new). Проверяем: old_id отсутствует во ВСЕХ трёх словарях (_processes, _busy_flags, _stop_events), new_id присутствует во всех трёх. Покрывает risk_zone: 'update_session_id vs send_message — перенос ключа во время обработки'.",
+        "covers_risk_zone": "update_session_id vs send_message — перенос ключа во время обработки",
+        "setup": "patch('claude_manager.process_manager.start_process') для создания mock-процесса.",
+        "assertions": [
+          "old_id отсутствует в pm_module._processes",
+          "old_id отсутствует в pm_module._busy_flags",
+          "old_id отсутствует в pm_module._stop_events",
+          "new_id присутствует в pm_module._processes и содержит тот же mock_process",
+          "new_id присутствует в pm_module._busy_flags",
+          "new_id присутствует в pm_module._stop_events"
+        ]
+      }
+    ],
+    "tests_to_delete": [],
+    "risk_zone_coverage": {
+      "send_message удерживает Lock на всё время выполнения": "test_concurrent_two_sends_same_session — проверяет, что fine-grained locking работает: второй send_message получает ошибку 'занят', а не зависает на Lock",
+      "stop_process vs send_message.finally — race на _busy_flags": "test_concurrent_send_and_stop + test_stop_does_not_leave_zombie_busy_flag",
+      "update_session_id vs send_message — перенос ключа": "test_update_session_id_atomic_under_lock",
+      "is_busy — синхронная функция без Lock": "Существующие тесты (test_is_busy_during_request, test_is_busy_after_completion, test_is_busy_nonexistent_session) покрывают. Новых тестов не нужно — is_busy не меняется",
+      "has_process — синхронная функция без Lock": "Существующие тесты (test_has_process_existing, test_has_process_nonexistent, test_has_process_finished) покрывают. Новых тестов не нужно — has_process не меняется",
+      "Deadlock: send_message → update_session_id": "test_update_session_id_atomic_under_lock + test_concurrent_send_and_stop (косвенно). Если бы deadlock существовал — тесты зависли бы и упали по таймауту",
+      "Тестовая фикстура reset_module_state": "Все существующие тесты проходят без изменений — фикстура корректна"
+    },
+    "notes": [
+      "Интеграционные и E2E тесты пропущены (scale=small)",
+      "test_update_session_id_atomic_under_lock по логике похож на существующий test_update_session_id, но тот не проверяет все три словаря явно по отдельности — нужен новый тест с полным набором assertions",
+      "Тесты конкурентности используют asyncio.gather + asyncio.sleep для создания реалистичного race condition. Это работает надёжно в asyncio (single-threaded event loop), потому что await-точки — единственные места переключения корутин"
+    ]
+  }
+}

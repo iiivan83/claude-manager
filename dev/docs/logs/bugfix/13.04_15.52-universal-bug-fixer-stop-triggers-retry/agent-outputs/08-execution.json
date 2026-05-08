@@ -1,0 +1,81 @@
+{
+  "agent": "executor",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T17:05:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Исполнение исправлений",
+    "files": ["07-fix-strategy.json"]
+  },
+  "created_files": [],
+  "result": {
+    "deviation_fixes": [
+      {
+        "deviation_id": "DEV-1",
+        "strategy_used": "direct_fix",
+        "changes_made": [
+          {
+            "file": "src/claude_manager/process_manager.py",
+            "action": "modified",
+            "description": "Удалена строка _stop_events.pop(session_id, None) из stop_process(). stop_event остаётся в словаре после set(), чтобы retry loop мог обнаружить флаг отмены через _check_stop_requested() и _wait_with_stop_check(). Обновлён комментарий, поясняющий что stop_event НЕ удаляется в stop_process, а очищается в finally блоке send_message().",
+            "lines_changed": 7,
+            "unified_diff": "--- a/src/claude_manager/process_manager.py\n+++ b/src/claude_manager/process_manager.py\n@@ stop_process()\n-        # Очищаем словари — до terminate, чтобы finally увидел отсутствие ключа\n+        # Очищаем словари — до terminate, чтобы finally увидел отсутствие ключа.\n+        # stop_event НЕ удаляется: retry loop проверяет его через\n+        # _check_stop_requested() и _wait_with_stop_check(). Очистка — в\n+        # finally блоке send_message() после завершения retry loop.\n         _processes.pop(session_id, None)\n         _busy_flags.pop(session_id, None)\n-        _stop_events.pop(session_id, None)"
+          },
+          {
+            "file": "src/claude_manager/process_manager.py",
+            "action": "modified",
+            "description": "Добавлена очистка stop_event в finally блоке send_message() — _stop_events.pop(session_id, None). Это единственное место, где stop_event удаляется из словаря: после того как retry loop завершился (нормально или по ProcessStoppedError).",
+            "lines_changed": 4,
+            "unified_diff": "--- a/src/claude_manager/process_manager.py\n+++ b/src/claude_manager/process_manager.py\n@@ send_message() finally\n-        # Критическая секция 2: безопасная очистка busy.\n+        # Критическая секция 2: безопасная очистка busy и stop_event.\n+        # stop_event очищается здесь (а не в stop_process), чтобы retry loop\n+        # мог обнаружить флаг отмены через _check_stop_requested().\n         async with _busy_lock:\n             if session_id in _busy_flags:\n                 _busy_flags[session_id] = False\n+            _stop_events.pop(session_id, None)"
+          },
+          {
+            "file": "tests/test_process_manager.py",
+            "action": "modified",
+            "description": "Обновлён тест test_multiple_processes_all_stopped: вместо assert len(_stop_events) == 0 — assert len == 3 и все event.is_set(). Отражает новое поведение: stop_events сохраняются после stop_process().",
+            "lines_changed": 5,
+            "unified_diff": "--- a/tests/test_process_manager.py\n+++ b/tests/test_process_manager.py\n@@ test_multiple_processes_all_stopped\n-        assert len(pm_module._stop_events) == 0\n+        # stop_events остаются после stop_process() — очистка в send_message() finally.\n+        # Проверяем, что флаги отмены установлены (set).\n+        assert len(pm_module._stop_events) == 3\n+        for event in pm_module._stop_events.values():\n+            assert event.is_set()"
+          }
+        ],
+        "adjacent_code_affected": false,
+        "additional_tests_created": [],
+        "whitebox_results": { "total": 3, "passed": 3, "failed": 0 }
+      },
+      {
+        "deviation_id": "DEV-2",
+        "strategy_used": "direct_fix",
+        "changes_made": [
+          {
+            "file": "src/claude_manager/process_manager.py",
+            "action": "modified",
+            "description": "В _restart_process() добавлены _busy_flags[session_id] = True и _stop_events[session_id] = asyncio.Event() внутри критической секции _busy_lock — по аналогии с create_process(). Добавлен комментарий об инварианте: все три словаря обновляются атомарно.",
+            "lines_changed": 6,
+            "unified_diff": "--- a/src/claude_manager/process_manager.py\n+++ b/src/claude_manager/process_manager.py\n@@ _restart_process()\n+    # Инвариант: все три словаря (_processes, _busy_flags, _stop_events)\n+    # обновляются атомарно — по аналогии с create_process().\n+    # Без этого перезапущенный процесс неуправляем: повторный /stop\n+    # не найдёт stop_event, is_busy() не увидит busy_flag.\n     async with _busy_lock:\n         _processes[session_id] = claude_process\n+        _busy_flags[session_id] = True\n+        _stop_events[session_id] = asyncio.Event()"
+          }
+        ],
+        "adjacent_code_affected": false,
+        "additional_tests_created": [],
+        "whitebox_results": { "total": 4, "passed": 4, "failed": 0 }
+      },
+      {
+        "deviation_id": "DEV-3",
+        "strategy_used": "direct_fix",
+        "changes_made": [
+          {
+            "file": "src/claude_manager/bot.py",
+            "action": "modified",
+            "description": "В handle_stop() условие 'if not has_process()' заменено на 'if not has_process() and not is_busy()'. Если процесс отсутствует в _processes, но retry loop активен (is_busy=True) — stop_process() всё равно вызывается для установки флага отмены. Добавлен комментарий с пояснением логики.",
+            "lines_changed": 5,
+            "unified_diff": "--- a/src/claude_manager/bot.py\n+++ b/src/claude_manager/bot.py\n@@ handle_stop()\n-    if not process_manager.has_process(session_id):\n+    # Процесс может отсутствовать в _processes (has_process=False),\n+    # но retry loop ещё активен (is_busy=True). Первый /stop удаляет\n+    # процесс из _processes, retry loop ещё не создал новый.\n+    # В этом случае /stop должен установить флаг отмены для retry loop.\n+    if not process_manager.has_process(session_id) and not process_manager.is_busy(session_id):"
+          }
+        ],
+        "adjacent_code_affected": false,
+        "additional_tests_created": [],
+        "whitebox_results": { "total": 2, "passed": 2, "failed": 0 }
+      }
+    ],
+    "previous_failure": null,
+    "notes": "Обновлён существующий тест test_multiple_processes_all_stopped в tests/test_process_manager.py — теперь проверяет что stop_events сохраняются после stop_process() с установленными флагами (is_set). Все 135 юнит-тестов (test_process_manager + test_bot) проходят. Все 9 whitebox-тестов проходят."
+  },
+  "next_agent": "test-runner"
+}

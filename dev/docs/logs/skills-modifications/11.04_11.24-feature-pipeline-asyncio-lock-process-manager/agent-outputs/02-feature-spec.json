@@ -1,0 +1,143 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-11T11:30:00+03:00",
+  "result": {
+    "approach_summary": "Добавить один asyncio.Lock (_busy_lock) на уровне модуля. Использовать fine-grained locking: Lock захватывается только на короткие критические секции (проверка + установка busy, очистка busy, pop при stop, перенос ключей при update). Между критическими секциями Lock освобождается — долгая работа (_execute_send, ретраи) идёт без Lock. Это позволяет stop_process захватить Lock и очистить busy, не дожидаясь завершения send_message. Для защиты от зомби-ключей: finally-блок send_message проверяет наличие ключа в _busy_flags перед записью (если stop_process уже удалил ключ — запись не происходит).",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "change_id": "C1",
+        "description": "Добавить _busy_lock в состояние модуля",
+        "diff_spec": {
+          "was": "# Флаги занятости: session_id -> True/False\n_busy_flags: dict[str, bool] = {}\n\n# События отмены для прерывания ретраев через /stop\n_stop_events: dict[str, asyncio.Event] = {}",
+          "becomes": "# Флаги занятости: session_id -> True/False\n_busy_flags: dict[str, bool] = {}\n\n# Блокировка для атомарных операций над _busy_flags, _processes, _stop_events.\n# Захватывается только на короткие критические секции — не на всё время обработки.\n_busy_lock: asyncio.Lock = asyncio.Lock()\n\n# События отмены для прерывания ретраев через /stop\n_stop_events: dict[str, asyncio.Event] = {}",
+          "reason": "asyncio.Lock на уровне модуля — единая точка синхронизации для всех операций над словарями состояния. Один Lock на все три словаря, потому что stop_process и update_session_id модифицируют все три атомарно."
+        }
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "change_id": "C2",
+        "description": "send_message: атомарный check-and-set busy + защита finally от зомби-ключей",
+        "diff_spec": {
+          "was": "async def send_message(\n    session_id: str,\n    text: str,\n    progress_callback: ProgressCallback | None = None,\n    retry_callback: RetryCallback | None = None,\n) -> SendResult:\n    \"\"\"Отправляет сообщение в процесс Claude и ожидает ответ.\"\"\"\n    claude_process = _validate_process_ready(session_id)\n    _prepare_for_send(session_id)\n\n    try:\n        result = await _execute_send(\n            session_id, text, claude_process, progress_callback, retry_callback,\n        )\n        if result.session_id != session_id:\n            await update_session_id(session_id, result.session_id)\n            session_id = result.session_id\n        return result\n    finally:\n        _busy_flags[session_id] = False",
+          "becomes": "async def send_message(\n    session_id: str,\n    text: str,\n    progress_callback: ProgressCallback | None = None,\n    retry_callback: RetryCallback | None = None,\n) -> SendResult:\n    \"\"\"Отправляет сообщение в процесс Claude и ожидает ответ.\"\"\"\n    # Критическая секция 1: атомарная проверка «не занят» + установка «занят».\n    # Lock защищает от race condition, когда два send_message для одной сессии\n    # одновременно проходят проверку и оба устанавливают busy=True.\n    async with _busy_lock:\n        claude_process = _validate_process_ready(session_id)\n        _prepare_for_send(session_id)\n\n    # Lock освобождён — долгая работа идёт без блокировки.\n    # stop_process может захватить Lock и очистить busy, пока мы здесь.\n    try:\n        result = await _execute_send(\n            session_id, text, claude_process, progress_callback, retry_callback,\n        )\n        if result.session_id != session_id:\n            # update_session_id захватывает _busy_lock внутри себя.\n            # Lock не удерживается здесь — deadlock невозможен.\n            await update_session_id(session_id, result.session_id)\n            session_id = result.session_id\n        return result\n    finally:\n        # Критическая секция 2: безопасная очистка busy.\n        # Проверяем наличие ключа, чтобы не создать «зомби» после stop_process.\n        # Сценарий без проверки: stop_process.pop удаляет ключ → finally пишет\n        # _busy_flags[session_id] = False → ключ воскресает как «зомби».\n        async with _busy_lock:\n            if session_id in _busy_flags:\n                _busy_flags[session_id] = False",
+          "reason": "Две короткие критические секции вместо одной большой. Секция 1 (check + set) — атомарность проверки и установки busy, защита от двух одновременных send_message. Секция 2 (finally) — условная очистка busy с проверкой наличия ключа, защита от зомби-ключей после stop_process. Между секциями Lock свободен — stop_process не блокируется. update_session_id вызывается вне Lock и сам захватывает Lock внутри — deadlock невозможен, потому что asyncio.Lock не удерживается в момент вызова."
+        }
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "change_id": "C3",
+        "description": "stop_process: атомарная очистка всех словарей под Lock",
+        "diff_spec": {
+          "was": "async def stop_process(session_id: str) -> StopResult:\n    \"\"\"Останавливает процесс Claude в указанной сессии.\"\"\"\n    claude_process = _processes.get(session_id)\n    was_running = False\n    was_retrying = _busy_flags.get(session_id, False)\n\n    # Устанавливаем флаг отмены — прервёт ожидание ретрая\n    stop_event = _stop_events.get(session_id)\n    if stop_event is not None:\n        stop_event.set()\n\n    # Завершаем процесс, если он работает\n    if claude_process is not None and claude_process.is_running():\n        was_running = True\n        await claude_process.terminate()\n\n    # Очищаем словари\n    _processes.pop(session_id, None)\n    _busy_flags.pop(session_id, None)\n    _stop_events.pop(session_id, None)\n\n    logger.info(\n        \"Процесс остановлен: session_id=%s, was_running=%s, was_retrying=%s\",\n        session_id, was_running, was_retrying,\n    )\n\n    return StopResult(was_running=was_running, was_retrying=was_retrying)",
+          "becomes": "async def stop_process(session_id: str) -> StopResult:\n    \"\"\"Останавливает процесс Claude в указанной сессии.\"\"\"\n    # Критическая секция: читаем состояние и удаляем ключи атомарно.\n    # Гарантирует, что send_message.finally увидит отсутствие ключа\n    # и не создаст зомби-запись после нашего pop.\n    async with _busy_lock:\n        claude_process = _processes.get(session_id)\n        was_retrying = _busy_flags.get(session_id, False)\n\n        # Устанавливаем флаг отмены — прервёт ожидание ретрая\n        stop_event = _stop_events.get(session_id)\n        if stop_event is not None:\n            stop_event.set()\n\n        # Очищаем словари — до terminate, чтобы finally увидел отсутствие ключа\n        _processes.pop(session_id, None)\n        _busy_flags.pop(session_id, None)\n        _stop_events.pop(session_id, None)\n\n    # Завершаем процесс вне Lock — terminate может быть долгим (ждёт завершения)\n    was_running = False\n    if claude_process is not None and claude_process.is_running():\n        was_running = True\n        await claude_process.terminate()\n\n    logger.info(\n        \"Процесс остановлен: session_id=%s, was_running=%s, was_retrying=%s\",\n        session_id, was_running, was_retrying,\n    )\n\n    return StopResult(was_running=was_running, was_retrying=was_retrying)",
+          "reason": "Ключевое изменение: pop из словарей переносится ПЕРЕД terminate и выполняется под Lock. Это гарантирует: (1) send_message.finally под Lock увидит, что ключ уже удалён, и не создаст зомби; (2) terminate() — потенциально долгая операция (ожидание завершения процесса) — выполняется вне Lock, не блокируя другие корутины. Порядок: чтение состояния → set stop_event → pop словарей (всё под Lock) → terminate (вне Lock). stop_event.set() остаётся под Lock — это безопасно, set() не блокирует."
+        }
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "change_id": "C4",
+        "description": "update_session_id: атомарный перенос ключей под Lock",
+        "diff_spec": {
+          "was": "async def update_session_id(old_session_id: str, new_session_id: str) -> None:\n    \"\"\"Обновляет ключ сессии во всех внутренних словарях.\"\"\"\n    # Переносим данные по новому ключу\n    for storage in (_processes, _busy_flags, _stop_events):\n        if old_session_id in storage:\n            storage[new_session_id] = storage.pop(old_session_id)\n\n    logger.info(\n        \"Session ID обновлён: %s -> %s\", old_session_id, new_session_id,\n    )",
+          "becomes": "async def update_session_id(old_session_id: str, new_session_id: str) -> None:\n    \"\"\"Обновляет ключ сессии во всех внутренних словарях.\"\"\"\n    # Атомарный перенос: все три словаря обновляются за один захват Lock.\n    # Без Lock: другая корутина может прочитать словарь между pop и присвоением\n    # нового ключа — и увидеть промежуточное состояние (ключ удалён, но новый не создан).\n    async with _busy_lock:\n        for storage in (_processes, _busy_flags, _stop_events):\n            if old_session_id in storage:\n                storage[new_session_id] = storage.pop(old_session_id)\n\n    logger.info(\n        \"Session ID обновлён: %s -> %s\", old_session_id, new_session_id,\n    )",
+          "reason": "Перенос ключей во всех трёх словарях атомарен. Без Lock возможен сценарий: update_session_id переносит _processes[old→new], в этот момент stop_process проверяет _busy_flags[old] — ключ ещё существует по старому ID в busy, но процесс уже под новым ID в _processes. Lock гарантирует, что все три словаря видят согласованное состояние. Вызывается из send_message, который в этот момент НЕ держит Lock — deadlock невозможен."
+        }
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "change_id": "C5",
+        "description": "create_process: инициализация словарей под Lock",
+        "diff_spec": {
+          "was": "    # Сохраняем процесс и инициализируем служебные структуры\n    _processes[effective_session_id] = claude_process\n    _busy_flags[effective_session_id] = False\n    _stop_events[effective_session_id] = asyncio.Event()",
+          "becomes": "    # Сохраняем процесс и инициализируем служебные структуры.\n    # Lock гарантирует, что другая корутина не увидит процесс без busy-флага\n    # (промежуточное состояние между записью в _processes и _busy_flags).\n    async with _busy_lock:\n        _processes[effective_session_id] = claude_process\n        _busy_flags[effective_session_id] = False\n        _stop_events[effective_session_id] = asyncio.Event()",
+          "reason": "Инициализация всех трёх словарей атомарна. Без Lock теоретически возможен race: create_process записывает _processes[id], но ещё не записал _busy_flags[id] — в этот момент send_message через _validate_process_ready находит процесс, но не находит busy-флаг и использует default False. На практике это малоопасно (default False означает «не занят» — то же значение, которое будет записано), но для консистентности все мутации словарей под Lock."
+        }
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "change_id": "C6",
+        "description": "is_busy и has_process: оставить синхронными без Lock",
+        "diff_spec": {
+          "was": "def is_busy(session_id: str) -> bool:\n    \"\"\"Проверяет, обрабатывает ли процесс запрос прямо сейчас.\"\"\"\n    return _busy_flags.get(session_id, False)\n\n\ndef has_process(session_id: str) -> bool:\n    \"\"\"Проверяет, есть ли запущенный процесс для указанной сессии.\"\"\"\n    claude_process = _processes.get(session_id)\n    if claude_process is None:\n        return False\n    return claude_process.is_running()",
+          "becomes": "НЕ ИЗМЕНЯЕТСЯ",
+          "reason": "Обе функции синхронные. asyncio.Lock — асинхронный, его нельзя захватить из sync-функции. Чтение одного значения из dict атомарно в CPython благодаря GIL. Перевод на async сломает всех вызывающих (bot.py: _ensure_process_running, handle_stop; session_watcher). Риск race condition минимален: is_busy/has_process читают моментальный снимок, а решения по нему принимаются в async-функциях, которые уже защищены Lock."
+        }
+      },
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "change_id": "C7",
+        "description": "_restart_process: запись в _processes под Lock",
+        "diff_spec": {
+          "was": "async def _restart_process(session_id: str) -> ClaudeProcess:\n    \"\"\"Перезапускает процесс Claude для указанной сессии (с resume).\"\"\"\n    # Для временных сессий — запускаем без --resume\n    is_temp_session = session_id.startswith(TEMP_SESSION_PREFIX)\n    cli_session_id = None if is_temp_session else session_id\n\n    try:\n        claude_process = await start_process(cli_session_id)\n    except ClaudeStartError as error:\n        raise ProcessManagerError(\n            f\"Не удалось запустить Claude: {error}\"\n        ) from error\n\n    _processes[session_id] = claude_process\n\n    logger.info(\n        \"Процесс Claude перезапущен: session_id=%s, PID=%d\",\n        session_id, claude_process.process.pid,\n    )\n    return claude_process",
+          "becomes": "async def _restart_process(session_id: str) -> ClaudeProcess:\n    \"\"\"Перезапускает процесс Claude для указанной сессии (с resume).\"\"\"\n    # Для временных сессий — запускаем без --resume\n    is_temp_session = session_id.startswith(TEMP_SESSION_PREFIX)\n    cli_session_id = None if is_temp_session else session_id\n\n    try:\n        claude_process = await start_process(cli_session_id)\n    except ClaudeStartError as error:\n        raise ProcessManagerError(\n            f\"Не удалось запустить Claude: {error}\"\n        ) from error\n\n    async with _busy_lock:\n        _processes[session_id] = claude_process\n\n    logger.info(\n        \"Процесс Claude перезапущен: session_id=%s, PID=%d\",\n        session_id, claude_process.process.pid,\n    )\n    return claude_process",
+          "reason": "_restart_process вызывается из _execute_single_retry (ретрай-цикл внутри send_message). Запись в _processes должна быть под Lock, чтобы stop_process атомарно прочитал и удалил актуальный процесс. Без Lock: _restart_process пишет новый процесс в _processes, а stop_process уже прочитал старый процесс — terminate не вызовется для нового. start_process() — долгая операция, выполняется вне Lock."
+        }
+      },
+      {
+        "file": "tests/test_process_manager.py",
+        "type": "modify",
+        "change_id": "C8",
+        "description": "Новые тесты на конкурентный доступ",
+        "diff_spec": {
+          "was": "Текущие тесты остаются без изменений (все action: keep по анализу влияния)",
+          "becomes": "Добавить 4 новых теста в конец файла:\n\n1. test_concurrent_send_and_stop:\n   - asyncio.gather: send_message (с медленным mock _process_events, asyncio.sleep(0.1)) + stop_process\n   - Проверить: send_message получает ProcessStoppedError ИЛИ результат (зависит от timing)\n   - Проверить: после обоих — session_id НЕТ в _busy_flags (нет зомби)\n\n2. test_concurrent_two_sends_same_session:\n   - asyncio.gather: два send_message для одного session_id\n   - Первый должен пройти, второй должен получить ProcessManagerError (\"уже занят\")\n   - Проверить атомарность: ровно один из двух успешен\n\n3. test_stop_does_not_leave_zombie_busy_flag:\n   - Установить _busy_flags[session_id] = True напрямую\n   - Вызвать stop_process\n   - Имитировать finally: async with _busy_lock: if session_id in _busy_flags: _busy_flags[session_id] = False\n   - Проверить: session_id НЕТ в _busy_flags\n\n4. test_update_session_id_atomic_under_lock:\n   - Создать процесс (create_process)\n   - Вызвать update_session_id(old, new)\n   - Проверить: old_id отсутствует во ВСЕХ трёх словарях, new_id присутствует во всех трёх",
+          "reason": "Каждый тест покрывает конкретный risk zone из анализа влияния: (1) race send+stop → зомби-ключ, (2) race два send → оба проходят check, (3) finally после stop → зомби, (4) частичный перенос ключей. Существующие тесты не изменяются — Lock прозрачен для одиночных последовательных вызовов."
+        }
+      }
+    ],
+    "design_decisions": [
+      {
+        "decision": "Один Lock на все три словаря (_processes, _busy_flags, _stop_events)",
+        "alternatives_considered": "Отдельный Lock на каждый словарь — отвергнуто: stop_process и update_session_id модифицируют все три атомарно. Три Lock потребуют захвата в одном порядке (lock ordering) — усложнение без пользы.",
+        "rationale": "Критические секции короткие (микросекунды), contention минимален. Один Lock проще, безопаснее, достаточно быстр."
+      },
+      {
+        "decision": "Fine-grained locking: Lock только вокруг мутаций словарей, не вокруг всего тела функции",
+        "alternatives_considered": "Coarse-grained: Lock на весь send_message — отвергнуто, потому что ретраи могут длиться 10+ минут, блокируя stop_process.",
+        "rationale": "stop_process должен немедленно реагировать на /stop. Если Lock захвачен send_message на всё время работы — stop_process повиснет до конца ретраев."
+      },
+      {
+        "decision": "Проверка 'session_id in _busy_flags' в finally вместо безусловной записи",
+        "alternatives_considered": "Добавить отдельный флаг _stopped_sessions: set — отвергнуто, вводит второе источник истины. Достаточно проверки наличия ключа.",
+        "rationale": "stop_process удаляет ключ из _busy_flags через pop. Если finally проверяет наличие ключа перед записью — зомби невозможен. Проверка и запись атомарны под Lock."
+      },
+      {
+        "decision": "stop_process: pop словарей ДО terminate, вне terminate",
+        "alternatives_considered": "Pop после terminate — отвергнуто: terminate() может занять время, за которое finally воскресит ключ.",
+        "rationale": "Порядок: (под Lock) pop ключей → (вне Lock) terminate. Когда send_message.finally захватит Lock, ключ уже удалён — finally его не воскресит. terminate() безопасен вне Lock: он работает с локальной переменной claude_process, а не с словарём."
+      },
+      {
+        "decision": "is_busy и has_process остаются синхронными без Lock",
+        "alternatives_considered": "Перевести на async — отвергнуто: сломает всех вызывающих (bot.py, session_watcher). Обернуть в threading.Lock — отвергнуто: asyncio.Lock и threading.Lock не совместимы, threading.Lock блокирует event loop.",
+        "rationale": "dict.get() атомарно в CPython (GIL). is_busy/has_process — read-only, возвращают моментальный снимок. Любые решения по этому снимку принимаются в async-функциях, которые уже защищены _busy_lock."
+      }
+    ],
+    "deadlock_analysis": {
+      "scenario": "send_message → update_session_id: оба захватывают _busy_lock",
+      "resolution": "send_message захватывает Lock в двух коротких секциях: (1) перед _execute_send и (2) в finally. update_session_id вызывается между секциями (строка 424 — после _execute_send, перед finally). В момент вызова update_session_id Lock НЕ удерживается send_message. update_session_id свободно захватывает Lock. Deadlock невозможен: один Lock, один претендент в каждый момент.",
+      "proof": "Порядок в send_message: acquire(1) → release(1) → _execute_send → update_session_id.acquire → update_session_id.release → acquire(2) → release(2). Lock никогда не захватывается дважды одной корутиной."
+    },
+    "zombie_prevention_analysis": {
+      "scenario": "stop_process вызывается во время send_message",
+      "timeline": [
+        "1. send_message: acquire Lock → set busy=True → release Lock",
+        "2. send_message: await _execute_send (долго, Lock свободен)",
+        "3. stop_process: acquire Lock → pop session_id из всех словарей → release Lock",
+        "4. stop_process: await terminate (вне Lock)",
+        "5. send_message._execute_send завершается (ProcessStoppedError или результат)",
+        "6. send_message.finally: acquire Lock → проверяет 'session_id in _busy_flags' → ключ отсутствует (удалён на шаге 3) → НЕ записывает → release Lock",
+        "Результат: зомби-ключ НЕ создан"
+      ]
+    }
+  }
+}

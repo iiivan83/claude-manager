@@ -1,0 +1,54 @@
+{
+  "agent": "feature-test-plan-review",
+  "status": "success",
+  "timestamp": "2026-04-13T13:15:00+03:00",
+  "result": {
+    "verdict": "rejected",
+    "issues": [
+      {
+        "type": "redundant",
+        "description": "test_pause_all_sets_global_flag -- проверяет значение приватного флага _global_paused = True после вызова pause_all(). Это тест реализации, а не поведения. Поведение уже проверяется через test_poll_sessions_skips_when_globally_paused: если _poll_sessions() делает ранний return при глобальной паузе, значит pause_all() работает. Удалить.",
+        "severity": "warning"
+      },
+      {
+        "type": "redundant",
+        "description": "test_resume_all_clears_global_flag -- аналогично предыдущему, проверяет значение приватного флага _global_paused = False. Поведение resume_all() уже проверяется через: (1) test_global_pause_does_not_affect_per_session_pause (resume_all вызывается и per-session пауза сохраняется), (2) интеграционный test_watcher_paused_during_full_switch_cycle (_global_paused == False после цикла). Удалить.",
+        "severity": "warning"
+      },
+      {
+        "type": "redundant",
+        "description": "test_empty_registry_returns_zero -- пустой реестр ({}) при обходе возвращает 0 удалённых записей. Это тривиальная проверка пустого цикла for. Не ловит ни одного реального бага. Удалить.",
+        "severity": "warning"
+      },
+      {
+        "type": "redundant",
+        "description": "test_start_initializes_missing_file_sessions_empty -- проверяет, что start() инициализирует _missing_file_sessions = set(). Функция start() по контракту инициализирует все переменные состояния -- это следует из её кода и не требует отдельной верификации. Аналогичный эффект (очистка _missing_file_sessions) уже проверяется в test_reset_state_clears_missing_file_sessions. Удалить.",
+        "severity": "warning"
+      },
+      {
+        "type": "redundant",
+        "description": "test_orphan_count_across_multiple_days -- проверяет суммарный счётчик при сиротах в двух днях. Это тест арифметики total_removed += len(orphan_keys) внутри цикла по дням. Функция _remove_orphan_entries() итерирует по дням с одинаковой логикой -- мультидневной сценарий не добавляет нового покрытия по сравнению с test_entry_without_file_removed. Удалить.",
+        "severity": "warning"
+      },
+      {
+        "type": "duplicate",
+        "description": "test_watcher_paused_during_full_switch_cycle (интеграционный) частично дублирует юнит-тесты test_pause_all_called_before_working_dir_change + test_resume_all_called_after_reset. Интеграционный тест проверяет тот же порядок, но через реальные модули. Допустимое дублирование на разных уровнях -- оставить, но осознавать.",
+        "severity": "warning"
+      }
+    ],
+    "redundancy_ratio": "5 из 16 новых тестов избыточны (31%) -- выше порога 30%",
+    "coverage_analysis": {
+      "critical_paths_covered": [
+        "Глобальная пауза watcher: test_poll_sessions_skips_when_globally_paused -- поведенческая проверка, что _poll_sessions() пропускает цикл при глобальной паузе",
+        "try/finally в _perform_switch: test_resume_all_called_on_error -- resume_all() вызывается даже при исключении в _reset_all_state_modules()",
+        "Порядок вызовов: test_pause_all_called_before_working_dir_change -- pause_all() до смены WORKING_DIR, test_resume_all_called_after_reset -- resume_all() после reset",
+        "Кросс-проверка файлов в load_registry: test_entry_with_existing_file_kept + test_entry_without_file_removed + test_new_prefix_entry_skipped + test_load_registry_removes_orphans_and_saves",
+        "Защита от лог-спама: test_empty_messages_adds_to_missing_file_sessions + test_missing_file_session_no_repeated_check + test_reset_state_clears_missing_file_sessions",
+        "Взаимодействие _global_paused и _paused_sessions: test_per_session_pause_preserved_after_resume_all"
+      ],
+      "missing_coverage": []
+    },
+    "approved_plan": null,
+    "fix_instructions": "Удалить 5 избыточных тестов из tests_to_add: (1) test_pause_all_sets_global_flag, (2) test_resume_all_clears_global_flag, (3) test_empty_registry_returns_zero, (4) test_start_initializes_missing_file_sessions_empty, (5) test_orphan_count_across_multiple_days. После удаления остаётся 11 тестов -- все содержательные, все критичные пути покрыты, избыточность 0%. Обновления существующих тестов (tests_to_update) и E2E тест -- без замечаний, оставить как есть."
+  }
+}

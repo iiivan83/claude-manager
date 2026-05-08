@@ -1,0 +1,70 @@
+{
+  "agent": "root-cause-investigator",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T00:45:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Анализ первопричины через скилл root-cause-analysis (CLI subprocess)",
+    "files": ["01-intake.json", "02-understanding.json"]
+  },
+  "created_files": [
+    "dev/docs/logs/root-cause-reports/13-04_00-39_send-chat-action-crash.md"
+  ],
+  "result": {
+    "summary": "Корневая причина — отсутствие архитектурного принципа разделения вызовов API по критичности. Три обработчика (handle_message, handle_photo, handle_document) вызывают декоративный send_chat_action без try/except — при TimedOut обработчик падает целиком, основная логика не вызывается. Нет глобального error handler как последнего рубежа. Побочно: session_watcher спамит error.log из-за записей реестра, ссылающихся на удалённые сессии. Busy flag НЕ утекает — send_chat_action падает ДО вызова process_manager.send_message(), флаг занятости не устанавливается.",
+    "deviations": [
+      {
+        "id": "DEV-1",
+        "description": "send_chat_action без try/except роняет обработчики handle_message, handle_photo, handle_document. Декоративный вызов (индикатор \"печатает...\") прерывает весь обработчик при ошибке Telegram API (TimedOut, throttling). Функция _send_to_claude_and_respond не вызывается, пользователь не получает ответа.",
+        "chain_of_events": "Telegram API возвращает TimedOut на send_chat_action(ChatAction.TYPING) -> исключение не поймано (нет try/except) -> обработчик падает целиком -> _send_to_claude_and_respond не вызывается -> пользователь не получает ответа -> python-telegram-bot логирует 'No error handlers are registered' и глотает ошибку молча",
+        "affected_files": [
+          { "path": "src/claude_manager/bot.py", "lines": "887", "issue": "handle_message: await context.bot.send_chat_action(chat_id, ChatAction.TYPING) без try/except" },
+          { "path": "src/claude_manager/bot.py", "lines": "920", "issue": "handle_photo: аналогичный незащищённый вызов send_chat_action" },
+          { "path": "src/claude_manager/bot.py", "lines": "958", "issue": "handle_document: аналогичный незащищённый вызов send_chat_action" }
+        ],
+        "duplicates": [],
+        "not_a_bug": false,
+        "not_a_bug_reason": null
+      },
+      {
+        "id": "DEV-2",
+        "description": "Отсутствие глобального error handler (Application.add_error_handler). setup_bot() регистрирует хэндлеры команд и сообщений, но не вызывает add_error_handler — нет последнего рубежа обороны для необработанных исключений в любом обработчике.",
+        "chain_of_events": "Любое необработанное исключение в обработчике -> python-telegram-bot ищет зарегистрированные error handlers -> не находит (add_error_handler не вызывался в setup_bot) -> логирует 'No error handlers are registered' -> ошибка проглатывается молча -> пользователь не узнаёт о проблеме",
+        "affected_files": [
+          { "path": "src/claude_manager/bot.py", "lines": "989-1003", "issue": "setup_bot() создаёт Application и регистрирует хэндлеры, но нигде не вызывает application.add_error_handler()" }
+        ],
+        "duplicates": [],
+        "not_a_bug": false,
+        "not_a_bug_reason": null
+      },
+      {
+        "id": "DEV-3",
+        "description": "session_watcher спамит error.log (~1 МБ): каждые 2 секунды пытается прочитать JSONL-файлы трёх удалённых сессий. Функция _get_sessions_to_monitor() объединяет файлы с диска и записи дневного реестра, но реестр не валидирует существование файлов.",
+        "chain_of_events": "_get_sessions_to_monitor() получает session_id из daily_session_registry -> файла на диске нет (сессия удалена) -> session_reader.get_session_messages() логирует warning 'Файл сессии не найден' -> через 2 секунды цикл повторяется -> error.log растёт на ~1 МБ",
+        "affected_files": [
+          { "path": "src/claude_manager/session_watcher.py", "lines": "105", "issue": "_get_sessions_to_monitor() не валидирует существование JSONL-файлов для ID из daily_registry" },
+          { "path": "src/claude_manager/session_reader.py", "lines": "269-271", "issue": "get_session_messages() логирует warning вместо debug при отсутствии файла — для watcher это ожидаемая ситуация" },
+          { "path": "src/claude_manager/session_manager.py", "lines": null, "issue": "Хранит записи о сессиях, чьи файлы удалены с диска — нет механизма очистки stale-записей" }
+        ],
+        "duplicates": [],
+        "not_a_bug": false,
+        "not_a_bug_reason": null
+      }
+    ],
+    "verified_non_issues": [
+      {
+        "description": "Busy flag утечка",
+        "conclusion": "НЕ проблема. send_chat_action падает ДО вызова process_manager.send_message(), busy flag устанавливается только внутри send_message() (строка 447: _prepare_for_send -> _busy_flags[session_id] = True). Busy flag никогда не устанавливается, следовательно утечки нет."
+      },
+      {
+        "description": "Другие прямые вызовы Telegram API без try/except",
+        "conclusion": "НЕ проблема. Все вызовы _application.bot.send_message (строки 206, 305), _application.bot.send_document (строка 316), _application.bot.get_file (строка 360) — вызываются изнутри функций с try/except на уровне вызывающего кода (_send_to_claude_and_respond, _download_and_save_file). Их падение не оставляет обработчик без защиты."
+      }
+    ],
+    "total_deviations": 3,
+    "previous_attempts": [],
+    "root_cause_report_path": "dev/docs/logs/root-cause-reports/13-04_00-39_send-chat-action-crash.md"
+  },
+  "next_agent": "classifier"
+}

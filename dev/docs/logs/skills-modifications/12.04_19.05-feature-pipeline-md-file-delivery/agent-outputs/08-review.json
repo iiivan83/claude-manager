@@ -1,0 +1,83 @@
+{
+  "agent": "feature-review",
+  "status": "success",
+  "timestamp": "2026-04-12T20:15:00+03:00",
+  "result": {
+    "passes": {
+      "quality": {
+        "issues": [
+          {
+            "file": "src/claude_manager/bot.py",
+            "function": "_shift_entity",
+            "severity": "minor",
+            "description": "Missing type hints for entity parameter and return type. Inline import of MessageEntity unnecessary — can be added to top-level imports.",
+            "fixed": true,
+            "fix_description": "Added MessageEntity to top-level import from telegram. Added type hints: entity: MessageEntity, return -> MessageEntity. Removed inline import."
+          }
+        ],
+        "notes": [
+          "file_sender.read_file_content (34 lines) and check_binary_file (26 lines) exceed 20-line guideline, but consist of sequential error handling blocks — refactoring would add indirection without clarity gain",
+          "_send_text_file (25 lines) is at the border but contains necessary loop+header logic",
+          "All public functions have docstrings, naming is clear and descriptive",
+          "No magic values — all constants are named (MAX_TEXT_FILE_SIZE_BYTES, TELEGRAM_MESSAGE_LIMIT, etc.)",
+          "No code duplication — _process_file_markers is shared between send_response and send_watcher_message"
+        ],
+        "status": "has_issues"
+      },
+      "security": {
+        "issues": [],
+        "notes": [
+          "Path traversal: Claude can specify arbitrary paths in [SEND_FILE:] markers, but this is by design — Claude runs with full tool access on the user's machine, and the bot is single-user. No additional sandboxing needed.",
+          "Error messages include file paths (e.g. 'Файл не найден: /path/to/file') — acceptable since bot is single-user (user = machine owner) and messages are sent only to ALLOWED_USER_IDS.",
+          "Error messages sent with parse_mode=None — no HTML injection risk.",
+          "No user-controlled data is embedded in HTML-parsed messages in the new code paths.",
+          "Binary files go through check_binary_file (size check) before send_document — protects against accidentally sending huge files."
+        ],
+        "status": "clean"
+      },
+      "architecture": {
+        "issues": [],
+        "notes": [
+          "file_sender.py is a stateless utility module (like message_splitter) — no internal state, no imports from other project modules except telegram.MessageEntity",
+          "Dependency direction correct: bot.py (transport layer) calls file_sender (utility) — upper layer calls lower",
+          "No circular dependencies: file_sender does not import bot, process_manager, session_manager, etc.",
+          "New functions in bot.py are in the correct section (helper functions, before public API functions)",
+          "FILE_CONTENT_HEADER_TEMPLATE constant is in the constants section"
+        ],
+        "status": "clean"
+      },
+      "spec_compliance": {
+        "issues": [],
+        "notes": [
+          "All 7 functions from spec implemented in file_sender.py: extract_file_markers, strip_file_markers, is_text_file, read_file_content, render_file_for_telegram, convert_entities, check_binary_file",
+          "All 4 new functions in bot.py implemented: _process_file_markers, _send_text_file, _send_binary_file, _shift_entity",
+          "API signatures match spec exactly",
+          "Constants match spec: SEND_FILE_PATTERN, TEXT_EXTENSIONS, TEXT_FILE_NAMES, MAX_TEXT_FILE_SIZE_BYTES, MAX_BINARY_FILE_SIZE_BYTES, TELEGRAM_MESSAGE_LIMIT, EMPTY_FILE_PLACEHOLDER",
+          "Guard is_final=True implemented in both send_response and send_watcher_message per spec",
+          "File delivery order: files sent BEFORE text response (per architectural decision in spec)",
+          "Entities API used for text files (not parse_mode) per spec",
+          "requirements.txt and pyproject.toml updated with telegramify-markdown>=1.1.2 per spec",
+          "Error handling: all file errors return human-readable messages as strings (not exceptions) per spec"
+        ],
+        "status": "clean"
+      },
+      "regression": {
+        "issues": [],
+        "notes": [
+          "All 578 tests pass (0 failures, 0 errors)",
+          "Existing tests unaffected — text without [SEND_FILE:] markers passes through _process_file_markers unchanged (extract_file_markers returns empty list, function returns original text)",
+          "Guard is_final=True correctly prevents file marker processing for intermediate updates (is_final=False)",
+          "New test classes: TestSendResponseFileMarkers (5 tests), TestSendWatcherMessageFileMarkers (2 tests), TestProcessFileMarkers (1 test) in test_bot.py",
+          "New test classes in test_file_sender.py: 7 classes with 30 tests covering all public functions",
+          "New integration test TestMessagePathWithFileMarkers in test_message_path.py",
+          "Existing send_response tests (TestSendResponse) continue to pass — no regression in default behavior"
+        ],
+        "status": "clean"
+      }
+    },
+    "total_issues_found": 1,
+    "total_issues_fixed": 1,
+    "fix_cycles_used": 1,
+    "needs_rollback": false
+  }
+}

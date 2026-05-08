@@ -1,0 +1,80 @@
+{
+  "agent": "intake",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T00:18:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Бот не отвечает на текстовые сообщения в Telegram, хотя команды (/new, /56) работают. Предварительная диагностика проведена, корневая причина найдена, код не менялся.",
+    "files": [
+      "dev/docs/session-reports/13-04/00-10_bot-not-responding-diagnosis.md"
+    ]
+  },
+  "created_files": [],
+  "result": {
+    "problem_description": "Три обработчика Telegram-сообщений (handle_message, handle_photo, handle_document) вызывают send_chat_action(ChatAction.TYPING) без try/except. Когда Telegram API отвечает ошибкой (TimedOut, throttling), необработанное исключение роняет весь обработчик — основная логика (_send_to_claude_and_respond) не вызывается, пользователь не получает ответа. Команды (/new, /56) работают, потому что у них другой путь выполнения без send_chat_action. Побочная проблема: session_watcher каждые 2 секунды пытается прочитать JSONL-файлы удалённых сессий, спамит error.log объёмом ~1 МБ.",
+    "context": {
+      "project": "claude_manager",
+      "working_directory": "/Users/ivan/Desktop/claude-sandbox/claude_manager",
+      "relevant_files": [
+        "src/claude_manager/bot.py",
+        "src/claude_manager/session_watcher.py",
+        "src/claude_manager/session_manager.py"
+      ],
+      "environment": "macOS (Darwin 24.6.0), Python 3.13, python-telegram-bot >=21.10, Claude Code CLI (stream-json)"
+    },
+    "artifacts": [
+      {
+        "type": "file_path",
+        "content": "src/claude_manager/bot.py:887",
+        "description": "handle_message: send_chat_action(ChatAction.TYPING) без try/except — при TimedOut весь обработчик падает, _send_to_claude_and_respond не вызывается"
+      },
+      {
+        "type": "file_path",
+        "content": "src/claude_manager/bot.py:920",
+        "description": "handle_photo: аналогичный незащищённый вызов send_chat_action(ChatAction.TYPING)"
+      },
+      {
+        "type": "file_path",
+        "content": "src/claude_manager/bot.py:958",
+        "description": "handle_document: аналогичный незащищённый вызов send_chat_action(ChatAction.TYPING)"
+      },
+      {
+        "type": "log",
+        "content": "23:52:35 — telegram.ext.Application: TimedOut на bot.py:887 handle_message → send_chat_action(TYPING). Пользователь отправил 'Ну как ты?' — тишина",
+        "description": "Запись из error.log, подтверждающая что TimedOut на send_chat_action уронил обработчик текстовых сообщений"
+      },
+      {
+        "type": "log",
+        "content": "23:48:26 — 'Все 3 попыток отправки в Telegram исчерпаны' (chat_id=REDACTED_E2E_TELEGRAM_ID)",
+        "description": "Telegram API был перегружен — начало цепочки ошибок"
+      },
+      {
+        "type": "log",
+        "content": "23:49:43 — Claude CLI PID 65153 убит по таймауту 300 секунд",
+        "description": "Claude CLI не отвечал, убит — предшествующий сбой, усилил нагрузку"
+      },
+      {
+        "type": "log",
+        "content": "23:50:12 — 'Процесс для сессии _new_2a2c0c54ce60 уже обрабатывает запрос' — busy flag заблокировал новое сообщение",
+        "description": "Busy flag не был снят после предыдущего сбоя, заблокировал следующее сообщение"
+      },
+      {
+        "type": "text",
+        "content": "session_watcher каждые 2 секунды пытается прочитать 3 JSONL-файла несуществующих сессий (70ca7205, 669ddf67, d2c6a9c3), error.log ~1 МБ",
+        "description": "Побочная проблема: watcher спамит лог из-за записей в sessions.json, ссылающихся на удалённые сессии"
+      },
+      {
+        "type": "text",
+        "content": "Триггер: одновременно с пользовательскими сообщениями шёл полный прогон E2E тестов (21 тест через Telethon) — нагрузка на Bot API от одного токена",
+        "description": "Контекст: высокая нагрузка на Telegram Bot API из-за параллельного E2E тестирования"
+      },
+      {
+        "type": "text",
+        "content": "Диагностический отчёт: dev/docs/session-reports/13-04/00-10_bot-not-responding-diagnosis.md",
+        "description": "Полный отчёт предварительной диагностики с хронологией и анализом"
+      }
+    ]
+  },
+  "next_agent": "understanding"
+}

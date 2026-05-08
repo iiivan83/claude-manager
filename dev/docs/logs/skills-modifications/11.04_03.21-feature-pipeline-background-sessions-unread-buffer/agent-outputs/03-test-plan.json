@@ -1,0 +1,369 @@
+{
+  "agent": "feature-test-plan",
+  "status": "success",
+  "timestamp": "2026-04-11T03:45:00+03:00",
+  "result": {
+    "test_framework": "pytest + pytest-asyncio",
+    "scale": "medium",
+    "tests_to_update": [
+      {
+        "path": "tests/test_project_manager.py",
+        "tests": [
+          {
+            "name": "TestSwitchProject::test_happy_path",
+            "changes": "was: мокает process_manager.stop_all_processes(return_value=0). becomes: мокает session_watcher.get_seen_counts_snapshot(return_value={}), unread_buffer.save_snapshot, unread_buffer.has_pending(return_value=False), unread_buffer.get_pending_messages. Убрать мок stop_all_processes. Убрать assert на stopped_processes_count. Добавить assert result.pending_messages_count == 0, assert result.pending_messages == []."
+          },
+          {
+            "name": "TestSwitchProject::test_already_active",
+            "changes": "was: мокает stop_all_processes, проверяет stop_mock.assert_not_called(). becomes: убрать мок stop_all_processes. Добавить мок session_watcher.get_seen_counts_snapshot и unread_buffer — проверить, что save_snapshot НЕ вызывается при already_active. Добавить assert result.pending_messages_count == 0, assert result.pending_messages == []."
+          },
+          {
+            "name": "TestSwitchProject::test_stops_all_processes",
+            "changes": "ПОЛНАЯ ЗАМЕНА. was: тест проверял вызов stop_all_processes и stopped_processes_count==3. becomes: переименовать в test_saves_snapshot_on_switch. Мокать session_watcher.get_seen_counts_snapshot(return_value={'sess-1': 5, 'sess-2': 10}), unread_buffer.save_snapshot, unread_buffer.has_pending(return_value=False). Проверить: unread_buffer.save_snapshot.assert_called_once_with(str(working_dir), {'sess-1': 5, 'sess-2': 10}). Проверить: process_manager.stop_all_processes НЕ вызывается (не мокать — или мокать и проверить assert_not_called)."
+          },
+          {
+            "name": "TestSwitchProject::test_resets_all_state_modules",
+            "changes": "was: мокает stop_all_processes(return_value=0). becomes: убрать мок stop_all_processes. Добавить моки session_watcher.get_seen_counts_snapshot(return_value={}), unread_buffer.save_snapshot, unread_buffer.has_pending(return_value=False). Остальные assert-ы (session_reset, registry_reset, watcher_reset) без изменений."
+          },
+          {
+            "name": "TestSwitchProject::test_saves_to_last_project_file",
+            "changes": "was: мокает stop_all_processes(return_value=0). becomes: убрать мок stop_all_processes. Добавить моки session_watcher.get_seen_counts_snapshot(return_value={}), unread_buffer.save_snapshot, unread_buffer.has_pending(return_value=False). assert-ы на файл без изменений."
+          },
+          {
+            "name": "TestSwitchProject::test_rollback_on_reset_error",
+            "changes": "was: мокает stop_all_processes(return_value=0). becomes: убрать мок stop_all_processes. Добавить моки session_watcher.get_seen_counts_snapshot(return_value={}), unread_buffer.save_snapshot, unread_buffer.clear_snapshot. Проверить: при ошибке unread_buffer.clear_snapshot вызывается с old_path (откат снапшота). result.pending_messages_count == 0, result.pending_messages == []."
+          },
+          {
+            "name": "TestSwitchProject::test_concurrent_switches_serialized",
+            "changes": "was: мокает stop_all_processes как tracked_stop. becomes: убрать tracked_stop и мок stop_all_processes. Добавить моки session_watcher.get_seen_counts_snapshot(return_value={}), unread_buffer.save_snapshot, unread_buffer.has_pending(return_value=False). Отслеживание порядка — через save_snapshot.call_count или другой маркер. Основной assert (оба вызова завершились без исключений) остаётся."
+          },
+          {
+            "name": "imports (верх файла)",
+            "changes": "was: импортирует только SwitchResult, ProjectInfo и т.д. becomes: добавить импорт unread_buffer: from claude_manager import unread_buffer (для patch.object). Убрать импорт process_manager если не используется нигде."
+          }
+        ]
+      },
+      {
+        "path": "tests/test_bot.py",
+        "tests": [
+          {
+            "name": "imports (верх файла)",
+            "changes": "was: импортирует PROJECT_SWITCH_SUCCESS_TEMPLATE, PROJECT_SWITCH_ERROR_TEMPLATE. becomes: дополнительно импортировать PROJECT_SWITCH_PENDING_TEMPLATE (новый шаблон). Импортировать send_response если ещё не импортирован (уже есть). Импортировать daily_session_registry (уже есть)."
+          },
+          {
+            "name": "TestHandleSwitchProject::test_valid_number_calls_switch",
+            "changes": "was: SwitchResult(..., stopped_processes_count=2, ...). becomes: SwitchResult(..., pending_messages_count=0, pending_messages=[], ...). Убрать stopped_processes_count из конструктора."
+          },
+          {
+            "name": "TestHandleSwitchProject::test_already_active_shows_message",
+            "changes": "was: SwitchResult(..., stopped_processes_count=0, ...). becomes: SwitchResult(..., pending_messages_count=0, pending_messages=[], ...). Убрать stopped_processes_count."
+          },
+          {
+            "name": "TestHandleSwitchProject::test_success_message_includes_name_and_count",
+            "changes": "ПОЛНАЯ ЗАМЕНА. was: проверял 'beta' in sent и '5' in sent (stopped_processes_count=5). becomes: переименовать в test_success_message_includes_name. SwitchResult(..., pending_messages_count=0, pending_messages=[], ...). Проверить: 'beta' in sent. Убрать assert '5' in sent (больше нет счётчика процессов в сообщении)."
+          },
+          {
+            "name": "TestHandleSwitchProject::test_error_shows_error_message",
+            "changes": "was: SwitchResult(..., stopped_processes_count=0, ...). becomes: SwitchResult(..., pending_messages_count=0, pending_messages=[], ...). Убрать stopped_processes_count."
+          }
+        ]
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "tests": [
+          {
+            "name": "TestFullSwitchCycle::test_switch_between_two_projects",
+            "changes": "was: assert result.stopped_processes_count == 0. becomes: assert result.pending_messages_count == 0 и assert result.pending_messages == []. Аналогично для result_back."
+          },
+          {
+            "name": "TestFullSwitchCycle::test_switch_stops_running_processes",
+            "changes": "ПОЛНАЯ ЗАМЕНА. was: проверял что при переключении процессы останавливаются (stopped_processes_count == 2, len(process_manager._processes) == 0). becomes: переименовать в test_switch_does_not_stop_processes. Поведение изменилось: процессы НЕ останавливаются при переключении. Тест должен проверить: после switch_project процессы всё ещё есть в process_manager._processes (len == 2). result.pending_messages_count == 0 (возвращаемся в проект без снапшота). Также проверить что session_watcher._seen_message_counts очищен (reset_state вызван)."
+          }
+        ]
+      },
+      {
+        "path": "tests/e2e/test_project_switching.py",
+        "tests": [
+          {
+            "name": "test_flow09_switch_to_other_project_and_back",
+            "changes": "was: assert 'Остановлено процессов' in switch_response. becomes: убрать этот assert. Проект больше не показывает счётчик остановленных процессов. Оставить assert other.name in switch_response. Опционально: добавить проверку что 'Переключено на проект' in switch_response (уже есть в wait_for_matching_response)."
+          }
+        ]
+      }
+    ],
+    "tests_to_add": [
+      {
+        "path": "tests/test_unread_buffer.py",
+        "description": "Новый файл юнит-тестов для модуля unread_buffer.py",
+        "level": "unit",
+        "tests": [
+          {
+            "name": "TestSaveSnapshot::test_saves_copy_of_seen_counts",
+            "description": "save_snapshot сохраняет КОПИЮ seen_counts (изменение оригинала не влияет на снапшот). Проверяем: передаём dict, потом меняем его — snapshot.seen_counts остаётся прежним.",
+            "key_asserts": [
+              "unread_buffer._snapshots[project_path].seen_counts == original_counts",
+              "Мутация original_dict не меняет snapshot"
+            ]
+          },
+          {
+            "name": "TestSaveSnapshot::test_saves_switch_time",
+            "description": "save_snapshot записывает switch_time близкий к datetime.now().",
+            "key_asserts": [
+              "abs((snapshot.switch_time - now).total_seconds()) < 1"
+            ]
+          },
+          {
+            "name": "TestSaveSnapshot::test_overwrites_existing_snapshot",
+            "description": "Повторный save_snapshot для того же проекта перезаписывает предыдущий.",
+            "key_asserts": [
+              "len(unread_buffer._snapshots) == 1",
+              "snapshot.seen_counts == new_counts"
+            ]
+          },
+          {
+            "name": "TestGetPendingMessages::test_returns_new_assistant_messages",
+            "description": "Для проекта со снапшотом (seen_count=2) и JSONL с 4 сообщениями — возвращает 2 новых assistant-сообщения. Мокаем session_reader.get_session_messages.",
+            "key_asserts": [
+              "len(result) >= 1",
+              "result[0].session_id == 'sess-1'",
+              "result[0].text == 'Новый ответ'"
+            ]
+          },
+          {
+            "name": "TestGetPendingMessages::test_skips_user_messages",
+            "description": "Новые сообщения с type='user' не включаются в результат.",
+            "key_asserts": [
+              "all(msg.text != user_text for msg in result)"
+            ]
+          },
+          {
+            "name": "TestGetPendingMessages::test_skips_empty_responses",
+            "description": "Сообщения с пустым текстом или 'No response requested.' пропускаются.",
+            "key_asserts": [
+              "len(result) == 0"
+            ]
+          },
+          {
+            "name": "TestGetPendingMessages::test_discovers_new_sessions",
+            "description": "Сессии, которых не было в снапшоте (новые), обрабатываются целиком (seen_count=0). Мокаем session_reader.get_recent_sessions с новой сессией.",
+            "key_asserts": [
+              "any(msg.session_id == 'new-session' for msg in result)"
+            ]
+          },
+          {
+            "name": "TestGetPendingMessages::test_no_snapshot_returns_empty",
+            "description": "Если снапшота для проекта нет — возвращает пустой список.",
+            "key_asserts": [
+              "result == []"
+            ]
+          },
+          {
+            "name": "TestGetPendingMessages::test_expired_ttl_returns_empty_and_clears",
+            "description": "Если switch_time старше TTL (3 часа) — возвращает пустой список и удаляет снапшот из _snapshots. Мокаем switch_time = now - 4 hours.",
+            "key_asserts": [
+              "result == []",
+              "project_path not in unread_buffer._snapshots"
+            ]
+          },
+          {
+            "name": "TestGetPendingMessages::test_handles_list_content",
+            "description": "Сообщение с content в виде списка [{type: 'text', text: '...'}] корректно извлекается.",
+            "key_asserts": [
+              "result[0].text содержит текст из списка"
+            ]
+          },
+          {
+            "name": "TestClearSnapshot::test_removes_snapshot",
+            "description": "clear_snapshot удаляет снапшот для указанного project_path.",
+            "key_asserts": [
+              "project_path not in unread_buffer._snapshots"
+            ]
+          },
+          {
+            "name": "TestClearSnapshot::test_noop_if_no_snapshot",
+            "description": "clear_snapshot для несуществующего проекта не вызывает ошибку.",
+            "key_asserts": [
+              "Не вызывает KeyError/исключение"
+            ]
+          },
+          {
+            "name": "TestHasPending::test_true_when_snapshot_exists",
+            "description": "has_pending возвращает True если для проекта есть непросроченный снапшот.",
+            "key_asserts": [
+              "has_pending(project_path) is True"
+            ]
+          },
+          {
+            "name": "TestHasPending::test_false_when_no_snapshot",
+            "description": "has_pending возвращает False если снапшота нет.",
+            "key_asserts": [
+              "has_pending(project_path) is False"
+            ]
+          },
+          {
+            "name": "TestHasPending::test_false_when_expired",
+            "description": "has_pending возвращает False если снапшот просрочен по TTL.",
+            "key_asserts": [
+              "has_pending(project_path) is False"
+            ]
+          },
+          {
+            "name": "TestCleanupExpired::test_removes_all_expired",
+            "description": "cleanup_expired удаляет все снапшоты старше TTL, оставляя свежие.",
+            "key_asserts": [
+              "'expired_project' not in unread_buffer._snapshots",
+              "'fresh_project' in unread_buffer._snapshots"
+            ]
+          },
+          {
+            "name": "TestCleanupExpired::test_noop_when_all_fresh",
+            "description": "cleanup_expired ничего не удаляет если все снапшоты свежие.",
+            "key_asserts": [
+              "len(unread_buffer._snapshots) == initial_count"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "description": "Добавить тесты для новой функции get_seen_counts_snapshot в существующий файл",
+        "level": "unit",
+        "tests": [
+          {
+            "name": "TestGetSeenCountsSnapshot::test_returns_copy_of_counts",
+            "description": "get_seen_counts_snapshot возвращает копию _seen_message_counts (не тот же объект). Изменение возвращённого dict не влияет на оригинал.",
+            "key_asserts": [
+              "result == {'sess-1': 5, 'sess-2': 10}",
+              "result is not session_watcher._seen_message_counts"
+            ]
+          },
+          {
+            "name": "TestGetSeenCountsSnapshot::test_returns_empty_when_no_counts",
+            "description": "Если _seen_message_counts пуст — возвращает пустой dict.",
+            "key_asserts": [
+              "result == {}"
+            ]
+          },
+          {
+            "name": "TestGetSeenCountsSnapshot::test_mutation_does_not_affect_original",
+            "description": "Изменение возвращённого dict не меняет _seen_message_counts.",
+            "key_asserts": [
+              "session_watcher._seen_message_counts['sess-1'] == 5 (после result['sess-1'] = 999)"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "tests/test_project_manager.py",
+        "description": "Добавить тесты для новой функции _collect_pending_messages и снапшот-логики",
+        "level": "unit",
+        "tests": [
+          {
+            "name": "TestSwitchProject::test_collects_pending_messages_on_return",
+            "description": "При переключении в проект, для которого есть снапшот с pending сообщениями, SwitchResult содержит pending_messages_count > 0 и список PendingMessage.",
+            "key_asserts": [
+              "result.pending_messages_count == 2",
+              "len(result.pending_messages) == 2",
+              "result.pending_messages[0].text == 'Ответ 1'"
+            ]
+          },
+          {
+            "name": "TestSwitchProject::test_clears_snapshot_after_collecting",
+            "description": "После успешного сбора pending_messages снапшот удаляется через clear_snapshot.",
+            "key_asserts": [
+              "unread_buffer.clear_snapshot.assert_called_once_with(target_path)"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "tests/test_bot.py",
+        "description": "Добавить тесты для новых функций _deliver_pending_messages и обновлённого шаблона",
+        "level": "unit",
+        "tests": [
+          {
+            "name": "TestHandleSwitchProject::test_success_with_pending_shows_count",
+            "description": "Успешное переключение с pending_messages_count=3 показывает 'Непрочитанных сообщений: 3' в ответе.",
+            "key_asserts": [
+              "'Непрочитанных сообщений: 3' in sent_text или '3' in sent_text",
+              "'Переключено на проект' in sent_text"
+            ]
+          },
+          {
+            "name": "TestHandleSwitchProject::test_success_without_pending_no_count_line",
+            "description": "Успешное переключение с pending_messages_count=0 НЕ показывает строку 'Непрочитанных сообщений'.",
+            "key_asserts": [
+              "'Непрочитанных' not in sent_text"
+            ]
+          },
+          {
+            "name": "TestHandleSwitchProject::test_delivers_pending_messages_after_switch",
+            "description": "При pending_messages_count > 0 каждое сообщение доставляется через send_response. Мокаем send_response и daily_session_registry.register_session.",
+            "key_asserts": [
+              "send_response вызван len(pending_messages) раз",
+              "register_session вызван для каждого session_id"
+            ]
+          },
+          {
+            "name": "TestHandleSwitchProject::test_deliver_pending_continues_on_register_error",
+            "description": "_deliver_pending_messages продолжает доставку даже если register_session упал для одного сообщения.",
+            "key_asserts": [
+              "send_response вызван для сообщений после ошибки"
+            ]
+          }
+        ]
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "description": "Добавить интеграционный тест полного цикла с буфером непрочитанных",
+        "level": "integration",
+        "tests": [
+          {
+            "name": "TestFullSwitchCycle::test_pending_messages_delivered_on_return",
+            "description": "A → B (создаём JSONL в A пока мы в B) → A → pending_messages содержит новые сообщения. Используем реальные модули session_watcher, unread_buffer, session_reader. Создаём фейковый JSONL-файл сессии в project_a.",
+            "key_asserts": [
+              "result_back.pending_messages_count >= 1",
+              "result_back.pending_messages[0].text содержит текст из JSONL"
+            ]
+          },
+          {
+            "name": "TestFullSwitchCycle::test_expired_snapshot_returns_no_pending",
+            "description": "Если снапшот просрочен по TTL (мокаем switch_time) — pending_messages пустой при возврате.",
+            "key_asserts": [
+              "result_back.pending_messages_count == 0",
+              "result_back.pending_messages == []"
+            ]
+          }
+        ]
+      }
+    ],
+    "tests_to_delete": [],
+    "fixtures_to_add": [
+      {
+        "path": "tests/test_unread_buffer.py",
+        "name": "_reset_unread_buffer_state",
+        "description": "autouse фикстура: очищает unread_buffer._snapshots перед каждым тестом для изоляции.",
+        "code_sketch": "unread_buffer._snapshots.clear()"
+      }
+    ],
+    "key_mocking_patterns": {
+      "session_reader_in_unread_buffer": "patch('claude_manager.unread_buffer.session_reader.get_session_messages', ...) и patch('claude_manager.unread_buffer.session_reader.get_recent_sessions', ...)",
+      "unread_buffer_in_project_manager": "patch.object(project_manager.unread_buffer, 'save_snapshot'), patch.object(project_manager.unread_buffer, 'has_pending'), patch.object(project_manager.unread_buffer, 'get_pending_messages'), patch.object(project_manager.unread_buffer, 'clear_snapshot')",
+      "session_watcher_snapshot": "patch.object(project_manager.session_watcher, 'get_seen_counts_snapshot', return_value={...})",
+      "config_ttl": "patch.object(config, 'UNREAD_BUFFER_TTL_HOURS', 3)"
+    },
+    "summary": {
+      "total_updated_tests": 14,
+      "total_new_tests": 27,
+      "total_deleted_tests": 0,
+      "files_touched": [
+        "tests/test_unread_buffer.py (NEW — 17 тестов)",
+        "tests/test_project_manager.py (UPDATE — 7 тестов + 2 новых)",
+        "tests/test_bot.py (UPDATE — 5 тестов + 4 новых)",
+        "tests/test_session_watcher.py (UPDATE — 0 + 3 новых)",
+        "tests/integration/test_project_switching.py (UPDATE — 2 теста + 2 новых)",
+        "tests/e2e/test_project_switching.py (UPDATE — 1 тест)"
+      ]
+    }
+  }
+}

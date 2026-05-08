@@ -1,0 +1,84 @@
+{
+  "agent": "feature-test-plan-review",
+  "status": "success",
+  "timestamp": "2026-04-11T04:05:00+03:00",
+  "result": {
+    "verdict": "approved",
+    "issues": [
+      {
+        "type": "missing_coverage",
+        "description": "Нет теста на цикл A→B→A в test_unread_buffer.py — сценарий, когда пользователь уходит из проекта A, переключается в B, затем возвращается в A. Этот сценарий покрыт только на уровне интеграции (test_pending_messages_delivered_on_return), но на юнит-уровне unread_buffer не проверяется последовательность save_snapshot(A) → get_pending(A) → clear(A). Интеграционный тест покрывает достаточно — юнит-дублирование не обязательно.",
+        "severity": "warning"
+      },
+      {
+        "type": "missing_coverage",
+        "description": "Нет юнит-теста на ошибку чтения файла в get_pending_messages — если session_reader.get_session_messages выбросит OSError (файл удалён, нет прав), поведение unread_buffer не проверено. Спецификация не описывает обработку этого случая, но в реальной работе файлы могут исчезнуть пока бот был в другом проекте.",
+        "severity": "warning"
+      },
+      {
+        "type": "missing_coverage",
+        "description": "Тест test_concurrent_switches_serialized в test_project_manager.py — в тест-плане описано, что нужно убрать tracked_stop и отслеживать порядок через save_snapshot.call_count, но нет конкретного assert-а. Текущий тест уже проверяет 'оба вызова завершились без исключений', и этого достаточно для проверки serialization через lock.",
+        "severity": "warning"
+      },
+      {
+        "type": "missing_coverage",
+        "description": "Нет теста на пустой буфер (все сессии без новых сообщений). Есть test_no_snapshot_returns_empty (снапшота вообще нет) и test_skips_empty_responses (пустые сообщения), но нет кейса: снапшот есть, seen_count == текущему числу строк в JSONL → 0 pending messages. Этот кейс покрывается косвенно (если new_messages = all_messages[seen_count:] и seen_count == len(all_messages), то срез пуст), но явный тест был бы полезнее.",
+        "severity": "warning"
+      },
+      {
+        "type": "missing_coverage",
+        "description": "Тест-план не включает обновление теста test_happy_path на проверку, что process_manager.stop_all_processes НЕ вызывается. План описывает 'убрать мок stop_all_processes', но не добавляет явный assert_not_called для stop_all_processes. В test_saves_snapshot_on_switch (бывший test_stops_all_processes) есть комментарий 'мокать и проверить assert_not_called', но формулировка неопределённая ('мокать или нет'). Рекомендация: в одном тесте (test_saves_snapshot_on_switch) явно проверить, что stop_all_processes не вызывается.",
+        "severity": "warning"
+      },
+      {
+        "type": "wrong_level",
+        "description": "Тест test_delivers_pending_messages_after_switch в test_bot.py проверяет, что send_response вызывается для каждого pending-сообщения. Это правильный уровень (unit для bot.py). Однако моккинг daily_session_registry.register_session нужно явно указать (уже есть в описании). Не проблема, а подтверждение корректности уровня.",
+        "severity": "warning"
+      }
+    ],
+    "coverage_analysis": {
+      "spec_functions_covered": {
+        "unread_buffer.save_snapshot": "3 теста (saves_copy, saves_switch_time, overwrites_existing)",
+        "unread_buffer.get_pending_messages": "7 тестов (new_assistant, skips_user, skips_empty, discovers_new, no_snapshot, expired_ttl, handles_list_content)",
+        "unread_buffer.clear_snapshot": "2 теста (removes, noop)",
+        "unread_buffer.has_pending": "3 теста (true_exists, false_no_snapshot, false_expired)",
+        "unread_buffer.cleanup_expired": "2 теста (removes_expired, noop_fresh)",
+        "session_watcher.get_seen_counts_snapshot": "3 теста (returns_copy, empty, mutation_safe)",
+        "project_manager._collect_pending_messages": "2 теста (collects_on_return, clears_after)",
+        "project_manager._perform_switch (updated)": "покрыт через test_saves_snapshot_on_switch",
+        "project_manager._rollback_switch (updated)": "покрыт через test_rollback_on_reset_error + clear_snapshot check",
+        "bot._deliver_pending_messages": "2 теста (delivers_after_switch, continues_on_error)",
+        "bot._format_switch_result_message (updated)": "2 теста (with_pending_count, without_pending)"
+      },
+      "key_scenarios_covered": {
+        "switch_does_not_stop_processes": "test_saves_snapshot_on_switch (unit) + test_switch_does_not_stop_processes (integration)",
+        "snapshot_saved_on_leave": "test_saves_snapshot_on_switch (unit) + test_pending_messages_delivered_on_return (integration)",
+        "pending_delivered_on_return": "test_collects_pending_messages_on_return (unit) + test_pending_messages_delivered_on_return (integration) + test_delivers_pending_messages_after_switch (bot unit)",
+        "ttl_expired_no_delivery": "test_expired_ttl_returns_empty_and_clears (unit) + test_expired_snapshot_returns_no_pending (integration)",
+        "deduplication": "test_returns_new_assistant_messages — срез messages[seen_count:] гарантирует отсутствие дубликатов",
+        "new_sessions_discovered": "test_discovers_new_sessions (unit)",
+        "empty_buffer": "Косвенно через test_no_snapshot_returns_empty. Прямого теста 'снапшот есть, но новых строк нет' — нет (warning выше)",
+        "cycle_a_b_a": "test_pending_messages_delivered_on_return (integration) + test_switch_between_two_projects (integration, updated)"
+      }
+    },
+    "update_correctness": {
+      "test_project_manager": "Обновления корректны. 7 тестов обновляются для замены stop_all_processes → unread_buffer моки. 2 новых теста на pending-логику. Существующие assert-ы (session_reset, registry_reset, watcher_reset, файл последнего проекта) сохраняются. Ничего не теряется.",
+      "test_bot": "Обновления корректны. SwitchResult конструкторы обновляются: stopped_processes_count → pending_messages_count + pending_messages. 4 новых теста покрывают pending-доставку и обновлённый шаблон. Тест test_access_denied_for_unauthorized и test_invalid_number_shows_error не затронуты — правильно, они не зависят от SwitchResult.",
+      "test_session_watcher": "3 новых теста для get_seen_counts_snapshot добавлены в существующий файл. Существующие тесты не модифицируются — правильно, get_seen_counts_snapshot — дополнение, не изменение существующего API.",
+      "test_integration": "2 теста обновляются, 2 новых. test_switch_stops_running_processes полностью заменяется на test_switch_does_not_stop_processes — поведение инвертировано, assert-ы корректно отражают новое поведение. test_switch_between_two_projects — stopped_processes_count → pending_messages_count.",
+      "test_e2e": "assert 'Остановлено процессов' убирается — корректно, этого текста больше не будет в ответе бота."
+    },
+    "risk_assessment": {
+      "breaking_existing_tests": "Низкий. Все обновления затрагивают только SwitchResult конструкторы и мок stop_all_processes → unread_buffer. Никакие несвязанные тесты не сломаются.",
+      "missing_cleanup": "fixture _reset_unread_buffer_state (autouse) правильно чистит _snapshots — изоляция тестов обеспечена.",
+      "mocking_patterns": "Паттерны корректны: patch.object для модулей в project_manager namespace (project_manager.unread_buffer), patch по строке для session_reader внутри unread_buffer. Соответствует существующим паттернам в кодовой базе."
+    },
+    "summary": {
+      "total_issues": 6,
+      "critical_issues": 0,
+      "warning_issues": 6,
+      "recommendation": "Тест-план одобрен. Все 6 замечаний — warning уровня: недостающие тесты на граничные случаи и уточнения формулировок. Ни одно из замечаний не представляет критического пробела в покрытии. Основные сценарии фичи (снапшот при уходе, доставка pending при возврате, TTL, дедупликация, новые сессии, неостановка процессов) покрыты на нескольких уровнях (unit + integration). Рекомендация: при реализации добавить один юнит-тест 'snapshot exists but no new messages' в TestGetPendingMessages для полноты."
+    },
+    "approved_plan": "dev/docs/logs/skills-modifications/11.04_03.21-feature-pipeline-background-sessions-unread-buffer/agent-outputs/03-test-plan.json"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "agent": "feature-test-plan",
+  "status": "success",
+  "timestamp": "2026-04-11T13:22:00+03:00",
+  "result": {
+    "test_framework": "pytest + pytest-asyncio (asyncio_mode=auto)",
+    "scale": "medium",
+    "tests_to_update": [
+      {
+        "path": "tests/test_config.py",
+        "changes": "Добавить класс TestE2eTestUserId: (1) test_e2e_user_id_loaded — при E2E_TEST_USER_ID=99999 в env → config.E2E_TEST_USER_ID == 99999, (2) test_e2e_user_id_none_when_missing — без переменной → None, (3) test_e2e_user_id_not_in_allowed_ids — E2E ID не попадает в ALLOWED_USER_IDS, (4) test_e2e_user_id_invalid — нечисловое значение → ConfigError"
+      },
+      {
+        "path": "tests/test_bot.py",
+        "changes": "Добавить класс TestE2eTestUserAccess: (1) test_e2e_user_passes_check_access — _check_access возвращает True для E2E_TEST_USER_ID, (2) test_e2e_user_denied_when_not_configured — E2E_TEST_USER_ID=None, чужой ID → False, (3) test_post_init_skips_e2e_user — _post_init не шлёт служебное уведомление E2E-пользователю"
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "changes": "Добавить тест test_e2e_user_excluded_from_fallback_broadcast в класс TestOwnershipTargeting: при отсутствии владельца и E2E_TEST_USER_ID в ALLOWED_USER_IDS — callback НЕ вызывается для E2E ID"
+      }
+    ],
+    "tests_to_add": [
+      {
+        "path": "tests/integration/test_e2e_user_isolation.py",
+        "description": "Интеграционные тесты изоляции E2E-пользователя. Проверка полного пути: (1) test_e2e_user_message_creates_own_session — E2E-пользователь создаёт свою сессию, не влияет на основного пользователя, (2) test_e2e_user_no_watcher_broadcast — watcher не шлёт E2E-пользователю broadcast о чужих сессиях, (3) test_e2e_user_gets_own_session_notifications — watcher шлёт E2E-пользователю уведомления о его собственных сессиях (как owner)",
+        "level": "integration"
+      }
+    ],
+    "tests_to_delete": [],
+    "verification_of_all_pipelines": {
+      "pipeline_1_existing_tests": {
+        "description": "Верификация ранее реализованных исправлений пайплайна 1",
+        "runtime_guard": "tests/test_config.py::TestLoadConfig::test_warning_for_multiple_user_ids — уже существует, проверяет warning при >1 ID",
+        "asyncio_lock": "tests/test_process_manager.py::TestConcurrency — 4 теста на Lock (concurrent_send_and_stop, zombie_busy_flag, atomic_update, concurrent_same_session)",
+        "phantom_cleanup": "tests/test_daily_session_registry.py::TestRemovePhantomEntries — 6 тестов на фильтрацию _new_*"
+      },
+      "pipeline_2_existing_tests": {
+        "description": "Верификация ранее реализованного исправления watcher ownership",
+        "watcher_ownership": "tests/test_session_watcher.py::TestOwnershipTargeting — test_sends_only_to_session_owner, test_fallback_to_all_users_when_no_owner"
+      },
+      "pipeline_2_new_tests": {
+        "description": "Новые тесты для E2E_TEST_USER_ID",
+        "unit_config": "tests/test_config.py::TestE2eTestUserId — 4 теста",
+        "unit_bot": "tests/test_bot.py::TestE2eTestUserAccess — 3 теста",
+        "unit_watcher": "tests/test_session_watcher.py::TestOwnershipTargeting — 1 новый тест",
+        "integration": "tests/integration/test_e2e_user_isolation.py — 3 теста"
+      },
+      "pipeline_3_verification": {
+        "description": "Верификация документации и скиллов — проверяется через grep/read в интеграционных тестах и ревью",
+        "claude_md": "Проверить наличие разделов 'Однопользовательский инвариант' и 'E2E тестирование и изоляция' в CLAUDE.md",
+        "brd": "Проверить наличие предупреждения про ALLOWED_USER_IDS в BRD",
+        "skills": "Проверить обновление скиллов test-e2e, validate-brd, review-code"
+      }
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-12T21:35:00+03:00",
+  "result": {
+    "approach_summary": "Добавляем callback-механизм раннего уведомления о смене session_id. Суть: когда Claude создаёт реальную сессию и возвращает её UUID в потоке событий, бот должен мгновенно (не дожидаясь конца обработки) обновить все привязки — session_manager, session_watcher, daily_session_registry, process_manager. Для этого пробрасываем async-callback через всю цепочку вызовов в process_manager (send_message → _execute_send → _process_events; send_message → _execute_send → _retry_loop → _execute_single_retry → _process_events). Callback создаётся в bot.py как замыкание с доступом к chat_id. В _process_events() callback вызывается ровно один раз при первом обнаружении нового session_id — до того, как watcher (фоновый наблюдатель за файлами сессий) проснётся и увидит новый файл. Старый код обновления session_id в send_message() и _handle_claude_result() упрощается: send_message() сохраняет fallback для случая callback=None, _handle_claude_result() убирает дублирующее обновление.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/process_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тип SessionIdCallback не определён. Функция _process_events() (строка 190) принимает 3 параметра: claude_process, session_id, progress_callback. При обнаружении нового session_id в событиях (строка 206-207) просто обновляет локальную переменную final_session_id — без уведомления внешних модулей. Уведомление происходит позже, в send_message() (строка 437-441): после завершения _process_events() проверяется result.session_id != session_id и вызывается update_session_id() для внутренних словарей process_manager. Функции _execute_send() (строка 453), _retry_loop() (строка 281), _execute_single_retry() (строка 238) не знают о session_id_callback.",
+          "becomes": "1) Новый тип callback-а (после строки 27, рядом с ProgressCallback и RetryCallback):\n\ntype SessionIdCallback = Callable[[str, str], Awaitable[None]]\n\n2) Функция _process_events() (строка 190) — добавляется 4-й параметр session_id_callback: SessionIdCallback | None = None. Внутри, в блоке обнаружения нового session_id (строки 206-207), добавляется вызов callback при ПЕРВОМ изменении. Нужен флаг callback_fired = False (инициализируется перед циклом, рядом с got_result на строке 200). Логика замены строк 206-207:\n\n```python\nevent_session_id = event.get('session_id')\nif event_session_id is not None and event_session_id != final_session_id:\n    old_final = final_session_id\n    final_session_id = event_session_id\n    if session_id_callback is not None and not callback_fired:\n        callback_fired = True\n        try:\n            await session_id_callback(old_final, event_session_id)\n        except Exception:\n            logger.error(\n                'Ошибка в session_id_callback: %s -> %s',\n                old_final, event_session_id, exc_info=True,\n            )\n```\n\nКлючевые решения:\n- callback_fired — защита от повторного вызова (идемпотентность), закрывает зону риска 'Двойной вызов callback при ретрае'\n- try/except — защита от прерывания потока событий при ошибке в callback, закрывает зону риска 'Callback вызывается внутри _process_events()'\n- callback вызывается до _handle_progress_event, то есть максимально рано после обнаружения нового ID\n\n3) Функция _execute_single_retry() (строка 238) — добавляется параметр session_id_callback: SessionIdCallback | None = None. Пробрасывается в вызов _process_events() на строке 252.\n\n4) Функция _retry_loop() (строка 281) — добавляется параметр session_id_callback: SessionIdCallback | None = None (после retry_callback). Пробрасывается в вызов _execute_single_retry() на строке 302-303.\n\n5) Функция _execute_send() (строка 453) — добавляется параметр session_id_callback: SessionIdCallback | None = None (после retry_callback). Пробрасывается в вызов _process_events() на строке 463 и в вызов _retry_loop() на строках 470, 477.\n\n6) Функция send_message() (строка 417) — добавляется параметр session_id_callback: SessionIdCallback | None = None (после retry_callback). Пробрасывается в вызов _execute_send() на строке 434-436. Блок обновления session_id (строки 437-441) СОХРАНЯЕТСЯ как fallback: он нужен, когда callback=None (обратная совместимость), и для обновления ВНУТРЕННИХ словарей process_manager (_processes, _busy_flags, _stop_events), которые callback из bot.py не обновляет. Но условие меняется: update_session_id() вызывается ВСЕГДА при смене ID (внутренние словари process_manager должны быть в актуальном состоянии), а вот session_id = result.session_id на строке 441 остаётся как есть.",
+          "reason": "Callback уведомляет bot.py о смене session_id мгновенно, внутри потока событий — до того, как watcher проснётся (каждые 2 секунды). Это закрывает окно гонки (race condition), в котором watcher видит файл новой сессии на диске и регистрирует дубликат дневного номера. try/except гарантирует, что ошибка в callback не прервёт чтение ответа Claude. Флаг callback_fired гарантирует однократный вызов, даже если _process_events вызывается повторно при ретрае."
+        }
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Функция _send_to_claude_and_respond() (строка 449) вызывает process_manager.send_message() без session_id_callback. Пауза watcher ставится на исходный session_id (строка 461). В finally-блоке (строка 494-495) resume_session вызывается с текущим значением session_id — но если ID изменился, переменная session_id обновляется только в _handle_claude_result() (строка 468), то есть ПОСЛЕ завершения всего потока событий. Функция _handle_claude_result() (строка 425-446) при обнаружении нового session_id вызывает session_manager.update_session_id() и session_watcher.update_session_id() — но это происходит поздно, после завершения _process_events().",
+          "becomes": "1) Внутри _send_to_claude_and_respond() (строка 449) создаётся замыкание _on_session_id_changed — async-функция, которая мгновенно обновляет все привязки при смене session_id. Замыкание определяется ПЕРЕД вызовом send_message, после строки 460 (после проверки _ensure_process_running). Замыкание обновляет переменную session_id через nonlocal:\n\n```python\nasync def _on_session_id_changed(old_id: str, new_id: str) -> None:\n    nonlocal session_id\n    session_watcher.update_session_id(old_id, new_id)\n    await session_manager.update_session_id(chat_id, old_id, new_id)\n    session_id = new_id\n```\n\nЗамыкание намеренно компактное — три операции:\n- session_watcher.update_session_id() (синхронная функция) — переносит паузу со старого ID на новый\n- session_manager.update_session_id() (async функция) — обновляет привязку chat_id → session_id и дневной реестр (daily_session_registry.update_session_id вызывается внутри session_manager.update_session_id)\n- nonlocal session_id = new_id — чтобы finally-блок вызвал resume_session с правильным ID\n\n2) Вызов process_manager.send_message() (строки 464-466) дополняется session_id_callback=_on_session_id_changed:\n\n```python\nresult = await process_manager.send_message(\n    session_id, text,\n    progress_callback=_on_progress, retry_callback=_on_retry,\n    session_id_callback=_on_session_id_changed,\n)\n```\n\n3) Функция _handle_claude_result() (строки 425-446) упрощается: блок обновления session_id (строки 429-434) УБИРАЕТСЯ. Callback уже обновил все привязки внутри _process_events(). Остаётся только регистрация в дневном реестре и отправка ответа. Новый код _handle_claude_result:\n\n```python\nasync def _handle_claude_result(\n    chat_id: int, session_id: str, result: process_manager.SendResult,\n) -> str:\n    \"\"\"Обрабатывает результат от Claude: регистрирует сессию и отправляет ответ.\"\"\"\n    # Используем актуальный session_id из результата — callback уже обновил привязки\n    actual_session_id = result.session_id\n\n    day_number = await daily_session_registry.register_session(actual_session_id)\n\n    if result.is_error:\n        error_text = result.text if result.text else 'Неизвестная ошибка Claude'\n        await _send_telegram_message(\n            chat_id, f'Ошибка Claude: {error_text}', parse_mode=None,\n        )\n    else:\n        await send_response(chat_id, result.text, day_number, is_final=True)\n\n    return actual_session_id\n```\n\nГлавное отличие: убран блок if result.session_id != session_id с вызовами session_manager.update_session_id() и session_watcher.update_session_id(). Эти вызовы теперь происходят мгновенно через callback.",
+          "reason": "Замыкание _on_session_id_changed решает корневую проблему: обновление привязок происходит ВНУТРИ потока событий от Claude, при первом обнаружении реального UUID — на несколько секунд раньше, чем watcher проснётся для очередного сканирования файлов. nonlocal session_id гарантирует, что finally-блок (resume_session) вызовется с правильным ID, закрывая зону риска 'Замыкание session_id в _send_to_claude_and_respond()'. Удаление дублирующего обновления из _handle_claude_result() устраняет двойной вызов update_session_id, который стал бы ошибкой (old_id уже не существует в словарях после callback)."
+        }
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Код модуля не меняется. Функции update_session_id() (строка 282) и pause_session() (строка 228) уже реализуют нужную логику: update_session_id переносит и счётчик, и статус паузы со старого ID на новый.",
+          "becomes": "Без изменений кода. Модуль указан в списке для полноты картины — callback из bot.py вызывает его существующий публичный API.",
+          "reason": "API модуля полностью достаточен для нужд callback. Добавлять ничего не нужно."
+        }
+      },
+      {
+        "file": "src/claude_manager/session_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Код модуля не меняется. Функция update_session_id(chat_id, old_session_id, new_session_id) (строка 161) уже обновляет привязки и дневной реестр внутри Lock.",
+          "becomes": "Без изменений кода. Модуль указан для полноты — callback вызывает существующий update_session_id().",
+          "reason": "Функция уже идемпотентна: проверяет _bindings.get(chat_id) == old_session_id перед обновлением. Если callback вызовется дважды (теоретически), второй вызов просто ничего не сделает."
+        }
+      },
+      {
+        "file": "src/claude_manager/daily_session_registry.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Код модуля не меняется. Функция update_session_id(old_id, new_id) вызывается внутри session_manager.update_session_id().",
+          "becomes": "Без изменений кода.",
+          "reason": "Модуль не затрагивается напрямую — callback вызывает session_manager.update_session_id(), который внутри себя вызывает daily_session_registry.update_session_id()."
+        }
+      },
+      {
+        "file": "tests/test_process_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты send_message() и _process_events() не проверяют session_id_callback. Тест test_session_id_updated_from_event (строка 639) проверяет, что update_session_id() вызывается из send_message() при смене ID — но не проверяет раннее уведомление через callback.",
+          "becomes": "Добавить новые тесты (в конец файла):\n\n1) test_session_id_callback_called_on_new_id — создаём mock ClaudeProcess, который отдаёт events с новым session_id. Передаём async mock-callback в _process_events(). Проверяем, что callback вызвался ровно 1 раз с аргументами (old_id, new_id).\n\n2) test_session_id_callback_called_once — ClaudeProcess отдаёт 3 события, каждое с тем же новым session_id. Проверяем, что callback вызвался ровно 1 раз (не 3).\n\n3) test_session_id_callback_none_no_error — вызываем _process_events() с session_id_callback=None и событиями со сменой ID. Проверяем, что ошибки нет, результат содержит новый session_id.\n\n4) test_session_id_callback_error_does_not_break_events — callback бросает RuntimeError. Проверяем, что _process_events() всё равно возвращает результат с текстом ответа и правильным session_id (события дочитаны до конца).\n\n5) test_send_message_passes_session_id_callback — вызываем send_message() с session_id_callback. Проверяем, что callback дошёл до _process_events() (через mock).\n\nСуществующий тест test_session_id_updated_from_event — остаётся без изменений, он проверяет fallback-поведение (update_session_id внутри send_message() при callback=None).",
+          "reason": "Покрытие всех зон риска из impact analysis: однократный вызов, обработка ошибок callback, обратная совместимость при callback=None."
+        }
+      },
+      {
+        "file": "tests/test_bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Тесты _handle_claude_result() проверяют вызов session_manager.update_session_id() и session_watcher.update_session_id() при смене ID. Тесты _send_to_claude_and_respond() мокают process_manager.send_message() без session_id_callback.",
+          "becomes": "1) Тесты _handle_claude_result() — убрать ожидание вызовов session_manager.update_session_id() и session_watcher.update_session_id(). Теперь _handle_claude_result() НЕ вызывает эти функции — обновление происходит через callback.\n\n2) Добавить новые тесты:\n- test_send_to_claude_passes_session_id_callback — проверяет, что _send_to_claude_and_respond() передаёт session_id_callback в process_manager.send_message().\n- test_on_session_id_changed_updates_all_modules — проверяет, что callback вызывает session_watcher.update_session_id() и session_manager.update_session_id() с правильными аргументами.\n- test_resume_uses_updated_session_id — проверяет, что после callback обновления finally-блок вызывает resume_session() с НОВЫМ session_id (а не со старым temp-ID).\n\n3) Обновить моки process_manager.send_message — учесть новый параметр session_id_callback в сигнатуре.",
+          "reason": "Тесты должны отражать новую архитектуру: обновление через callback вместо post-factum обновления в _handle_claude_result()."
+        }
+      },
+      {
+        "file": "tests/integration/test_message_path.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "8 вызовов process_manager._process_events() с 3 позиционными аргументами (claude_process, session_id, progress_callback=None или progress_callback=on_progress). Строки: 92, 121, 150, 178, 199, 234, 281, 312.",
+          "becomes": "Все 8 вызовов остаются с теми же 3 аргументами. Новый параметр session_id_callback имеет значение по умолчанию None — обратная совместимость обеспечена, позиционные вызовы продолжают работать без изменений. НО: если какие-то вызовы используют keyword-аргументы (progress_callback=...), их можно оставить как есть — новый параметр идёт после progress_callback и имеет default.",
+          "reason": "Обратная совместимость: session_id_callback=None по умолчанию. Все существующие вызовы _process_events() продолжают работать без изменений."
+        }
+      }
+    ]
+  }
+}

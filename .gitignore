@@ -45,5 +45,11 @@ dev/temp/*
 # Бэкапы старых версий скиллов в git не нужны
 .claude/skills/.backup-*/
 
+# Резервные копии и снапшоты (например brd-user-journeys.BEFORE.md — снимок BRD до реализации)
+*.BEFORE.*
+*.bak
+*.backup
+*.backup.*
+
 # Системные файлы macOS
 .DS_Store

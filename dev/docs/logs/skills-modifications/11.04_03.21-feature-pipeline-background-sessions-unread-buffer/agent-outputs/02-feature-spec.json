@@ -1,0 +1,145 @@
+{
+  "agent": "feature-spec",
+  "status": "success",
+  "timestamp": "2026-04-11T03:30:00+03:00",
+  "result": {
+    "approach_summary": "Подход Snapshot + Scan: при уходе из проекта сохраняем снапшот _seen_message_counts (сколько строк JSONL уже видели в каждой сессии). Процессы Claude НЕ останавливаются, watcher мониторит ТОЛЬКО активный проект. При возврате сканируем JSONL-файлы покинутого проекта, сравниваем текущее число строк со снапшотом, извлекаем новые assistant-сообщения, фильтруем по TTL 3 часа, доставляем пользователю. Нулевой memory overhead — JSONL-файлы на диске уже являются буфером, _seen_message_counts уже являются механизмом дедупликации.",
+    "rollback_feedback_used": null,
+    "changes": [
+      {
+        "file": "src/claude_manager/unread_buffer.py",
+        "type": "create",
+        "diff_spec": null,
+        "full_spec": {
+          "purpose": "Модуль буфера непрочитанных сообщений. Хранит снапшоты seen_counts при уходе из проекта и сканирует JSONL-файлы при возврате, чтобы извлечь новые assistant-сообщения. Не держит сами сообщения в памяти — использует файлы на диске как буфер.",
+          "api": [
+            "save_snapshot(project_path: str, seen_counts: dict[str, int]) -> None — сохраняет снапшот _seen_message_counts для проекта при уходе. Записывает ProjectSnapshot(seen_counts=copy, switch_time=datetime.now()) в _snapshots[project_path].",
+            "async get_pending_messages(project_path: str) -> list[PendingMessage] — главная функция. Получает снапшот для project_path, проверяет TTL (если просрочен — удаляет снапшот, возвращает пустой список). Для каждого session_id из снапшота: читает все сообщения через session_reader.get_session_messages(session_id, project_path), берёт messages[seen_count:], извлекает тексты из assistant-сообщений через _extract_message_text (копия логики из session_watcher), пропускает пустые и служебные. Также обнаруживает новые сессии (не в снапшоте) через session_reader.get_recent_sessions(project_path). Возвращает список PendingMessage.",
+            "clear_snapshot(project_path: str) -> None — удаляет снапшот после успешной доставки сообщений.",
+            "has_pending(project_path: str) -> bool — возвращает True, если для проекта есть снапшот и он не просрочен по TTL.",
+            "cleanup_expired() -> None — удаляет все снапшоты, просроченные по TTL."
+          ],
+          "algorithms": "Алгоритм get_pending_messages:\n1. Получить снапшот для project_path из _snapshots. Если нет — return [].\n2. Проверить TTL: если datetime.now() - snapshot.switch_time > timedelta(hours=config.UNREAD_BUFFER_TTL_HOURS) — удалить снапшот, return [].\n3. result = []\n4. Для каждого session_id, seen_count в snapshot.seen_counts:\n   a. all_messages = await session_reader.get_session_messages(session_id, project_path)\n   b. new_messages = all_messages[seen_count:]\n   c. Для каждого message в new_messages:\n      - text = _extract_message_text(message) — логика идентична session_watcher._extract_message_text\n      - Если text is None или _is_empty_response(text) — пропустить\n      - result.append(PendingMessage(session_id=session_id, text=text))\n5. Обнаружение новых сессий:\n   a. recent_sessions = await session_reader.get_recent_sessions(project_path)\n   b. known_session_ids = set(snapshot.seen_counts.keys())\n   c. Для каждой session в recent_sessions, если session.session_id not in known_session_ids:\n      - all_messages = await session_reader.get_session_messages(session.session_id, project_path)\n      - Обработать ВСЕ сообщения как новые (seen_count = 0)\n6. return result\n\nАлгоритм _extract_message_text (приватная, копия из session_watcher):\n- Если message.get('type') != 'assistant' — return None\n- message_body = message.get('message', {})\n- content = message_body.get('content')\n- Если content — строка — return content\n- Если content — список — склеить все блоки с type='text' через ' '.join\n- Иначе return None\n\nАлгоритм _is_empty_response (приватная, копия из session_watcher):\n- Если not text или not text.strip() — return True\n- Если text.strip() in NO_RESPONSE_MARKERS — return True\n- return False",
+          "dependencies": [
+            "claude_manager.config — для UNREAD_BUFFER_TTL_HOURS",
+            "claude_manager.session_reader — для get_session_messages и get_recent_sessions"
+          ],
+          "dataclasses": [
+            {
+              "name": "ProjectSnapshot",
+              "fields": {
+                "seen_counts": "dict[str, int] — копия _seen_message_counts на момент ухода",
+                "switch_time": "datetime — время ухода из проекта"
+              },
+              "frozen": false,
+              "note": "Используется dataclass, не frozen — нет необходимости в иммутабельности"
+            },
+            {
+              "name": "PendingMessage",
+              "fields": {
+                "session_id": "str — идентификатор сессии",
+                "text": "str — текст сообщения Claude"
+              },
+              "frozen": true,
+              "note": "frozen=True — результат только для чтения"
+            }
+          ],
+          "module_state": {
+            "_snapshots": "dict[str, ProjectSnapshot] — ключ: абсолютный путь к проекту, значение: снапшот. In-memory, не персистится на диск.",
+            "NO_RESPONSE_MARKERS": "frozenset({'No response requested.'}) — продублировано из session_watcher, потому что модуль unread_buffer не должен импортировать session_watcher (нижний слой не импортирует верхний)"
+          }
+        }
+      },
+      {
+        "file": "src/claude_manager/config.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "В модуле config.py нет константы UNREAD_BUFFER_TTL_HOURS. Последняя переменная модуля — PROJECTS_ROOT_DIR: str = \"\".",
+          "becomes": "Добавить новую константу после PROJECTS_ROOT_DIR:\n\n# Максимальное время хранения снапшота непрочитанных сообщений (часы).\n# Сообщения старше этого возраста не доставляются при возврате в проект.\nUNREAD_BUFFER_TTL_HOURS: int = 3\n\nНе добавлять в load_config(), потому что это фиксированная константа, а не переменная окружения.",
+          "reason": "Вынос магического числа 3 (часа) в именованную константу. Используется в unread_buffer.py для проверки TTL снапшота."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "src/claude_manager/session_watcher.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "Модуль session_watcher.py не имеет функции get_seen_counts_snapshot(). Словарь _seen_message_counts доступен только внутри модуля.",
+          "becomes": "Добавить публичную функцию:\n\ndef get_seen_counts_snapshot() -> dict[str, int]:\n    \"\"\"Возвращает копию счётчиков обработанных сообщений для снапшота.\"\"\"\n    return dict(_seen_message_counts)\n\nРазместить после функции update_session_id (строка ~291), перед async def start. Функция синхронная — dict() создаёт shallow copy, что достаточно для dict[str, int].",
+          "reason": "project_manager вызывает эту функцию при уходе из проекта, чтобы передать текущие счётчики в unread_buffer.save_snapshot(). Без неё project_manager не может получить _seen_message_counts — это приватная переменная модуля."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "src/claude_manager/project_manager.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "1. Импорты: from claude_manager import (config, daily_session_registry, process_manager, session_manager, session_watcher)\n2. SwitchResult: поле stopped_processes_count: int\n3. _perform_switch: вызывает await process_manager.stop_all_processes(), возвращает stopped_count\n4. _rollback_switch: вызывает _reset_all_state_modules() для отката\n5. _make_error_result: устанавливает stopped_processes_count=0\n6. _make_success_result: принимает stopped_count, передаёт в SwitchResult\n7. _try_switch_with_rollback: возвращает tuple[int | None, SwitchResult | None]\n8. _finalize_successful_switch: логирует stopped_count, передаёт в _make_success_result\n9. switch_project: получает stopped_count из _try_switch_with_rollback",
+          "becomes": "1. Импорты: добавить unread_buffer в список импортов:\n   from claude_manager import (\n       config,\n       daily_session_registry,\n       process_manager,\n       session_manager,\n       session_watcher,\n       unread_buffer,\n   )\n\n2. SwitchResult: заменить поле stopped_processes_count: int на pending_messages: list и pending_messages_count: int:\n   @dataclass(frozen=True)\n   class SwitchResult:\n       success: bool\n       already_active: bool\n       old_path: str\n       new_path: str\n       pending_messages_count: int\n       pending_messages: list\n       error_message: str\n\n3. _perform_switch(target_path: str) -> None:\n   - УБРАТЬ вызов process_manager.stop_all_processes()\n   - ДОБАВИТЬ перед сменой WORKING_DIR:\n     seen_snapshot = session_watcher.get_seen_counts_snapshot()\n     old_path = config.WORKING_DIR\n     unread_buffer.save_snapshot(old_path, seen_snapshot)\n   - Остальное (config.WORKING_DIR = target_path, _reset_all_state_modules) — без изменений\n   - Возвращаемый тип: None вместо int (нет stopped_count)\n\n4. _rollback_switch: добавить восстановление снапшота:\n   async def _rollback_switch(old_path: str, target_path: str) -> None:\n       config.WORKING_DIR = old_path\n       # Восстанавливаем снапшот: при откате уход из проекта не произошёл\n       unread_buffer.clear_snapshot(old_path)\n       try:\n           await _reset_all_state_modules()\n       except Exception:\n           logger.error(...)\n   Сигнатура меняется: добавляется target_path (чтобы было ясно, что откатываем)\n\n5. _make_error_result: заменить stopped_processes_count=0 на pending_messages_count=0, pending_messages=[]\n\n6. _make_success_result: убрать параметр stopped_count, добавить pending_messages_count и pending_messages:\n   def _make_success_result(\n       old_path: str,\n       target_path: str,\n       pending_messages_count: int,\n       pending_messages: list,\n       already_active: bool,\n   ) -> SwitchResult\n\n7. _try_switch_with_rollback: возвращает tuple[bool, SwitchResult | None] вместо tuple[int | None, SwitchResult | None]:\n   - При ошибке: await _rollback_switch(old_path, target_path)\n   - При успехе: return True, None\n\n8. _collect_pending_messages(target_path: str) -> tuple[int, list]:\n   Новая приватная async-функция. Проверяет, есть ли для target_path снапшот в unread_buffer:\n   - Если unread_buffer.has_pending(target_path) — False, return (0, [])\n   - pending = await unread_buffer.get_pending_messages(target_path)\n   - unread_buffer.clear_snapshot(target_path)\n   - return (len(pending), pending)\n\n9. _finalize_successful_switch: заменить stopped_count на pending_messages:\n   async def _finalize_successful_switch(\n       old_path: str, target_path: str,\n   ) -> SwitchResult:\n       await save_selected_project(target_path)\n       pending_count, pending = await _collect_pending_messages(target_path)\n       logger.info(\n           'Переключение проекта выполнено: %s -> %s (непрочитанных=%d)',\n           old_path, target_path, pending_count,\n       )\n       return _make_success_result(\n           old_path, target_path, pending_count, pending, already_active=False,\n       )\n\n10. switch_project: обновить вызовы:\n    - _try_switch_with_rollback теперь возвращает (success_flag, error_result)\n    - _finalize_successful_switch теперь не принимает stopped_count",
+          "reason": "Центральное изменение фичи. Убираем остановку процессов, добавляем сохранение снапшота при уходе и сбор непрочитанных при возврате. SwitchResult теперь несёт pending_messages вместо stopped_processes_count."
+        },
+        "full_spec": null
+      },
+      {
+        "file": "src/claude_manager/bot.py",
+        "type": "modify",
+        "diff_spec": {
+          "was": "1. PROJECT_SWITCH_SUCCESS_TEMPLATE = 'Переключено на проект: {name}\\nОстановлено процессов: {count}'\n2. _format_switch_result_message: при success использует PROJECT_SWITCH_SUCCESS_TEMPLATE.format(name=project_name, count=result.stopped_processes_count)\n3. handle_switch_project: вызывает project_manager.switch_project, форматирует результат через _format_switch_result_message, отправляет одно сообщение",
+          "becomes": "1. Заменить PROJECT_SWITCH_SUCCESS_TEMPLATE:\n   PROJECT_SWITCH_SUCCESS_TEMPLATE = 'Переключено на проект: {name}'\n   Добавить новый шаблон:\n   PROJECT_SWITCH_PENDING_TEMPLATE = 'Непрочитанных сообщений: {count}'\n   Добавить шаблон заголовка буферизованного сообщения:\n   BUFFERED_MESSAGE_HEADER = 'Пропущенное из #{day_number}'\n\n2. _format_switch_result_message: при success — вернуть PROJECT_SWITCH_SUCCESS_TEMPLATE.format(name=project_name). Если result.pending_messages_count > 0 — добавить '\\n' + PROJECT_SWITCH_PENDING_TEMPLATE.format(count=result.pending_messages_count). Убрать ссылку на stopped_processes_count.\n   def _format_switch_result_message(\n       result: project_manager.SwitchResult, project_name: str\n   ) -> str:\n       if result.already_active:\n           return PROJECT_ALREADY_ACTIVE_TEMPLATE.format(name=project_name)\n       if result.success:\n           text = PROJECT_SWITCH_SUCCESS_TEMPLATE.format(name=project_name)\n           if result.pending_messages_count > 0:\n               text += '\\n' + PROJECT_SWITCH_PENDING_TEMPLATE.format(\n                   count=result.pending_messages_count,\n               )\n           return text\n       return PROJECT_SWITCH_ERROR_TEMPLATE.format(error=result.error_message)\n\n3. handle_switch_project: после отправки результата переключения, если result.pending_messages_count > 0 — отправить каждое пропущенное сообщение:\n   async def handle_switch_project(update, context):\n       ... (до строки result = await project_manager.switch_project(...))\n       response_text = _format_switch_result_message(result, target_project.name)\n       await _send_telegram_message(chat_id, response_text, parse_mode=None)\n\n       # Доставка пропущенных сообщений после переключения\n       if result.success and result.pending_messages_count > 0:\n           await _deliver_pending_messages(chat_id, result.pending_messages)\n\n4. Новая приватная async-функция _deliver_pending_messages:\n   async def _deliver_pending_messages(\n       chat_id: int, pending_messages: list,\n   ) -> None:\n       \"\"\"Доставляет пропущенные сообщения из буфера после переключения проекта.\"\"\"\n       for pending in pending_messages:\n           try:\n               day_number = await daily_session_registry.register_session(\n                   pending.session_id\n               )\n           except Exception:\n               logger.error(\n                   'Ошибка регистрации сессии %s при доставке буфера',\n                   pending.session_id, exc_info=True,\n               )\n               continue\n           # Формат: заголовок + текст через send_response\n           await send_response(\n               chat_id, pending.text, day_number, is_final=True,\n           )",
+          "reason": "Обновление UI: вместо 'Остановлено процессов: N' показываем 'Непрочитанных сообщений: N' и доставляем буферизованные сообщения. Каждое пропущенное сообщение отправляется отдельно через send_response с номером сессии."
+        },
+        "full_spec": null
+      }
+    ],
+    "test_impact": {
+      "note": "Спецификация тестов создаётся отдельным агентом test-spec. Здесь — только перечень затрагиваемых тестов для информации.",
+      "existing_tests_requiring_update": [
+        {
+          "file": "tests/test_project_manager.py",
+          "reason": "SwitchResult.stopped_processes_count заменяется на pending_messages_count и pending_messages. _perform_switch больше не вызывает stop_all_processes. Все тесты, проверяющие stopped_count и mock stop_all_processes — обновить."
+        },
+        {
+          "file": "tests/test_session_watcher.py",
+          "reason": "Добавить тесты на get_seen_counts_snapshot. Существующие тесты reset_state — без изменений."
+        },
+        {
+          "file": "tests/test_bot.py",
+          "reason": "Шаблоны сообщений изменились. handle_switch_project теперь доставляет pending_messages. _format_switch_result_message — новая логика."
+        },
+        {
+          "file": "tests/integration/test_project_switching.py",
+          "reason": "test_switch_stops_running_processes проверяет stopped_count==2 — обновить на pending_messages_count. test_switch_between_two_projects — обновить ожидания."
+        },
+        {
+          "file": "tests/e2e/test_project_switching.py",
+          "reason": "test_flow09 ищет 'Остановлено процессов' — обновить на новый шаблон."
+        }
+      ],
+      "new_tests_needed": [
+        {
+          "file": "tests/test_unread_buffer.py",
+          "cases": [
+            "save_snapshot — сохраняет копию seen_counts и switch_time",
+            "get_pending_messages — возвращает новые assistant-сообщения после снапшота",
+            "get_pending_messages — пропускает пустые и служебные ответы",
+            "get_pending_messages — обнаруживает новые сессии (не в снапшоте)",
+            "get_pending_messages — возвращает пустой список если нет снапшота",
+            "get_pending_messages — возвращает пустой список и удаляет снапшот если TTL просрочен",
+            "clear_snapshot — удаляет снапшот",
+            "has_pending — True когда есть непросроченный снапшот",
+            "has_pending — False когда нет снапшота",
+            "has_pending — False когда снапшот просрочен",
+            "cleanup_expired — удаляет все просроченные снапшоты"
+          ]
+        }
+      ]
+    },
+    "architecture_notes": {
+      "layer_compliance": "unread_buffer.py — слой бизнес-логики (как session_manager). Импортирует session_reader (инфраструктура) и config (утилита). НЕ импортирует session_watcher (тот же слой — нет горизонтальных зависимостей). Логика _extract_message_text дублируется из session_watcher намеренно — чтобы не создавать круговую зависимость.",
+      "deduplication_guarantee": "_seen_message_counts — единственный источник истины о том, сколько строк JSONL уже обработано. Снапшот фиксирует эти счётчики на момент ухода. При возврате сравниваем текущее число строк в файле со значением из снапшота. Дубликаты невозможны: каждая строка JSONL имеет фиксированную позицию, мы берём messages[seen_count:] — это детерминированный срез.",
+      "ttl_behavior": "TTL = 3 часа считается от момента ухода из проекта (snapshot.switch_time), а не от момента создания сообщения. Если пользователь ушёл 4 часа назад — снапшот просрочен, все сообщения (даже свежие) НЕ доставляются. Это осознанное упрощение: через 3 часа контекст устарел.",
+      "no_process_stop": "Процессы Claude старого проекта продолжают работать. process_manager.stop_all_processes() НЕ вызывается при переключении. Она остаётся в коде для graceful shutdown при завершении бота.",
+      "extract_message_text_duplication": "Функция _extract_message_text дублируется в unread_buffer.py и session_watcher.py. Альтернатива — вынести в session_reader (утилита), но это выходит за scope фичи и увеличивает blast radius. Дублирование допустимо, потому что функция маленькая (15 строк), стабильная (формат JSONL не меняется часто), и оба модуля используют её одинаково."
+    }
+  }
+}

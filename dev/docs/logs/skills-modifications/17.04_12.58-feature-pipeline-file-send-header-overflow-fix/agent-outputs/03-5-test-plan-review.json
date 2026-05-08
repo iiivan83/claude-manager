@@ -1,0 +1,48 @@
+{
+  "agent": "feature-test-plan-review",
+  "status": "success",
+  "timestamp": "2026-04-17T13:22:00Z",
+  "result": {
+    "verdict": "approved",
+    "issues": [
+      {
+        "type": "redundant",
+        "description": "test_send_text_file_long_filename_correct_reserve дублирует test_send_text_file_passes_header_reserve — оба проверяют один и тот же путь кода (вычисление UTF-16 длины заголовка через encode('utf-16-le')). Длинное имя файла не меняет логику вычисления — это однострочная формула без ветвлений. Единственная добавленная ценность — документирование разбивки 2+1+200+2=205, но это тестирование Python str.encode, а не логики приложения.",
+        "severity": "warning"
+      }
+    ],
+    "approved_plan": {
+      "test_framework": "pytest + pytest-asyncio (asyncio_mode = auto)",
+      "scale": "small",
+      "tests_to_update": [],
+      "tests_to_add": [
+        {
+          "path": "tests/test_file_sender.py",
+          "description": "test_first_chunk_reserve_reduces_effective_limit — вызвать render_file_for_telegram с длинным контентом (500+ строк) и first_chunk_reserve=200. Проверить, что каждый чанк не превышает (TELEGRAM_MESSAGE_LIMIT - 200) UTF-16 code units. Добавить в класс TestRenderFileForTelegram.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_file_sender.py",
+          "description": "test_first_chunk_reserve_zero_is_backward_compatible — вызвать render_file_for_telegram с тем же длинным контентом дважды: с first_chunk_reserve=0 и без параметра. Проверить, что количество чанков одинаковое и длины текстов совпадают. Подтверждает, что дефолтное значение 0 не меняет существующее поведение. Добавить в класс TestRenderFileForTelegram.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_file_sender.py",
+          "description": "test_first_chunk_reserve_absurd_value_uses_fallback — вызвать render_file_for_telegram с first_chunk_reserve=TELEGRAM_MESSAGE_LIMIT (или больше). Проверить, что функция не падает: логирует warning и использует fallback-лимит (TELEGRAM_MESSAGE_LIMIT // 2). Чанки не должны превышать fallback-лимит. Добавить в класс TestRenderFileForTelegram.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_bot.py",
+          "description": "test_send_text_file_passes_header_reserve — создать класс TestSendTextFile. Замокать file_sender.read_file_content (возвращает контент без ошибки), file_sender.render_file_for_telegram (возвращает один чанк), file_sender.convert_entities, _application.bot.send_message. Проверить, что render_file_for_telegram вызывается с first_chunk_reserve, равным длине заголовка FILE_CONTENT_HEADER_TEMPLATE.format(filename=имя_файла) в UTF-16 code units. Это контрактный тест: bot.py корректно передаёт резерв в file_sender.",
+          "level": "unit"
+        },
+        {
+          "path": "tests/test_bot.py",
+          "description": "test_send_text_file_long_filename_correct_reserve — в том же классе TestSendTextFile. Файл с длинным именем (200 символов ASCII). Проверить, что first_chunk_reserve корректно рассчитан: emoji U+1F4CE (2 UTF-16 units) + пробел (1) + filename (200) + два переноса строки (2) = 205. Мокать render_file_for_telegram, проверить аргумент first_chunk_reserve=205.",
+          "level": "unit"
+        }
+      ],
+      "tests_to_delete": []
+    }
+  }
+}

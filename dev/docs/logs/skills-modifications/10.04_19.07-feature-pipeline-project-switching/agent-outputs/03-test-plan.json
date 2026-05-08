@@ -1,0 +1,59 @@
+{
+  "agent": "feature-test-plan",
+  "status": "success",
+  "timestamp": "2026-04-10T19:22:30+05:00",
+  "result": {
+    "test_framework": "pytest + pytest-asyncio",
+    "scale": "medium",
+    "tests_to_update": [
+      {
+        "path": "tests/test_config.py",
+        "changes": "Добавить тест-класс TestProjectsRootDir с 4 тестами: test_default_when_env_missing (default /Users/ivan/Desktop/claude-sandbox подставляется когда PROJECTS_ROOT_DIR отсутствует, мокать существование папки через patch os.path.isdir), test_from_env (значение читается из переменной окружения), test_nonexistent_raises_config_error (несуществующая папка вызывает ConfigError с понятным сообщением), test_file_not_directory_raises_config_error (путь на файл тоже вызывает ConfigError). Также добавить тест для _resolve_projects_root аналогично существующим тестам _resolve_working_dir. Расширить _make_env с новым параметром projects_root."
+      },
+      {
+        "path": "tests/test_process_manager.py",
+        "changes": "Добавить тест-класс TestStopAllProcesses с 5 тестами: test_empty_returns_zero, test_single_process_stopped, test_multiple_processes_all_stopped, test_error_in_one_does_not_stop_others (один процесс бросает в stop_process, остальные всё равно останавливаются), test_busy_process_stopped_correctly. Каждый тест создаёт моки ClaudeProcess через существующую фикстуру mock_claude_process, создаёт процессы через create_process, вызывает stop_all_processes, проверяет len и содержимое _processes."
+      },
+      {
+        "path": "tests/test_session_manager.py",
+        "changes": "Добавить тест-класс TestResetState с 3 тестами: test_clears_bindings (после reset _bindings пустой), test_reloads_from_new_path (создать два tmp_path с разными sessions.json, загрузить из первого, переключить config.WORKING_DIR на второй через patch, вызвать reset_state, убедиться что _bindings теперь из второго), test_resets_cached_path (проверить что после reset_state модульная переменная _bindings_path сброшена в None). Используется patch('claude_manager.config.WORKING_DIR', str(tmp_path)) — уже принятый паттерн в этом файле."
+      },
+      {
+        "path": "tests/test_daily_session_registry.py",
+        "changes": "Добавить тест-класс TestResetState с 4 тестами: test_clears_registry (после reset _registry пустой), test_resets_loaded_flag (после reset_state флаг _loaded_from_disk сбрасывается в False на короткое время, потом устанавливается в True после успешной повторной загрузки), test_reloads_from_new_path (аналогично session_manager), test_preserves_save_capability_after_reset (после reset_state вызов register_session + _save_registry успешно пишет файл — проверяем что _loaded_from_disk правильно восстановился)."
+      },
+      {
+        "path": "tests/test_session_watcher.py",
+        "changes": "Добавить тест-класс TestResetState с 2 тестами: test_clears_seen_counts (заполнить _seen_message_counts через прямое присваивание module._seen_message_counts['sid'] = 5, вызвать reset_state, убедиться что пусто), test_clears_paused_sessions (аналогично для _paused_sessions)."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "changes": "Добавить импорт handle_projects и handle_switch_project. Добавить тест-класс TestHandleProjects с 5 тестами: test_access_denied_for_unauthorized, test_shows_empty_list_message, test_shows_all_projects (мокать project_manager.scan_available_projects чтобы вернуть 3 ProjectInfo), test_marks_current_project (один ProjectInfo с is_current=True), test_sends_as_plain_text (parse_mode=None для кликабельности). Добавить тест-класс TestHandleSwitchProject с 7 тестами: test_access_denied, test_valid_number_calls_switch, test_invalid_number_out_of_range (/p99), test_already_active_shows_message, test_success_shows_name_and_count, test_error_shows_reason, test_exception_caught_gracefully. Мокать project_manager через unittest.mock.patch."
+      },
+      {
+        "path": "tests/test_main.py",
+        "changes": "Добавить 2 теста в существующий класс или новый класс TestLoadLastProject: test_main_loads_last_project_after_config (патчим project_manager.load_last_selected_project чтобы вернуть путь, проверяем что config.WORKING_DIR обновился), test_main_continues_on_load_last_exception (load_last бросает, main не падает, WORKING_DIR остаётся как было). Используем существующий паттерн патча из test_main.py."
+      }
+    ],
+    "tests_to_add": [
+      {
+        "path": "tests/test_project_manager.py",
+        "description": "Новый файл юнит-тестов для модуля project_manager. Тест-класс TestScanAvailableProjects с 6 тестами: test_returns_only_directories (в tmp_path создать 3 папки и 2 файла — возвращаются только папки), test_filters_hidden_dirs (папки начинающиеся с точки игнорируются), test_filters_symlinks_to_outside (создать симлинк на /tmp, убедиться что он не попадает в список), test_empty_root_returns_empty_list, test_permission_error_handled (patch os.listdir чтобы бросить PermissionError, убедиться что возвращается пустой список и логируется warning), test_marks_current_project (config.WORKING_DIR указывает на один из найденных проектов, в результате is_current=True для него). Тест-класс TestSwitchProject с 11 тестами: test_happy_path (валидный путь, success=True, old/new правильные), test_already_active (тот же путь, already_active=True, reset_state не вызывается), test_path_traversal_blocked (tmp_path/../outside — ProjectSwitchError), test_nonexistent_path_fails, test_path_is_file_not_dir_fails, test_path_outside_root_fails, test_stops_all_processes (мокаем process_manager.stop_all_processes, проверяем что вызван), test_resets_all_state_modules (мокаем reset_state у трёх модулей, проверяем вызов), test_saves_to_last_project_file (проверяем вызов save_selected_project), test_rollback_on_state_error (один из reset_state бросает, проверяем что config.WORKING_DIR восстановлен, success=False), test_concurrent_switches_serialized (asyncio.gather двух switch_project, проверяем порядок через side_effect или ордер).\n\nТест-класс TestLoadLastSelectedProject с 4 тестами: test_no_file_returns_none, test_corrupted_file_returns_none (файл с невалидным содержимым, возвращается None), test_invalid_path_returns_none (файл содержит несуществующий путь, возвращается None и логируется warning), test_valid_path_returns_path.\n\nТест-класс TestSaveSelectedProject с 2 тестами: test_writes_file_atomically (проверяем что tmp файл создаётся, потом rename), test_io_error_logged_not_raised (patch на write_text чтобы бросить OSError, убедиться что save_selected_project не бросает).\n\nТест-класс TestGetCurrentProjectPath с 1 тестом: test_returns_config_working_dir.",
+        "level": "unit"
+      },
+      {
+        "path": "tests/integration/test_project_switching.py",
+        "description": "Новый файл интеграционных тестов. Тест test_full_switch_cycle: создать tmp_path/project_a и tmp_path/project_b; patch config.PROJECTS_ROOT_DIR = str(tmp_path); patch config.WORKING_DIR = str(tmp_path/project_a); patch config.LAST_PROJECT_FILE = tmp_path / 'last.txt'; вызвать session_manager.load_bindings() и daily_session_registry.load_registry() (начальное состояние для A); вызвать bind_session(chat_id=100, session_id='sess_a'); убедиться что файл tmp_path/project_a/sessions.json создан; вызвать project_manager.switch_project(str(tmp_path/project_b)); проверить SwitchResult.success=True, SwitchResult.stopped_processes_count=0; проверить что config.WORKING_DIR теперь project_b; проверить что session_manager._bindings пустой; проверить что файл last.txt содержит путь к project_b; переключиться обратно switch_project(str(tmp_path/project_a)); проверить что привязка восстановилась из sessions.json проекта A (_bindings содержит chat_id=100).\n\nТест test_switch_to_same_project_is_noop: переключение на текущий проект возвращает already_active=True, reset_state не вызывается (проверяется через сохранность _bindings).\n\nТест test_switch_with_running_processes_stops_them: создать два фейковых процесса в process_manager._processes через patch, вызвать switch_project, проверить что stopped_processes_count=2 и _processes пустой.\n\nТест test_switch_to_nonexistent_fails_safely: switch_project со строкой '/nonexistent/path' возвращает success=False, понятный error_message, config.WORKING_DIR не меняется.\n\nТест test_path_traversal_attack_blocked: попытка switch_project на '/etc' возвращает success=False с сообщением о выходе за границы корневой папки.",
+        "level": "integration"
+      }
+    ],
+    "tests_to_delete": [],
+    "summary_counts": {
+      "new_unit_tests": 24,
+      "new_integration_tests": 5,
+      "updated_test_files": 7,
+      "total_new_test_cases_added_to_existing_files": 23,
+      "total_new_test_cases": 52
+    }
+  }
+}
