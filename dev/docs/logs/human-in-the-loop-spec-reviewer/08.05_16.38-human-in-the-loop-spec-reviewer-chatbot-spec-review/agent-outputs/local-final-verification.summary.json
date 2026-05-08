@@ -1,0 +1,7 @@
+{
+  "status": "pass",
+  "blockers": 0,
+  "highs": 0,
+  "mediums": 0,
+  "summary": "Local final verification passed after the rerun verifier process hung without writing artifacts. Checked that implicit process_manager backend fallback text is absent, operational project_manager/session_watcher specs use list_all_session_files_for_project, obsolete start_process(args) runner contract text is absent, JSON artifacts are valid, and targeted pytest returned 51 passed."
+}

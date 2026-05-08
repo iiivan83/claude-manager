@@ -1,0 +1,66 @@
+{
+  "findings": [
+    {
+      "id": "finding-001",
+      "severity": "high",
+      "title": "Команды /next и /prev описаны, но не подключены в Telegram",
+      "situation_simple": "Спецификация project_manager требует пользовательские команды /next и /prev. В коде есть функция выбора соседнего проекта, но в Telegram-боте нет команд, обработчиков и bot-level тестов для этих сценариев.",
+      "implementation_risk": "Если перенести project_manager_spec.md в realised сейчас, документация будет обещать команды, которые пользователь не сможет вызвать. Регрессия не будет поймана текущими bot-тестами, потому что покрыта только внутренняя функция resolve_neighbor_project.",
+      "evidence": [
+        "dev/docs/specs/project_manager_spec.md:92 - /next должен быть подключен через CommandHandler(\"next\", ...).",
+        "dev/docs/specs/project_manager_spec.md:97 - /prev должен быть подключен через CommandHandler(\"prev\", ...).",
+        "src/claude_manager/project_manager.py:190 - resolve_neighbor_project реализован только как API модуля.",
+        "src/claude_manager/bot.py:68 - BOT_COMMANDS содержит /projects и /pN-сценарии, но не содержит /next или /prev.",
+        "src/claude_manager/bot.py:1029 - регистрация обработчиков не добавляет CommandHandler(\"next\", ...) или CommandHandler(\"prev\", ...).",
+        "tests/test_project_manager.py:813 - тест покрывает resolve_neighbor_project(\"next\"), но не Telegram-команду."
+      ],
+      "options": [
+        {
+          "label": "дореализовать команды",
+          "effect": "Добавить /next и /prev в меню, обработчики и tests/test_bot.py; после этого project_manager_spec.md можно переносить в realised."
+        },
+        {
+          "label": "вынести команды в отдельную будущую спеку",
+          "effect": "Оставить реализованный core project_manager готовым к переносу, а /next и /prev явно отслеживать как отдельный будущий user-facing scope."
+        }
+      ],
+      "recommended_option": "дореализовать команды",
+      "recommendation_reason": "Нижний уровень уже реализован, поэтому закрыть пользовательский сценарий дешевле и надежнее, чем держать активную спеку ради двух команд.",
+      "change_size": "small",
+      "target_files": [
+        "src/claude_manager/bot.py",
+        "tests/test_bot.py",
+        "dev/docs/specs/project_manager_spec.md"
+      ]
+    },
+    {
+      "id": "finding-002",
+      "severity": "medium",
+      "title": "Пример pending delivery в project_manager_spec.md теряет backend",
+      "situation_simple": "Спецификация уже говорит, что PendingDeliveryItem хранит backend, но в шаге доставки вызывает send_response без backend. Текущий код делает правильно и передает backend явно.",
+      "implementation_risk": "Если будущая правка будет идти по восстановленному тексту спеки, Codex-сообщение из pending delivery может быть оформлено как Claude-сообщение. Это особенно опасно, потому что send_response имеет совместимый default на Claude и такая ошибка не обязательно упадет сразу.",
+      "evidence": [
+        "dev/docs/specs/project_manager_spec.md:88 - send_response вызывается как send_response(chat_id, item.text, day_number, is_final=item.is_final), без item.backend.",
+        "dev/docs/specs/project_manager_spec.md:120 - PendingDeliveryItem включает обязательное поле backend.",
+        "src/claude_manager/bot.py:255 - send_response принимает backend, но по умолчанию использует BackendName.CLAUDE.",
+        "src/claude_manager/bot.py:732 - фактическая реализация вызывает send_response(chat_id, pending.text, day_number, backend, is_final=is_final)."
+      ],
+      "options": [
+        {
+          "label": "исправить пример в project_manager_spec.md",
+          "effect": "Спека будет совпадать с уже работающим кодом: send_response получает item.backend явно."
+        },
+        {
+          "label": "перенести delivery-шаг в integration spec",
+          "effect": "project_manager_spec.md останется про сбор pending-элементов, а Telegram-доставка будет описана только в интеграционной спецификации."
+        }
+      ],
+      "recommended_option": "исправить пример в project_manager_spec.md",
+      "recommendation_reason": "Это минимальная правка текста, которая убирает риск неверной реализации и сохраняет уже выбранную границу ответственности.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/project_manager_spec.md"
+      ]
+    }
+  ]
+}

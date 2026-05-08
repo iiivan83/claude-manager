@@ -1,0 +1,34 @@
+{
+  "agent": "context-and-architecture-spec-reviewer",
+  "status": "success",
+  "result_file": "agent-outputs/context-and-architecture-spec-reviewer.result.md",
+  "findings_file": "agent-outputs/context-and-architecture-spec-reviewer.findings.json",
+  "ready_to_move_to_realised": [
+    "dev/docs/specs/coding_agent_backend_spec.md",
+    "dev/docs/specs/claude_code_backend_spec.md",
+    "dev/docs/specs/codex_backend_spec.md",
+    "dev/docs/specs/current_backend_registry_spec.md",
+    "dev/docs/specs/session_watcher_spec.md",
+    "dev/docs/specs/project_manager_spec.md",
+    "dev/docs/specs/agent_backend_selection_user_journey_spec.md"
+  ],
+  "unfinished_specs_to_review": [
+    "dev/docs/brd/brd-user-journeys.md",
+    "dev/docs/specs/codex_support_spec_implementation_order.md",
+    "dev/docs/specs/daily_session_registry_spec.md",
+    "dev/docs/specs/session_manager_spec.md",
+    "dev/docs/specs/unread_buffer_spec.md",
+    "dev/docs/specs/process_manager_spec.md",
+    "dev/docs/specs/telegram_agent_backend_integration_spec.md"
+  ],
+  "decisions": [
+    "Backend-aware code path is implemented and covered by the supplied green test results.",
+    "Some active specs are restored/stale copies, not unfinished implementation work.",
+    "BRD and implementation queue are stale around CJM-16 /agent.",
+    "Do not overwrite old Claude-only realised specs with same names during any later move.",
+    "spec-creator baseline file was not present, so general spec quality criteria were used."
+  ],
+  "next_step_input": {
+    "summary": "Move only ready specs with conflict-safe handling; fix BRD/queue and four contract mismatches before moving the remaining active specs."
+  }
+}

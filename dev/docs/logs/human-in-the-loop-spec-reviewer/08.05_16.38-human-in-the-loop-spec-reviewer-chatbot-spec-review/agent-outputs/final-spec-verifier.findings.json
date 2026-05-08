@@ -1,0 +1,100 @@
+{
+  "findings": [
+    {
+      "id": "finding-final-001",
+      "severity": "high",
+      "title": "Parent backend specs still describe process_manager fallback to current_backend_registry",
+      "situation_simple": "The updated process_manager spec and code require the caller to pass backend explicitly, but parent/current-backend specs still say process_manager chooses a backend from current_backend_registry when session_id is None or backend is absent.",
+      "implementation_risk": "A future implementer can reintroduce the rejected implicit fallback path, add a failing test around send_message(session_id=None), or make new sessions bypass the bot/session_manager ownership contract.",
+      "evidence": [
+        "dev/docs/specs/realised/coding_agent_backend_spec.md:614-729 says current_backend_registry.get_current() is used when session_id is None or backend is not passed",
+        "dev/docs/specs/realised/coding_agent_backend_spec.md:1019 requires test_new_session_uses_current_global_backend through process_manager.send_message(session_id=None, ...)",
+        "dev/docs/specs/realised/current_backend_registry_spec.md:35-38 says process_manager calls current_backend_registry.get_current() to choose the backend for subprocess launch",
+        "dev/docs/specs/realised/08.05_16.38-backend-aware-process_manager_spec.md:25 states backend-aware send_message requires explicit backend and backend=None is a contract error",
+        "src/claude_manager/process_manager.py:780-790 rejects backend=None, and tests/test_process_manager.py:372-375 verifies this behavior"
+      ],
+      "options": [
+        {
+          "label": "Update parent/current specs",
+          "effect": "Make coding_agent_backend_spec and current_backend_registry_spec say bot/session_manager choose the current backend for new sessions, then pass an explicit backend and temp session_id into process_manager."
+        },
+        {
+          "label": "Revert process_manager contract",
+          "effect": "Reintroduce implicit fallback from process_manager to current_backend_registry, conflicting with the accepted recommendation and current tests."
+        }
+      ],
+      "recommended_option": "Update parent/current specs",
+      "recommendation_reason": "This preserves the accepted explicit-backend architecture and aligns the realised docs with code and tests.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/realised/coding_agent_backend_spec.md",
+        "dev/docs/specs/realised/current_backend_registry_spec.md"
+      ]
+    },
+    {
+      "id": "finding-final-002",
+      "severity": "high",
+      "title": "Operational session scans are documented with the recent-list API instead of list_all",
+      "situation_simple": "Several specs still tell watcher and project pending delivery to use list_session_files_for_project, but the implemented operational path uses list_all_session_files_for_project so it is not capped by the UI recent-session limit.",
+      "implementation_risk": "Following the specs literally can make watcher or pending delivery miss sessions outside the 15-item UI list or Codex lookback/recent window, causing lost unread messages after project switches or incomplete monitoring.",
+      "evidence": [
+        "dev/docs/specs/realised/project_manager_spec.md:328 uses backend_obj.list_session_files_for_project for pending delivery",
+        "dev/docs/specs/realised/08.05_16.38-backend-aware-session_watcher_spec.md:354 and :399 use backend.list_session_files_for_project for watcher polling/resume paths",
+        "dev/docs/specs/realised/coding_agent_backend_spec.md:909 defines MAX_RECENT_SESSIONS = 15 as the cap for list_session_files_for_project",
+        "src/claude_manager/coding_agent_backend.py:167-172 defines list_all_session_files_for_project as the operational scan method",
+        "src/claude_manager/project_manager.py:457-489 and src/claude_manager/session_watcher.py:265,532 use list_all_session_files_for_project",
+        "tests/test_codex_backend.py:397-424 verifies list_all_session_files_for_project ignores recent/lookback limits while list_session_files_for_project is capped"
+      ],
+      "options": [
+        {
+          "label": "Document both scan APIs",
+          "effect": "Use list_session_files_for_project only for /sessions UI and list_all_session_files_for_project for watcher, pending delivery, reset, and other operational flows."
+        },
+        {
+          "label": "Use recent API everywhere",
+          "effect": "Simplifies the text but accepts data loss for sessions outside the recent UI window."
+        }
+      ],
+      "recommended_option": "Document both scan APIs",
+      "recommendation_reason": "It matches the code, tests, and data-safety requirement that operational flows must not be capped by a UI limit.",
+      "change_size": "large",
+      "target_files": [
+        "dev/docs/specs/realised/coding_agent_backend_spec.md",
+        "dev/docs/specs/realised/claude_code_backend_spec.md",
+        "dev/docs/specs/realised/codex_backend_spec.md",
+        "dev/docs/specs/realised/project_manager_spec.md",
+        "dev/docs/specs/realised/08.05_16.38-backend-aware-session_watcher_spec.md"
+      ]
+    },
+    {
+      "id": "finding-final-003",
+      "severity": "high",
+      "title": "process_manager_spec still requires an obsolete claude_runner contract",
+      "situation_simple": "The integration spec correctly allows legacy ClaudeProcess/start_process as compatibility debt, but process_manager_spec still says backend-aware start_process(args, cwd, stdin_bytes) exists and ClaudeProcess.terminate is removed.",
+      "implementation_risk": "A future change based on process_manager_spec can delete legacy runner behavior that current tests still cover, or rewrite process_manager against a non-existent start_process(args, ...) API instead of start_subprocess_for_backend.",
+      "evidence": [
+        "dev/docs/specs/realised/08.05_16.38-backend-aware-process_manager_spec.md:573 says claude_runner exposes start_process(args, cwd, stdin_bytes) and ClaudeProcess.terminate is removed",
+        "dev/docs/specs/realised/telegram_agent_backend_integration_spec.md:349-358 says legacy ClaudeProcess/start_process may remain as compatibility debt and the new backend-aware path is start_subprocess_for_backend",
+        "src/claude_manager/claude_runner.py:164-172 still implements ClaudeProcess.terminate",
+        "src/claude_manager/claude_runner.py:279-323 implements start_subprocess_for_backend and keeps legacy start_process(session_id, cwd)",
+        "tests/test_claude_runner.py:375,495,574 still exercise ClaudeProcess.terminate"
+      ],
+      "options": [
+        {
+          "label": "Align process_manager_spec with integration spec",
+          "effect": "Document start_subprocess_for_backend as the new path and mark ClaudeProcess/start_process/terminate as allowed legacy compatibility debt."
+        },
+        {
+          "label": "Remove legacy runner path",
+          "effect": "Would require code and test changes outside the accepted text-only fixes and contradict the integration spec."
+        }
+      ],
+      "recommended_option": "Align process_manager_spec with integration spec",
+      "recommendation_reason": "It keeps the accepted compatibility boundary and prevents accidental deletion of tested legacy behavior.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/realised/08.05_16.38-backend-aware-process_manager_spec.md"
+      ]
+    }
+  ]
+}

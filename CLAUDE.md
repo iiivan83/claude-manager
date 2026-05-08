@@ -32,6 +32,14 @@ Telegram-бот, который служит пультом управления
 
 Скиллы живут в `.claude/skills/`. Каждый — папка с `SKILL.md` и (опционально) агентами, скриптами, справочными материалами. Правила для скиллов — в `.claude/skills/AGENTS.md`.
 
+Для Codex runtime используется generated full mirror model: управляемые Codex-копии
+лежат в `.agents/skills/**`, а адаптер терминов Claude-only — в
+`.agents/codex-skill-adapter.md`. Claude source remains source of truth: содержательные
+правки делаются в `.claude/skills/**` или `claude-sandbox/shared-skills/**`, после чего
+зеркала пересоздаются через sync tooling проекта `budgets`
+(`dev/scripts/codex-skill-mirrors/sync-codex-skill-mirrors.sh`) и проверяются через
+`validate-codex-skill-mirrors.sh`. Generated mirrors не поддерживаются руками.
+
 
 ## Технологии
 

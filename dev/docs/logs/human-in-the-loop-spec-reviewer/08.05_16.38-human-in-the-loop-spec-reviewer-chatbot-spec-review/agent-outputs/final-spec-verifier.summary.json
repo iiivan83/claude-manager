@@ -1,0 +1,17 @@
+{
+  "agent": "final-spec-verifier",
+  "status": "partial",
+  "result_file": "agent-outputs/final-spec-verifier.result.md",
+  "findings_file": "agent-outputs/final-spec-verifier.findings.json",
+  "blocker_or_high_count": 3,
+  "decisions": [
+    "project_manager_spec does not expose /next or /prev as current Telegram UI",
+    "project_manager pending delivery passes backend into send_response",
+    "process_manager_spec requires explicit backend for backend-aware send_message",
+    "storage specs document compatibility wrappers for preserved legacy APIs",
+    "three high cross-spec contradictions remain before realised sign-off"
+  ],
+  "next_step_input": {
+    "summary": "Fix the three high spec inconsistencies before confirming absence of blocker/high risks."
+  }
+}
