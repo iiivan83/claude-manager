@@ -1,0 +1,4 @@
+# Основные зависимости проекта
+python-telegram-bot>=21.10
+python-dotenv>=1.1.0
+telegramify-markdown>=1.1.2

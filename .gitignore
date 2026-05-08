@@ -1,0 +1,49 @@
+# Виртуальное окружение
+.venv/
+venv/
+
+# Кэш Python (временные файлы, которые Python создаёт для ускорения)
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Файлы IDE (редакторов кода)
+.idea/
+.vscode/
+*.swp
+
+# Переменные окружения (секреты, пароли — нельзя в git)
+.env
+.env.local
+
+# Файлы, создаваемые при работе бота
+bot.pid
+bot.log
+received_files/
+sessions.json
+daily_sessions.json
+
+# Сессии Telethon (для E2E тестов — содержат токен авторизации)
+*.session
+*.session-journal
+
+# Служебные папки проекта
+.agents/.codex-skill-mirror-backups/
+
+# dev/temp/ — черновики и временные файлы не коммитятся, остальное в dev/ трекается
+dev/temp/*
+!dev/temp/.gitkeep
+
+# .claude/ — служебные файлы Claude Code игнорируются целиком,
+# кроме .claude/skills/ с кастомными скиллами проекта.
+# Важно: без trailing slash у .claude/* — иначе исключение !.claude/skills не работает
+# (git не заходит в полностью проигнорированную папку, и re-include бесполезен).
+.claude/*
+!.claude/skills/
+# Бэкапы старых версий скиллов в git не нужны
+.claude/skills/.backup-*/
+
+# Системные файлы macOS
+.DS_Store

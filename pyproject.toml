@@ -1,0 +1,46 @@
+[project]
+name = "claude-manager"
+version = "0.1.0"
+description = "Telegram-бот для управления Claude Code с телефона"
+requires-python = ">=3.13"
+dependencies = [
+    "python-telegram-bot>=21.10",
+    "python-dotenv>=1.1.0",
+    "telegramify-markdown>=1.1.2",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-mock>=3.14",
+]
+e2e = [
+    "telethon>=1.37",
+]
+dev = [
+    "claude-manager[test,e2e]",
+]
+
+[project.scripts]
+claude-manager = "claude_manager.main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Session-scoped event loop по умолчанию — нужно для session-scoped
+# async фикстур (например, telegram_client в tests/e2e/conftest.py).
+# Telethon привязывается к event loop на connect и падает, если его
+# меняют между тестами. Без этой настройки session-scoped async фикстуры
+# не работают в pytest-asyncio >= 0.24.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

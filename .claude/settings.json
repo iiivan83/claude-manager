@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Edit(.claude)",
+      "Write(.claude)",
+      "Glob",
+      "Grep",
+      "Agent",
+      "Bash(*)",
+      "WebFetch",
+      "WebSearch",
+      "NotebookEdit",
+      "TodoWrite"
+    ],
+    "additionalDirectories": [
+      "/Users/ivan/.claude"
+    ]
+  }
+}

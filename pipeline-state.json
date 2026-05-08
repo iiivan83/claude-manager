@@ -1,0 +1,185 @@
+{
+  "project": "claude-manager",
+  "brd_path": "dev/docs/brd/brd-user-journeys.md",
+  "current_phase": 5,
+  "modules": ["config", "message_splitter", "claude_runner", "session_reader", "daily_session_registry", "session_manager", "process_manager", "session_watcher", "bot", "main"],
+  "layers": {
+    "0": ["config", "message_splitter"],
+    "1": ["claude_runner", "session_reader", "daily_session_registry"],
+    "2": ["session_manager", "process_manager"],
+    "3": ["session_watcher"],
+    "4": ["bot"],
+    "5": ["main"]
+  },
+  "phases": {
+    "0": {
+      "name": "Валидация BRD",
+      "status": "completed",
+      "completed_at": "2026-03-29T23:47:00"
+    },
+    "1": {
+      "name": "Фундамент",
+      "status": "completed",
+      "completed_at": "2026-03-29T23:58:00"
+    },
+    "2": {
+      "name": "Спецификации",
+      "status": "completed",
+      "completed_at": "2026-03-30T00:45:00"
+    },
+    "3": {
+      "name": "Реализация",
+      "status": "completed",
+      "completed_at": "2026-03-30T01:45:00"
+    },
+    "4": {
+      "name": "Интеграционные тесты",
+      "status": "completed",
+      "completed_at": "2026-03-30T02:15:00"
+    },
+    "5": {
+      "name": "E2E тесты",
+      "status": "completed",
+      "completed_at": "2026-04-10T19:02:00",
+      "tasks": [
+        {"id": "T5.1", "type": "e2e-test", "scenario": "CJM-04-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.2", "type": "e2e-test", "scenario": "CJM-02-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.3", "type": "e2e-test", "scenario": "CJM-10-01", "status": "completed", "verdict": "pass", "fix_cycles": 0, "note": "live streaming через watcher — новый сценарий на класс багов «контракт с внешним CLI», path encoding не регрессирует"},
+        {"id": "T5.4", "type": "e2e-test", "scenario": "CJM-05-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.5", "type": "e2e-test", "scenario": "CJM-06-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.6", "type": "e2e-test", "scenario": "CJM-07-01", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.7", "type": "e2e-test", "scenario": "CJM-02-02", "status": "completed", "verdict": "pass", "fix_cycles": 0},
+        {"id": "T5.8", "type": "e2e-test", "scenario": "CJM-08-01", "status": "completed", "verdict": "pass", "fix_cycles": 0}
+      ],
+      "test_plan": "dev/docs/logs/testing/e2e-test-plan_10-04-18-54.md",
+      "test_results": "dev/docs/logs/testing/e2e-test-results_10-04-19-02.md",
+      "observations": [
+        "Новый баг LimitOverrunError в claude_runner.py:112 — обнаружен в CJM-10-01, не блокер, замаскирован механизмом retry. Требует отдельного root-cause."
+      ]
+    },
+    "6": {
+      "name": "Ревью",
+      "status": "completed",
+      "completed_at": "2026-03-30T02:50:00"
+    },
+    "7": {
+      "name": "Документация",
+      "status": "completed",
+      "completed_at": "2026-05-02T12:00:00",
+      "updated_files": ["CLAUDE.md", "dev/docs/docs-index.md", "dev/docs/deployment-guide.md"]
+    },
+    "8": {
+      "name": "Сценарии пользовательского тестирования",
+      "status": "pending"
+    },
+    "9": {
+      "name": "Прогон пользовательского тестирования",
+      "status": "pending"
+    }
+  },
+  "additional_modules": [
+    {
+      "id": "EXTRA-1",
+      "type": "spec",
+      "module": "coding_agent_backend",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/coding_agent_backend_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Новый модуль — абстрактный интерфейс CLI-бэкенда (Adapter pattern) для поддержки Codex CLI наряду с Claude Code CLI. Не входил в исходный пайплайн (фаза 2 закрыта 2026-03-30). Концепция спроектирована в сессиях 05-05 и 06-05, спецификация написана 06-05."
+    },
+    {
+      "id": "EXTRA-2",
+      "type": "spec",
+      "module": "claude_code_backend",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/claude_code_backend_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Конкретная реализация интерфейса CodingAgentBackend для Claude Code CLI. Слой 1 — зависит только от coding_agent_backend (слой 0). Адаптация существующего рабочего кода (claude_runner.py, session_reader.py, process_manager.py) под Adapter pattern, не новая функциональность. Контракты с Claude CLI зафиксированы по существующему коду + claude-cli-stream-json-protocol.md, эмпирические тесты обязательны при реализации."
+    },
+    {
+      "id": "EXTRA-3",
+      "type": "spec",
+      "module": "current_backend_registry",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/current_backend_registry_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Персистентное хранилище имени активного CLI-бэкенда (файл ~/.claude-manager-current-backend). Слой 1 — зависит от coding_agent_backend (для BackendName) и config (для пути к файлу). Самый маленький из трёх модулей Adapter pattern: 3 публичные функции (get_current, set_current, load_state) + 1 внутренняя (_save_state), оценка ~80-100 строк. Архитектура — клон silence_mode_registry: module-level state, паттерн _loaded_from_disk против затирания, атомарная запись tmp + os.replace. Формат файла — JSON {\"backend\": \"claude\"|\"codex\"} (расхождение с концепцией 06-38, где предлагался plain text — обоснование в спеке). Дефолт BackendName.CLAUDE для бесшовной миграции. При реализации добавить константу CURRENT_BACKEND_FILE в config.py рядом с SILENCE_MODE_FILE. 17 тест-кейсов (8 unit, 6 edge, 3 error), без интеграционных."
+    },
+    {
+      "id": "EXTRA-4",
+      "type": "spec",
+      "module": "codex_backend",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/codex_backend_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Конкретная реализация интерфейса CodingAgentBackend для Codex CLI v0.128.0+. Слой 1 — зависит только от coding_agent_backend (слой 0). Последний модуль из трёх Adapter pattern; после его реализации можно параллельно собирать все три (claude_code_backend, current_backend_registry, codex_backend). Все контракты с Codex CLI получены из исходников Rust в ~/.codex/custom-codex-rust-v0.128.0/codex-rs/ (cli/src/main.rs, exec/src/cli.rs, exec/src/exec_events.rs, protocol/src/protocol.rs, rollout/src/recorder.rs, core/src/tools/handlers/view_image.rs) с конкретными ссылками на строки и подтверждены эмпирически (запуск codex --version, codex exec --help, чтение реального файла сессии). Ключевые контракты: команда новой сессии 'codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C <cwd> <prompt>', команда resume 'codex exec resume <session_id> ... <prompt>' (без -C, cwd через subprocess), stdin всегда b\"\" (промпт уже в args), stdout-события ThreadEvent (thread.started, turn.completed/failed, item.completed с item.type=agent_message text=<ответ>), формат файла сессии RolloutLine adjacently-tagged {timestamp, type, payload} с подтипами session_meta/response_item/turn_context/event_msg/compacted, фильтрация сессий по проекту через payload.cwd записи session_meta. Зафиксированы три расхождения с родительской coding_agent_backend_spec.md (их нужно синхронизировать при ревью): (1) lookback окно 30 дней вместо 2, (2) event_types_meaning_cli_is_busy возвращает 4 значения вместо 1, (3) канонический источник сообщений в read_messages_from_session_file — response_item, не event_msg. Также введён дополнительный публичный метод is_turn_terminal_session_record (не часть родителя) для watcher-логики Codex. Тест-план: 85 кейсов (38 unit, 29 edge, 10 error, 8 contract integration). При реализации обязательны контрактные тесты с реальным CLI (skip без codex в PATH)."
+    },
+    {
+      "id": "EXTRA-5",
+      "type": "spec",
+      "module": "session_manager",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/session_manager_spec.md",
+      "previous_spec_path": "dev/docs/specs/realised/session_manager_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Backend-aware обновление модуля session_manager (слой 2). Заменяет realised/session_manager_spec.md от 30-03-2026 (Claude-only версия). Ключевые изменения: (1) Тип значения в _bindings меняется с str на frozen-dataclass ActiveSession(session_id, backend); (2) Формат файла sessions.json — {\"chat_id\": {\"session_id\": \"uuid\", \"backend\": \"claude\"|\"codex\"}}, со старым форматом совместим через ленивую миграцию при load_bindings (строка → ActiveSession с backend=BackendName.CLAUDE по умолчанию); (3) Публичный API переименован: bind_session→set_active_session(chat_id, session_id, backend), unbind_session→clear_active_session, get_bound_session→get_active_session (возвращает ActiveSession), get_chat_id_for_session→find_chat_by_session_id; добавлен тонкий wrapper get_active_session_id для мест, где backend не нужен; (4) update_session_id сохраняет backend без изменений (temp и real принадлежат одному CLI); (5) create_new_session(chat_id, backend) — backend параметр обязательный, передаётся вызывающим (bot.py берёт из current_backend_registry.get_current()), модуль не импортирует current_backend_registry напрямую; (6) switch_to_session использует daily_session_registry.lookup_by_number с новой сигнатурой (возвращает DailySessionEntry с backend); (7) Защита _bindings_path is not None в _save_bindings (отказ записи до первого load_bindings); (8) Retry на чтении с экспоненциальным backoff (LOAD_RETRY_COUNT=5, BACKOFF_BASE=0.1) для устойчивости к EDEADLK на macOS. Тест-план: 42 кейса (21 unit, 14 edge, 7 error). Зависимости: config (WORKING_DIR), coding_agent_backend (BackendName), daily_session_registry (backend-aware версия с register_session(session_id, backend), lookup_by_number→DailySessionEntry), session_reader (без изменений до отдельной задачи). Реализация требует параллельной готовности backend-aware daily_session_registry."
+    },
+    {
+      "id": "EXTRA-6",
+      "type": "spec",
+      "module": "session_watcher",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/session_watcher_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Backend-aware переписывание модуля session_watcher (слой 3) для архитектуры с двумя CLI-бэкендами. Ключевые архитектурные решения: (1) ДВЕ независимые инстанции вместо одной — класс SessionWatcher, по одному singleton-инстансу на BackendName, module-level функции работают как фасад с явным параметром backend; каждая инстанция использует backend.list_session_files_for_project и backend.read_session_file_snapshot своего бэкенда. (2) Buffer-and-hold семантика финальности — пока snapshot.is_turn_active=True, последнее assistant-сообщение НЕ доставляется (буферизуется); при появлении terminal record (для Claude `result`, для Codex `event_msg.task_complete`) последнее сообщение уходит с is_final=True, остальные накопленные — с is_final=False; решает проблему «Codex может пометить финальный ответ как промежуточный», финальные сообщения никогда не уходят с is_final=False, silence mode их не подавляет, маркеры [SEND_FILE]/[SHOW_FILE] срабатывают. (3) Дельта-чтение через snapshot.messages[last_delivered_idx + 1:] с учётом buffer-and-hold (last_delivered_idx останавливается на len(messages)-2 при активном turn-е). (4) Координация через явный параметр backend во всех module-level функциях (pause_session, resume_session, update_session_id, get_seen_counts_snapshot). (5) reset_state и pause_all/resume_all применяются ко всем инстанциям. (6) Уведомление только владельца сессии (session_manager.find_chat_by_session_id с backend параметром); fallback на ALLOWED_USER_IDS исключает E2E_TEST_USER_ID. (7) Устойчивость к транзиентному OSError (EDEADLK) — делегирована backend-ам, watcher имеет внешний guard в _poll_sessions; обход файлов СТРОГО ПОСЛЕДОВАТЕЛЬНЫЙ (не через asyncio.gather), чтобы избежать гонок при concurrent обновлении last_delivered_idx. (8) MISSING_FILES_TTL_SECONDS=60 — TTL для _missing_files (защита от перманентного выпадения сессии при transient ошибке первого чтения). (9) Координация с daily_session_registry: register_session принимает backend параметр; get_all_today_sessions(backend=...) возвращает сессии нужного бэкенда; сессии в реестре без файла на диске опрашиваются (с проверкой паузы — не помечаются как _missing_files до получения реального UUID через update_session_id). Тест-план: 30 кейсов (7 unit, 6 координации двух инстанций, 9 edge, 5 error, 1 performance, 2 contract integration). Все требования из брифа покрыты с явным маппингом тест → требование в резюме тест-плана. Зависит от: config, coding_agent_backend, daily_session_registry (backend-aware API — register_session с backend параметром, get_all_today_sessions с backend фильтром), session_manager (backend-aware API — find_chat_by_session_id с backend параметром, ActiveSession dataclass). Реализация требует параллельной готовности backend-aware версий session_manager и daily_session_registry."
+    },
+    {
+      "id": "EXTRA-7",
+      "type": "spec",
+      "module": "process_manager",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/process_manager_spec.md",
+      "previous_spec_path": "dev/docs/specs/realised/process_manager_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Backend-aware обновление модуля process_manager (слой 2). Заменяет realised/process_manager_spec.md от 30-03-2026 (Claude-only). Ключевые изменения: (1) Composite key (session_id, BackendName) для всех трёх словарей _processes/_busy_flags/_stop_events — обоснование в разделе «Контракт ключей и захват backend» (один lookup, атомарный ремаппинг при temp→real, точная адресация subprocess+файл+CLI; альтернатива через параллельный маппинг session_id→backend отвергнута). (2) send_message принимает обязательный backend через keyword-only; захват backend на старте (по аналогии с захватом WORKING_DIR из CLAUDE.md «Привязка рабочей директории к запросу»). Глобальное переключение /agent на текущий запрос не влияет — захваченное значение прокидывается через все ретраи. (3) SendResult расширен полями backend и error_text: backend нужен потребителю (bot.py) для регистрации в daily_session_registry с правильным backend и для UI display_name; error_text — текст ошибки от бэкенда (для Claude event[result] при is_error=true, для Codex event[error][message]) для показа пользователю при исчерпании ретраев. (4) stop_process(session_id, backend) с backend-specific стратегией через backend.get_stop_strategy(): для Claude SIGTERM→SIGKILL, для Codex SIGINT→SIGTERM→SIGKILL (Codex обрабатывает только SIGINT для штатного TurnInterrupt). Жёсткий process.terminate() в claude_runner.py:155-174 удаляется (требует обновления спеки claude_runner). (5) session_id_callback расширен третьим аргументом backend; вызывается из _process_events ПОСЛЕ ремаппинга словарей через update_session_id, чтобы /stop из Telegram нашёл stop_event на новом ключе (CLAUDE.md «Единство идентификатора сессии (temp → real)» и «Принцип stale session_id»). (6) Прямая адресация callback'ов через chat_id зашита в замыкания bot.py — callback'и process_manager не принимают chat_id. State machine /stop детально описана в трёх сценариях: (a) штатная обработка, (b) retry-цикл с новым busy_flag/stop_event после _restart_process, (c) ремаппинг session_id с поиском нового ключа. Контрактное расхождение с claude_runner: новая сигнатура start_process(args, cwd, stdin_bytes) — захардкоженные Claude-флаги переезжают в ClaudeCodeBackend.compose_subprocess_command_args. Тест-план: 21 кейс (8 базовых, 3 для state machine /stop, 3 retry, 1 конкурентность через _busy_lock, 1 раздельные словари по backend, 2 backend-stop-strategy с проверкой последовательности сигналов, 3 граничных). Реализация требует параллельной готовности backend-aware claude_runner, ClaudeCodeBackend, CodexBackend и потребителей (bot.py, claude_interaction.py)."
+    },
+    {
+      "id": "EXTRA-8",
+      "type": "spec",
+      "module": "daily_session_registry",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/daily_session_registry_spec.md",
+      "previous_spec_path": "dev/docs/specs/realised/daily_session_registry_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Backend-aware обновление модуля daily_session_registry (слой 1). Заменяет realised/daily_session_registry_spec.md от 30-03-2026 (Claude-only версия). Ключевые изменения: (1) Тип значения в _registry меняется с str (UUID) на frozen-dataclass DailySessionEntry(session_id: str, backend: BackendName); (2) Формат файла daily_sessions.json — {date: {number: {\"session_id\": str, \"backend\": \"claude\"|\"codex\"}}}; со старым форматом совместим через миграцию при load_registry (строка → DailySessionEntry с backend=BackendName.CLAUDE по умолчанию); гибридный формат (часть строк, часть словарей) обрабатывается прозрачно и закрепляется в новом формате при первой же записи (паттерн self-healing). (3) Публичный API: register_session(session_id, backend) — добавлен параметр backend (для уже зарегистрированной сессии backend параметр игнорируется — контракт «backend сессии не меняется»); lookup_by_number(day_number) → DailySessionEntry | None — переименование get_session_id_by_number, возвращает entry; get_backend_for_session(session_id) → BackendName | None — НОВАЯ функция обратного поиска (по всем дням); get_all_today_sessions() → dict[int, DailySessionEntry] — обновлён тип возврата; update_session_id(old, new) сохраняет backend без изменений (temp и real принадлежат одному CLI); is_registry_loaded(), reset_state(), load_registry() — без изменений сигнатуры. (4) Сквозная нумерация — общий счётчик через два бэкенда (#1 Claude, #2 Codex, #3 Claude — не повторяются и не пересекаются). (5) Backend-aware orphan cleanup _remove_orphan_entries (теперь async) — для каждой записи смотрит entry.backend, через coding_agent_backend.get_backend(entry.backend) получает инстанс, вызывает await backend.list_session_files_for_project(config.WORKING_DIR), проверяет наличие entry.session_id в результате; список файлов кешируется per-backend на один проход cleanup-а (≤2 вызова на проход). Компромисс: окно MAX_RECENT_SESSIONS=15 / LOOKBACK_DAYS_FOR_SESSION_LISTING=30 ограничивает что считается «живыми» файлами. (6) Зависимости: ДОБАВЛЕНА coding_agent_backend (BackendName, get_backend, инстанс с list_session_files_for_project); УДАЛЕНА session_reader (build_sessions_path больше не нужен — путь делегирован бэкенду). (7) Защита _loaded_from_disk, retry на чтение (LOAD_RETRY_COUNT=5, EDEADLK устойчивость), удаление фантомных _new_ записей и дубликатов UUID — сохраняются как сейчас. Сознательное расхождение с coding_agent_backend_spec.md строки 649-650: параметра date_str у register_session и lookup_by_number нет (используется текущий день, _get_today_key) — обоснование в спеке (потребители не имеют контекста даты, регистрация во вчерашний день не имеет продуктового смысла, минимизация миграционного фронта). Тест-план: 27 новых кейсов (12 unit, 6 edge case на миграцию и гибридный формат, 4 orphan cleanup backend-aware с проверкой кеширования, 5 error) + ~30 адаптированных существующих (старая сигнатура → новая) ≈ 57 тестов после реализации. Реализация: coding_agent_backend (EXTRA-1) уже зафиксирован, не блокирует session_manager (EXTRA-5) и session_watcher (EXTRA-6) — они могут начинаться вместе с backend-aware версиями всех трёх модулей."
+    },
+    {
+      "id": "EXTRA-9",
+      "type": "spec",
+      "module": "project_manager",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/project_manager_spec.md",
+      "previous_spec_path": "dev/docs/specs/realised/project_manager_spec.md",
+      "completed_at": "2026-05-06",
+      "note": "Backend-aware переписывание модуля project_manager (слой 4). Заменяет realised/project_manager_spec.md от 10-04-2026 (Claude-only версия с одной watcher-инстанцией и старым unread_buffer.get_pending_messages по project_path). Ключевые архитектурные решения: (1) АТОМАРНАЯ ПРОЦЕДУРА ПЕРЕКЛЮЧЕНИЯ через единый try/finally в _perform_switch — pause_all обеих инстанций watcher (Claude и Codex) ВНУТРИ блока try, чтобы при сбое pause finally → resume_all всё равно сработал. По контракту session_watcher resume_all идемпотентна. (2) Snapshot непрочитанных под новый unread_buffer API — save_snapshot(session_id, backend, raw_record_count) для каждой активной сессии каждого backend отдельно (composite key); источник raw_record_count — session_watcher.get_seen_counts_snapshot(backend) с раздельными вызовами для Claude и Codex. (3) Доставка непрочитанных — backend-aware дельта-чтение через backend.read_session_file_snapshot, без помощи unread_buffer.get_pending_messages (отброшен в новом контракте unread_buffer). _collect_pending_deliveries итерируется по двум backends, для каждого backend по списку файлов нового проекта (backend.list_session_files_for_project), для каждого файла restore_snapshot + read_session_file_snapshot + срез messages по дельте. Алгоритм отрезания через арифметику raw_record_count — упрощённая модель «одна raw-строка ≤ одно сообщение» (справедливо для текущих форматов Claude и Codex). (4) Защита от частичных сбоев расписана детально для четырёх сценариев: pause второй инстанции упал → resume для обоих в finally; save_snapshot на одной сессии упал → continue (best-effort, лог warning); reset_state одного модуля упал → продолжить остальные, агрегированный RuntimeError → откат через _rollback_switch; битый sessions.json в новом проекте → fallback на пустой state без уведомления (контракт session_manager). (5) current_backend_registry НЕ сбрасывается — глобальный, переезжает в новый проект как есть; _reset_all_state_modules его не трогает (доказательство контрактом — отсутствие импорта). (6) Процессы Claude/Codex НЕ останавливаются при переключении — process_manager._processes не модифицируется, фоновые subprocess-ы продолжают писать в JSONL исходного проекта; при возврате их ответы становятся непрочитанными и доставляются через дельту по unread_buffer. (7) Новый API resolve_neighbor_project(direction) для команд /next и /prev (циклический обход списка проектов; в текущем bot.py этих команд ещё нет — добавляются параллельно с реализацией спеки). (8) Новый DTO PendingDeliveryItem(session_id, backend, text, is_final) — backend-aware элемент для bot.py при доставке непрочитанных; используется в SwitchResult.pending_messages (вместо старого PendingMessage без backend). (9) Защита от path traversal через _is_path_inside_root + исключение симлинков в _should_include_project. (10) Однопользовательский инвариант — модуль работает на одного пользователя, опираясь на глобальные WORKING_DIR/PROJECTS_ROOT_DIR/LAST_PROJECT_FILE. Тест-план: 37 кейсов (33 unit, 4 integration), все 12 требований из брифа явно покрыты с маппингом тест → требование в сводке. Зависимости: config (WORKING_DIR mutable, PROJECTS_ROOT_DIR, LAST_PROJECT_FILE), coding_agent_backend (BackendName, get_backend, get_all_backends), unread_buffer (новый API save_snapshot/restore_snapshot/clear_expired), session_manager (backend-aware reset_state, get_all_bindings), daily_session_registry (backend-aware reset_state с orphan cleanup внутри load_registry), session_watcher (две инстанции: pause_all/resume_all sync, reset_state async, get_seen_counts_snapshot(backend) sync). Реализация требует параллельной готовности backend-aware версий всех зависимых модулей (EXTRA-1..EXTRA-8 уже зафиксированы)."
+    },
+    {
+      "id": "EXTRA-10",
+      "type": "spec",
+      "module": "telegram_agent_backend_integration",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/telegram_agent_backend_integration_spec.md",
+      "completed_at": "2026-05-07",
+      "note": "Integration spec для подключения backend-aware контрактов к Telegram-facing слою. Закрывает пробел из отчёта dev/docs/session-reports/07-05/10-03_codex-support-specs-analysis.md: явный контракт для bot.py, claude_interaction.py, claude_runner.py и main.py. Фиксирует, что существующие сессии всегда используют backend из ActiveSession/DailySessionEntry, новые сессии используют current_backend_registry.get_current(), watcher и pending delivery передают backend до форматирования Telegram-сообщений, а claude_runner становится тонкой subprocess-обёрткой без Claude-specific protocol parsing."
+    },
+    {
+      "id": "EXTRA-11",
+      "type": "spec",
+      "module": "agent_backend_selection_user_journey",
+      "status": "completed",
+      "spec_path": "dev/docs/specs/agent_backend_selection_user_journey_spec.md",
+      "completed_at": "2026-05-07",
+      "note": "Пользовательский сценарий /agent для выбора CLI-бэкенда новых сессий. Закрывает пробел из отчёта 07-05: CJM для /agent должен быть подтверждён до реализации команды. Фиксирует UX, callback data agent:claude/agent:codex, атомарную запись через current_backend_registry.set_current, отсутствие переноса активной сессии между backend-ами, влияние только на последующий /new и обязательные тесты для bot.py и интеграционного поведения."
+    }
+  ]
+}

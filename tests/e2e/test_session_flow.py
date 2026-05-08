@@ -1,0 +1,401 @@
+"""E2E тесты: сценарии работы с сессиями.
+
+Тесты отправляют реальные сообщения боту через Telegram.
+Требования: бот запущен, Telethon авторизован, переменные окружения настроены.
+
+Тесты с [Claude] обращаются к Claude API — каждый такой шаг может занять 10-60 сек.
+
+Используется wait_for_matching_response — ищет нужный ответ среди всех сообщений
+от бота, пропуская посторонние (watcher-сообщения от терминальных сессий).
+
+Символы статуса в заголовках:
+  ⏳ (\\u23f3) — промежуточное сообщение (thinking, прогресс)
+  ✅ (\\u2705) — финальный ответ Claude
+"""
+
+import asyncio
+import re
+
+import pytest
+
+from tests.e2e.test_client import (
+    TelegramTestClient,
+    build_current_session_final_response_pattern,
+    has_foreign_watcher_noise,
+)
+
+# Таймаут ожидания ответа от Claude (секунды).
+# Команды бота (/new, /all) отвечают мгновенно, а Claude думает 10-30 сек.
+CLAUDE_RESPONSE_TIMEOUT_SECONDS = 90
+
+
+def _extract_session_number(response: str) -> str:
+    """Извлекает дневной номер сессии (#N) из ответа бота."""
+    match = re.search(r"#(\d+)", response)
+    assert match, f"Не найден номер сессии (#N) в ответе: {response}"
+    return match.group(1)
+
+
+# --- Простой тест ---
+
+
+async def test_new_session_and_back_to_all(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Сценарий: /new создаёт сессию, /all возвращает в общий режим."""
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    assert "#" in response
+
+    await telegram_client.send_command("/all")
+    response = await telegram_client.wait_for_matching_response("Режим мониторинга")
+
+
+# --- FLOW-01: Полный жизненный цикл сессии ---
+
+
+async def test_flow01_full_session_lifecycle(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Создать → поговорить [Claude] → /all → блокировка → /sessions → вернуться → поговорить [Claude]."""
+    # 1. Создаём сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # 2. Отправляем сообщение Claude [Claude]
+    await telegram_client.send_message("Скажи одним словом: привет")
+    response = await telegram_client.wait_for_matching_response(
+        f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+    # Ответ содержит номер нашей сессии — значит Claude ответил
+    assert f"#{num}" in response
+
+    # 3. Переходим в мониторинг
+    await telegram_client.send_command("/all")
+    await telegram_client.wait_for_matching_response("Режим мониторинга")
+
+    # 4. Пробуем написать текст — бот блокирует (нет активной сессии)
+    await telegram_client.send_message("Привет")
+    response = await telegram_client.wait_for_matching_response("мониторинг")
+    assert "сесси" in response.lower() or "/new" in response
+
+    # 5. Смотрим список сессий — наша должна быть там
+    await telegram_client.send_command("/sessions")
+    response = await telegram_client.wait_for_matching_response(f"/{num}")
+
+    # 6. Возвращаемся в сессию по номеру
+    await telegram_client.send_command(f"/{num}")
+    response = await telegram_client.wait_for_matching_response("Подключён")
+    assert f"#{num}" in response
+
+    # 7. Снова пишем Claude [Claude]
+    await telegram_client.send_message("Сколько будет 2+2? Ответь одним числом")
+    response = await telegram_client.wait_for_matching_response(
+        f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+    assert "4" in response, f"Ожидали '4' в ответе: {response}"
+
+
+# --- FLOW-02: Две сессии и навигация ---
+
+
+async def test_flow02_two_sessions_and_navigation(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Создать 2 сессии, запомнить разные слова, переключаться — контекст отдельный."""
+    # 1. Создаём сессию A
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num_a = _extract_session_number(response)
+
+    # 2. Просим Claude запомнить слово в сессии A [Claude]
+    await telegram_client.send_message(
+        "Запомни кодовое слово: яблоко. Ответь ТОЛЬКО: ок"
+    )
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_a),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
+    )
+
+    # 3. Создаём сессию B
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num_b = _extract_session_number(response)
+    assert int(num_b) > int(num_a), f"B ({num_b}) должен быть > A ({num_a})"
+
+    # 4. Просим Claude запомнить слово в сессии B [Claude]
+    await telegram_client.send_message(
+        "Запомни кодовое слово: банан. Ответь ТОЛЬКО: ок"
+    )
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_b),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
+    )
+
+    # 5. /sessions — обе сессии в списке
+    await telegram_client.send_command("/sessions")
+    response = await telegram_client.wait_for_matching_response(f"/{num_a}")
+    assert f"/{num_b}" in response, f"Сессия B (/{num_b}) не в списке: {response}"
+
+    # 6. Переключаемся на сессию A
+    await telegram_client.send_command(f"/{num_a}")
+    response = await telegram_client.wait_for_matching_response("Подключён")
+
+    # 7. Спрашиваем кодовое слово в A [Claude] — должно быть «яблоко»
+    await telegram_client.send_message(
+        "Какое кодовое слово я просил тебя запомнить? Ответь одним словом"
+    )
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_a),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
+    )
+    assert "яблоко" in response.lower(), f"Ожидали 'яблоко': {response}"
+
+    # 8. Переключаемся на сессию B
+    await telegram_client.send_command(f"/{num_b}")
+    response = await telegram_client.wait_for_matching_response("Подключён")
+
+    # 9. Спрашиваем кодовое слово в B [Claude] — должно быть «банан»
+    await telegram_client.send_message(
+        "Какое кодовое слово я просил тебя запомнить? Ответь одним словом"
+    )
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_b),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
+    )
+    assert "банан" in response.lower(), f"Ожидали 'банан': {response}"
+
+
+# --- FLOW-03: Ошибки и ограничения ---
+
+
+async def test_flow03_errors_and_constraints(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Все действия, которые бот должен заблокировать с подсказкой."""
+    # 1. Переходим в мониторинг
+    await telegram_client.send_command("/all")
+    await telegram_client.wait_for_matching_response("Режим мониторинга")
+
+    # 2. Текст в мониторинге — заблокирован
+    await telegram_client.send_message("Привет")
+    response = await telegram_client.wait_for_matching_response("мониторинг")
+    assert "сесси" in response.lower() or "/new" in response
+
+    # 3. /stop без активной сессии
+    await telegram_client.send_command("/stop")
+    response = await telegram_client.wait_for_matching_response("/stop работает")
+
+    # 4. /9999 — несуществующая сессия (число заведомо больше любого дневного номера)
+    await telegram_client.send_command("/9999")
+    response = await telegram_client.wait_for_matching_response("не найдена")
+
+    # 5. Создаём сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+
+    # 6. /stop — сессия есть, но Claude не запущен (нечего останавливать)
+    await telegram_client.send_command("/stop")
+    response = await telegram_client.wait_for_matching_response("не работает")
+
+
+# --- FLOW-04: Формат заголовков ответов ---
+
+
+async def test_flow04_response_header_format(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Ответ текущей сессии начинается с #N ✅ (не /N — тот формат для чужих сессий)."""
+    # Создаём сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # Отправляем простой вопрос [Claude]
+    await telegram_client.send_message("Ответь одним словом: да")
+    response = await telegram_client.wait_for_matching_response(
+        f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+
+    # Заголовок текущей сессии — #N (знак #, а не /)
+    assert response.startswith(f"#{num}"), (
+        f"Ответ должен начинаться с #{num}, получили: {response[:40]}"
+    )
+    # Финальный ответ содержит галочку ✅
+    assert "\u2705" in response, f"Финальный ответ должен содержать ✅: {response[:40]}"
+
+
+# --- FLOW-05: Утечка ответов из чужих сессий ---
+
+
+async def test_flow05_new_session_no_ghost_responses(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """После /new + сообщение — ответы только от новой сессии, без утечки из других.
+
+    Баг: пользователь создаёт новую сессию, пишет «привет», а ответ
+    приходит и от новой сессии, и от другой (например #42).
+    Тест проверяет, что ВСЕ ответы содержат только номер новой сессии.
+    """
+    # 1. Создаём новую сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # 2. Отправляем сообщение Claude [Claude]
+    await telegram_client.send_message("Скажи одним словом: привет")
+    response = await telegram_client.wait_for_matching_response(
+        f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+
+    # 3. Ждём 5 секунд — если есть «призрачный» ответ от чужой сессии, он придёт
+    await asyncio.sleep(5)
+
+    # 4. Проверяем ВСЕ ответы — ни один не должен быть от чужой сессии
+    # Формат ответа от Claude: "#N ..." (где N — номер сессии)
+    # Ищем ответы, которые начинаются с заголовка сессии (#число или /число)
+    session_header_pattern = re.compile(r"^[#/](\d+)\b")
+    ghost_responses = []
+
+    for resp in telegram_client._all_responses:
+        match = session_header_pattern.match(resp)
+        if match:
+            response_session = match.group(1)
+            if response_session != num:
+                ghost_responses.append(
+                    f"Сессия #{response_session}: {resp[:120]}"
+                )
+
+    assert not ghost_responses, (
+        f"Утечка ответов из чужих сессий! Создана сессия #{num}, "
+        f"но пришли ответы от других:\n"
+        + "\n".join(ghost_responses)
+    )
+
+
+# --- FLOW-06: Промежуточные thinking-сообщения ---
+
+
+async def test_flow06_thinking_messages_arrive(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """При обработке запроса бот отправляет финальный ✅, а thinking ⏳ — если Claude думал [Claude].
+
+    Баг (до исправления): thinking-события от Claude CLI содержат поле "thinking",
+    а код читал поле "text" — промежуточные сообщения никогда не доходили.
+
+    Thinking-блок (промежуточное сообщение ⏳) зависит от сложности запроса
+    и скорости модели — Claude может ответить мгновенно без thinking.
+    Поэтому тест проверяет: финальный ответ обязателен, thinking — мягкая проверка
+    (если есть — валидируем формат, если нет — пропускаем).
+    """
+    # 1. Создаём сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # 2. Отправляем достаточно сложный запрос, чтобы Claude сгенерировал thinking-блок.
+    # Запрос на анализ заставит Claude сначала «подумать», а потом ответить.
+    await telegram_client.send_message(
+        "Прочитай файл src/claude_manager/config.py и перечисли все переменные окружения"
+    )
+
+    # 3. Ждём финальный ответ — содержит номер сессии #{num}.
+    # Claude может ответить быстро без thinking-блока, тогда ✅ может не быть
+    # в отдельном сообщении (ответ приходит единственным сообщением).
+    # Поэтому ждём любой ответ с номером нашей сессии, а ✅ проверяем мягко.
+    try:
+        response = await telegram_client.wait_for_matching_response(
+            f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        # Грязная среда: за время теста бот занят пересылкой watcher-сообщений
+        # из чужих сессий (например, реальный пользователь активно работает с
+        # ботом). Это не регрессия — отдельная задача про изоляцию E2E-аккаунта.
+        if has_foreign_watcher_noise(
+            telegram_client._all_responses, num,
+        ):
+            pytest.skip(
+                f"Среда не чистая: ответа от своей сессии #{num} нет, "
+                "но в буфере есть watcher-уведомления из чужих сессий. "
+                "Тест надёжен только когда тестовый аккаунт — единственный "
+                "получатель уведомлений бота."
+            )
+        raise
+
+    # 4. Собираем все ответы от нашей сессии для анализа
+    session_responses = [
+        resp for resp in telegram_client._all_responses
+        if f"#{num}" in resp
+    ]
+    assert len(session_responses) >= 1, (
+        f"Не получено ни одного ответа от сессии #{num}"
+    )
+
+    # 5. Финальный ответ (✅) — должен быть среди ответов сессии.
+    # Если Claude ответил одним сообщением без thinking — ✅ будет в нём.
+    final_responses = [
+        resp for resp in session_responses if "\u2705" in resp
+    ]
+    assert len(final_responses) >= 1, (
+        f"Не получен финальный ответ ✅ от сессии #{num}. "
+        f"Все ответы сессии ({len(session_responses)}): "
+        + " | ".join(r[:80] for r in session_responses)
+    )
+
+    # 6. Мягкая проверка thinking-блока: Claude может ответить без thinking,
+    # если запрос оказался простым для модели. Если thinking есть — проверяем
+    # что он от правильной сессии и содержит маркер ⏳.
+    thinking_messages = [
+        resp for resp in session_responses if "\u23f3" in resp
+    ]
+
+    if thinking_messages:
+        # Thinking пришёл — проверяем формат: каждое промежуточное сообщение
+        # должно содержать номер нашей сессии и маркер ⏳
+        for thinking_msg in thinking_messages:
+            assert f"#{num}" in thinking_msg, (
+                f"Thinking-сообщение без номера сессии #{num}: {thinking_msg[:120]}"
+            )
+            assert "\u23f3" in thinking_msg, (
+                f"Thinking-сообщение без маркера ⏳: {thinking_msg[:120]}"
+            )
+
+
+# --- FLOW-07: Занятая сессия отклоняет второе сообщение ---
+
+
+async def test_flow07_busy_session_rejects_second_message(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Если Claude обрабатывает запрос, второе сообщение получает "ещё обрабатывает".
+
+    Баг (до исправления): второе сообщение получало невнятное
+    "Произошла ошибка", а не понятное "ещё обрабатывает".
+    """
+    # 1. Создаём сессию
+    await telegram_client.send_command("/new")
+    response = await telegram_client.wait_for_matching_response("Создана новая сессия")
+    num = _extract_session_number(response)
+
+    # 2. Отправляем долгий запрос Claude [Claude]
+    await telegram_client.send_message(
+        "Прочитай файл src/claude_manager/bot.py и посчитай количество функций. "
+        "Выведи число."
+    )
+
+    # 3. Сразу шлём второе сообщение — Claude ещё думает над первым
+    await asyncio.sleep(1)
+    await telegram_client.send_message("А это второй запрос")
+
+    # 4. Ожидаем сообщение об ошибке «ещё обрабатывает»
+    response = await telegram_client.wait_for_matching_response(
+        "обрабатывает", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
+    assert "обрабатыва" in response.lower()
+
+    # 5. Дожидаемся финального ответа от первого запроса
+    response = await telegram_client.wait_for_matching_response(
+        "\u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    )
