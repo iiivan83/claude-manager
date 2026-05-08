@@ -216,8 +216,8 @@ class TelegramTestClient:
         """Отправляет команду боту (например '/new', '/sessions')."""
         await self.send_message(command)
 
-    async def send_photo(self, path: str, caption: str = "") -> None:
-        """Отправляет фото боту с подписью."""
+    async def send_file(self, path: str, caption: str = "") -> None:
+        """Отправляет файл боту с подписью."""
         self._reset_response_state()
 
         async def _do_send_file() -> None:
@@ -228,7 +228,11 @@ class TelegramTestClient:
             )
 
         await self._send_with_reconnect(_do_send_file, "send_photo")
-        logger.info("Отправлено фото боту: %s", path)
+        logger.info("Отправлен файл боту: %s", path)
+
+    async def send_photo(self, path: str, caption: str = "") -> None:
+        """Отправляет фото боту с подписью."""
+        await self.send_file(path, caption)
 
     async def wait_for_response(
         self, timeout: int = DEFAULT_RESPONSE_TIMEOUT_SECONDS

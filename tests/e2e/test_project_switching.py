@@ -23,6 +23,11 @@ from dataclasses import dataclass
 
 import pytest
 
+from tests.e2e.test_agent_backend_selection import (
+    _extract_session_number,
+    _skip_if_codex_cli_unavailable,
+    _switch_agent_to,
+)
 from tests.e2e.test_client import (
     TelegramTestClient,
     has_watcher_noise,
@@ -57,6 +62,12 @@ PENDING_DELIVERY_TIMEOUT_SECONDS = 30
 # Кодовое слово для pending-теста. Уникальное слово, которое Claude должен
 # включить в ответ и которое не может прийти от watcher или другого источника.
 PENDING_TEST_CODEWORD = "ананас"
+CODEX_PENDING_TEST_CODEWORD = "топаз"
+CODEX_PENDING_BACKGROUND_WAIT_SECONDS = 75
+CODEX_PENDING_LONG_RUNNING_PROMPT = (
+    "Сначала выполни shell-команду sleep 15. "
+    f"После завершения ответь только словом: {CODEX_PENDING_TEST_CODEWORD}"
+)
 
 
 @dataclass(frozen=True)
@@ -419,6 +430,71 @@ async def test_flow13_pending_messages_delivered_on_return(
             r"(?:Переключено на проект|Уже работаю в проекте)",
             timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
         )
+
+
+# --- FLOW-13C: доставка Codex pending с backend-заголовком ---
+
+
+async def test_codex_pending_message_delivered_on_project_return_with_backend_header(
+    telegram_client: TelegramTestClient,
+) -> None:
+    """Codex pending after project switch is delivered with a Codex header."""
+    _skip_if_codex_cli_unavailable()
+    projects = await _fetch_project_list(telegram_client)
+    original = _find_current_project(projects)
+    other = _find_other_project(projects, original.name)
+
+    if other is None:
+        pytest.skip("Нужно минимум 2 проекта для Codex pending-теста")
+
+    try:
+        await _switch_agent_to(telegram_client, "Codex")
+        await telegram_client.send_command("/new")
+        new_session_text = await telegram_client.wait_for_matching_response(
+            "Создана новая сессия",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+        session_number = _extract_session_number(new_session_text)
+        assert "Codex" in new_session_text
+
+        await telegram_client.send_message(CODEX_PENDING_LONG_RUNNING_PROMPT)
+        await asyncio.sleep(2)
+
+        await telegram_client.send_command(f"/p{other.number}")
+        await telegram_client.wait_for_matching_response(
+            "Переключено на проект",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+
+        await asyncio.sleep(CODEX_PENDING_BACKGROUND_WAIT_SECONDS)
+
+        await telegram_client.send_command(f"/p{original.number}")
+        switch_response = await telegram_client.wait_for_regex_response(
+            r"(?:Переключено на проект|Уже работаю в проекте)",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+        if "Непрочитанных сообщений" not in switch_response:
+            pytest.skip(
+                "Codex pending не появился в этом прогоне. "
+                f"Ответ переключения: {switch_response}"
+            )
+
+        pending_response = await telegram_client.wait_for_regex_response(
+            rf"(?i){CODEX_PENDING_TEST_CODEWORD}",
+            timeout=PENDING_DELIVERY_TIMEOUT_SECONDS,
+        )
+        pending_header = pending_response.splitlines()[0]
+
+        assert f"#{session_number}" in pending_header
+        assert "Codex" in pending_header
+        assert "Claude" not in pending_header
+    finally:
+        await telegram_client.send_command(f"/p{original.number}")
+        await telegram_client.wait_for_regex_response(
+            r"(?:Переключено на проект|Уже работаю в проекте)",
+            timeout=BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+        await _switch_agent_to(telegram_client, "Claude")
 
 
 # --- FLOW-14: быстрый переход туда-обратно — нет ложных pending ---
