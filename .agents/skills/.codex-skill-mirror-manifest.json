@@ -40,6 +40,13 @@
       "transform_policy": "self-path-rewrite-v1"
     },
     {
+      "name": "docs-index-updater",
+      "kind": "shared",
+      "claude_source": "../../../shared-skills/docs-index-updater",
+      "codex_target": "docs-index-updater",
+      "transform_policy": "self-path-rewrite-v1"
+    },
+    {
       "name": "end-to-end-test-coverage",
       "kind": "shared",
       "claude_source": "../../../shared-skills/end-to-end-test-coverage",
@@ -110,6 +117,13 @@
       "transform_policy": "self-path-rewrite-v1"
     },
     {
+      "name": "session-report-creator",
+      "kind": "shared",
+      "claude_source": "../../../shared-skills/session-report-creator",
+      "codex_target": "session-report-creator",
+      "transform_policy": "self-path-rewrite-v1"
+    },
+    {
       "name": "single-script-creator",
       "kind": "shared",
       "claude_source": "../../../shared-skills/single-script-creator",
@@ -121,6 +135,13 @@
       "kind": "shared",
       "claude_source": "../../../shared-skills/skill-creator",
       "codex_target": "skill-creator",
+      "transform_policy": "self-path-rewrite-v1"
+    },
+    {
+      "name": "spec-creator",
+      "kind": "shared",
+      "claude_source": "../../../shared-skills/spec-creator",
+      "codex_target": "spec-creator",
       "transform_policy": "self-path-rewrite-v1"
     },
     {

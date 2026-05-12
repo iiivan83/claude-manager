@@ -37,9 +37,10 @@
 ## Справочники и руководства (корневой уровень dev/docs/)
 
 - [deployment-guide.md](deployment-guide.md) — пошаговая инструкция по развёртыванию бота: виртуальное окружение, .env, LaunchAgent, логи
+- [bot-handoff-package-guide.md](bot-handoff-package-guide.md) — инструкция для передачи бота другому пользователю: что входит в архив, какие личные данные исключаются, как запустить и где искать код для исправлений
 - [bot-launch-infrastructure.md](bot-launch-infrastructure.md) — карта всех компонентов запуска бота: что где лежит, цепочка launchd → скрипт → Python, почему venv и скрипт вне Desktop, диагностика TCC/provenance проблем
 - [claude-cli-stream-json-protocol.md](claude-cli-stream-json-protocol.md) — справочник протокола `stream-json`: форматы сообщений, типы событий, известные баги Claude CLI
-- [router-configuration.md](router-configuration.md) — конфигурация MikroTik L009UiGS: сетевая топология, firewall, DNS, WireGuard VPN, контентная фильтрация, список устройств
+- `router-configuration.md` — локальная конфигурация MikroTik L009UiGS: сетевая топология, firewall, DNS, WireGuard VPN, контентная фильтрация, список устройств. Не включается в handoff-архивы для передачи бота другому пользователю
 - [review-checklists.md](review-checklists.md) — чеклисты для ревью кода (качество, безопасность, архитектура, соответствие BRD)
 
 ## Спецификации
@@ -89,6 +90,7 @@
 - **session-reports/06-04/** — универсализация скилла `root-cause-analysis` под произвольные проекты
 - **session-reports/09-04/** — **session-reports/14-04/** — файловая доставка, session_id callback, гонки при переключении проектов, E2E тесты
 - **session-reports/19-04/** — **session-reports/22-04/** — root-cause исправления: ConnectionError, прогресс text-блоков, рестарт бота, watchdog тишины Agent, EDEADLK retry
+- **session-reports/10-05/** — диагностика и исправление бага pending-доставки при возврате в проект: `silence mode` скрывал промежуточные сообщения, а доставка очищала snapshot непрочитанных
 
 ## Логи
 

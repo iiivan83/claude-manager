@@ -702,19 +702,44 @@ def _format_switch_result_message(
         return PROJECT_ALREADY_ACTIVE_TEMPLATE.format(name=project_name)
     if result.success:
         text = PROJECT_SWITCH_SUCCESS_TEMPLATE.format(name=project_name)
-        if result.pending_messages_count > 0:
+        visible_pending_count = _count_visible_pending_messages(result)
+        if visible_pending_count > 0:
             text += "\n" + PROJECT_SWITCH_PENDING_TEMPLATE.format(
-                count=result.pending_messages_count,
+                count=visible_pending_count,
             )
         return text
     return PROJECT_SWITCH_ERROR_TEMPLATE.format(error=result.error_message)
+
+
+def _pending_message_is_visible_now(pending_message: object) -> bool:
+    """Проверяет, будет ли pending-сообщение видно пользователю прямо сейчас."""
+    is_final = getattr(pending_message, "is_final", True)
+    return bool(is_final) or not silence_mode_registry.is_enabled()
+
+
+def _get_visible_pending_messages(pending_messages: list) -> list:
+    """Возвращает pending-сообщения, которые не будут подавлены silence mode."""
+    return [
+        pending_message
+        for pending_message in pending_messages
+        if _pending_message_is_visible_now(pending_message)
+    ]
+
+
+def _count_visible_pending_messages(
+    result: project_manager.SwitchResult,
+) -> int:
+    """Считает pending-сообщения, которые реально будут показаны пользователю."""
+    if not result.pending_messages:
+        return result.pending_messages_count
+    return len(_get_visible_pending_messages(result.pending_messages))
 
 
 async def _deliver_pending_messages(
     chat_id: int, pending_messages: list,
 ) -> None:
     """Доставляет пропущенные сообщения из буфера после переключения проекта."""
-    for pending in pending_messages:
+    for pending in _get_visible_pending_messages(pending_messages):
         backend = getattr(pending, "backend", BackendName.CLAUDE)
         is_final = getattr(pending, "is_final", True)
         try:

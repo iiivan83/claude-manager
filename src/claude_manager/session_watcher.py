@@ -217,6 +217,7 @@ class SessionWatcher:
         self._states: dict[str, SessionWatcherState] = {}
         self._missing_files: dict[str, MissingFileRetryState] = {}
         self._global_paused = False
+        self._project_generation = 0
 
     @property
     def backend_name(self) -> BackendName:
@@ -231,7 +232,14 @@ class SessionWatcher:
         if self._global_paused:
             return
 
-        session_ids, files_by_session_id = await self._get_sessions_to_monitor()
+        project_path = config.WORKING_DIR
+        project_generation = self._project_generation
+        session_ids, files_by_session_id = await self._get_sessions_to_monitor(
+            project_path=project_path,
+        )
+        if not self._poll_context_is_current(project_path, project_generation):
+            return
+
         active_ids = set(session_ids)
 
         stale_ids = [
@@ -243,12 +251,16 @@ class SessionWatcher:
             del self._states[session_id]
 
         for session_id in session_ids:
+            if not self._poll_context_is_current(project_path, project_generation):
+                break
             try:
                 await self._check_session(
                     session_id,
                     files_by_session_id,
                     callback,
                     get_current_session,
+                    project_path,
+                    project_generation,
                 )
             except Exception:
                 logger.error(
@@ -260,32 +272,39 @@ class SessionWatcher:
 
     async def _get_sessions_to_monitor(
         self,
+        project_path: str | None = None,
+        *,
+        include_registry: bool = True,
+        apply_missing_backoff: bool = True,
     ) -> tuple[list[str], dict[str, SessionFileInfo]]:
         """Return session ids and file metadata visible to this backend."""
+        effective_project_path = project_path or config.WORKING_DIR
         files = await self.backend.list_all_session_files_for_project(
-            config.WORKING_DIR
+            effective_project_path
         )
         files_by_session_id = {info.session_id: info for info in files}
         session_ids = [info.session_id for info in files]
         existing_ids = set(session_ids)
 
-        today_sessions = await daily_session_registry.get_all_today_sessions()
-        for entry in today_sessions.values():
-            entry_session_id = getattr(entry, "session_id", None)
-            entry_backend = getattr(entry, "backend", BackendName.CLAUDE)
-            if (
-                isinstance(entry_session_id, str)
-                and entry_backend == self.backend.name
-                and entry_session_id not in existing_ids
-            ):
-                session_ids.append(entry_session_id)
-                existing_ids.add(entry_session_id)
+        if include_registry:
+            today_sessions = await daily_session_registry.get_all_today_sessions()
+            for entry in today_sessions.values():
+                entry_session_id = getattr(entry, "session_id", None)
+                entry_backend = getattr(entry, "backend", BackendName.CLAUDE)
+                if (
+                    isinstance(entry_session_id, str)
+                    and entry_backend == self.backend.name
+                    and entry_session_id not in existing_ids
+                ):
+                    session_ids.append(entry_session_id)
+                    existing_ids.add(entry_session_id)
 
-        session_ids = [
-            session_id
-            for session_id in session_ids
-            if self._should_check_missing_file_now(session_id)
-        ]
+        if apply_missing_backoff:
+            session_ids = [
+                session_id
+                for session_id in session_ids
+                if self._should_check_missing_file_now(session_id)
+            ]
 
         return session_ids, files_by_session_id
 
@@ -295,7 +314,16 @@ class SessionWatcher:
         files_by_session_id: dict[str, SessionFileInfo],
         callback: MessageCallback,
         get_current_session: CurrentSessionGetter,
+        project_path: str | None = None,
+        project_generation: int | None = None,
     ) -> None:
+        if (
+            project_path is not None
+            and project_generation is not None
+            and not self._poll_context_is_current(project_path, project_generation)
+        ):
+            return
+
         previous = self._states.get(session_id, SessionWatcherState())
 
         if previous.paused_at is not None:
@@ -342,6 +370,13 @@ class SessionWatcher:
         ]
 
         if deliverable:
+            if (
+                project_path is not None
+                and project_generation is not None
+                and not self._poll_context_is_current(project_path, project_generation)
+            ):
+                return
+
             try:
                 day_number = await daily_session_registry.register_session(
                     session_id,
@@ -361,6 +396,15 @@ class SessionWatcher:
                     not snapshot.is_turn_active
                     and position == len(deliverable) - 1
                 )
+                if (
+                    project_path is not None
+                    and project_generation is not None
+                    and not self._poll_context_is_current(
+                        project_path,
+                        project_generation,
+                    )
+                ):
+                    return
                 await self._deliver_message(
                     session_id,
                     day_number,
@@ -447,6 +491,17 @@ class SessionWatcher:
             == state.cli_process_is_currently_writing_session_file
         )
 
+    def _poll_context_is_current(
+        self,
+        project_path: str,
+        project_generation: int,
+    ) -> bool:
+        return (
+            not self._global_paused
+            and config.WORKING_DIR == project_path
+            and self._project_generation == project_generation
+        )
+
     def _mark_missing_file(self, session_id: str) -> None:
         now = time.monotonic()
         existing = self._missing_files.get(session_id)
@@ -486,7 +541,13 @@ class SessionWatcher:
 
     async def reset_state(self) -> None:
         """Initialize cursors so historical messages are not redelivered."""
-        session_ids, files_by_session_id = await self._get_sessions_to_monitor()
+        self._project_generation += 1
+        self._missing_files.clear()
+        session_ids, files_by_session_id = await self._get_sessions_to_monitor(
+            project_path=config.WORKING_DIR,
+            include_registry=False,
+            apply_missing_backoff=False,
+        )
         new_states: dict[str, SessionWatcherState] = {}
 
         for session_id in session_ids:

@@ -125,15 +125,21 @@ def _setup_config():
     original_working_dir = config_module.WORKING_DIR
     original_silence_enabled = silence_mode_registry._silence_enabled
     original_silence_loaded = silence_mode_registry._loaded_from_disk
+    original_current_backend = current_backend_registry._current_backend
+    original_current_backend_loaded = current_backend_registry._loaded_from_disk
     config_module.ALLOWED_USER_IDS = {ALLOWED_USER_ID}
     config_module.WORKING_DIR = "/tmp/test_working_dir"
     silence_mode_registry._silence_enabled = False
     silence_mode_registry._loaded_from_disk = True
+    current_backend_registry._current_backend = BackendName.CLAUDE
+    current_backend_registry._loaded_from_disk = True
     yield
     config_module.ALLOWED_USER_IDS = original_allowed
     config_module.WORKING_DIR = original_working_dir
     silence_mode_registry._silence_enabled = original_silence_enabled
     silence_mode_registry._loaded_from_disk = original_silence_loaded
+    current_backend_registry._current_backend = original_current_backend
+    current_backend_registry._loaded_from_disk = original_current_backend_loaded
 
 
 @pytest.fixture(autouse=True)
@@ -1768,6 +1774,47 @@ class TestHandleSwitchProject:
         assert "3" in sent
 
     @pytest.mark.asyncio()
+    async def test_silence_mode_hidden_pending_not_counted_after_switch(self) -> None:
+        """Промежуточные pending-сообщения не считаются видимыми в silence mode."""
+        projects = [_make_project_info("beta", path="/fake/beta")]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+        silence_mode_registry._silence_enabled = True
+
+        pending = [
+            project_manager.PendingDeliveryItem(
+                session_id="codex-session",
+                backend=BackendName.CODEX,
+                text="Промежуточный ответ из фона",
+                is_final=False,
+            )
+        ]
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=False,
+            old_path="/fake/alpha", new_path="/fake/beta",
+            pending_messages_count=1, pending_messages=pending,
+            error_message="",
+        )
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ), patch.object(
+            daily_session_registry, "register_session",
+            new=AsyncMock(),
+        ) as register_session_mock:
+            await handle_switch_project(update, context)
+
+        sent = bot_module._application.bot.send_message
+        switch_text = sent.call_args_list[0].args[1]
+        assert "Непрочитанных сообщений" not in switch_text
+        assert sent.await_count == 1
+        register_session_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio()
     async def test_error_shows_error_message(self) -> None:
         """success=False → сообщение с причиной ошибки."""
         projects = [_make_project_info("beta", path="/fake/beta")]
@@ -1857,6 +1904,38 @@ class TestHandleSwitchProject:
             "codex-session",
             BackendName.CODEX,
         )
+
+    @pytest.mark.asyncio()
+    async def test_silence_mode_hidden_pending_does_not_clear_snapshot(self) -> None:
+        """Подавленное pending-сообщение не помечается доставленным."""
+        pending = [
+            project_manager.PendingDeliveryItem(
+                session_id="codex-session",
+                backend=BackendName.CODEX,
+                text="Промежуточный ответ из фона",
+                is_final=False,
+            )
+        ]
+        silence_mode_registry._silence_enabled = True
+        bot_module.unread_buffer.save_snapshot(
+            "codex-session",
+            BackendName.CODEX,
+            raw_record_count=10,
+            last_delivered_idx=3,
+        )
+
+        with patch.object(
+            daily_session_registry, "register_session",
+            new=AsyncMock(),
+        ) as register_session_mock:
+            await bot_module._deliver_pending_messages(TEST_CHAT_ID, pending)
+
+        register_session_mock.assert_not_awaited()
+        bot_module._application.bot.send_message.assert_not_called()
+        assert bot_module.unread_buffer.restore_snapshot(
+            "codex-session",
+            BackendName.CODEX,
+        ) is not None
 
 
 # --- Тесты send_response с файловыми маркерами ---

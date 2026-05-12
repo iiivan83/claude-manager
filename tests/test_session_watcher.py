@@ -352,6 +352,57 @@ class TestPollingThroughBackendContract:
 
         assert session_ids == ["codex-session"]
 
+    @pytest.mark.asyncio
+    async def test_poll_stops_delivery_when_project_changes_mid_scan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1"), _file("session-2")]
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot("First")
+        backend.snapshots["/tmp/session-2.jsonl"] = _snapshot("Second")
+        delivered: list[str] = []
+
+        async def callback(
+            _chat_id: int,
+            _session_id: str,
+            _backend: BackendName,
+            _day_number: int,
+            text: str,
+            _is_current_session: bool,
+            _is_final: bool,
+        ) -> None:
+            delivered.append(text)
+            monkeypatch.setattr(
+                session_watcher.config,
+                "WORKING_DIR",
+                "/fake/other-project",
+            )
+
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(side_effect=[1, 2]),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
+
+        assert delivered == ["First"]
+
 
 class TestBufferAndHold:
     @pytest.mark.asyncio
@@ -484,3 +535,30 @@ class TestResetState:
         assert watcher._states["session-1"].raw_count == 5
         assert watcher._states["session-1"].last_delivered_idx == 1
         assert watcher.is_session_paused("old-session") is False
+
+    @pytest.mark.asyncio
+    async def test_reset_state_marks_files_seen_even_if_missing_backoff_exists(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("stale-session")]
+        backend.snapshots["/tmp/stale-session.jsonl"] = _snapshot(
+            "Old historical message",
+            raw_count=4,
+        )
+        watcher = session_watcher.SessionWatcher(backend)
+        watcher._mark_missing_file("stale-session")
+
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.reset_state()
+
+        assert list(watcher._states) == ["stale-session"]
+        assert watcher._states["stale-session"].raw_count == 4
+        assert watcher._states["stale-session"].last_delivered_idx == 0
+        assert "stale-session" not in watcher._missing_files

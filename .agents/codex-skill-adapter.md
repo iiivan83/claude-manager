@@ -12,8 +12,10 @@ copies. Claude source remains source of truth; generated mirrors are not hand-ma
   `delegation_unavailable`; do not silently execute the agent step as ordinary prose.
 - **Skill tool** — read and execute `.agents/skills/<skill-name>/SKILL.md` for available
   managed mirrors. Do not jump back to `.claude/skills/**` for runtime resources.
-- **claude -p** — keep Claude CLI calls unchanged in generated mirrors. If the runtime
-  cannot call Claude CLI, use a documented test fixture stub or report unsupported status.
+- **isolated CLI subprocess** — run the same CLI family as the current runtime in a
+  separate non-interactive process. Claude runtime uses Claude CLI print mode; Codex
+  runtime uses `codex exec`. If that runtime CLI is unavailable, use a documented test
+  fixture stub or report unsupported status.
 - **/session-report** — map Claude slash-command behavior to the available session report
   mechanism, normally `session-change-documenter`, and state that Claude slash commands
   are not native Codex tools.
