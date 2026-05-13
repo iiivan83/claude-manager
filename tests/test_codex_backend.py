@@ -375,6 +375,72 @@ async def test_list_session_files_filters_by_cwd_and_limits_recent(
     )
 
 
+async def test_list_session_files_skips_codex_bootstrap_user_message(
+    backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session previews skip Codex-injected AGENTS instructions."""
+    patch_codex_home(monkeypatch, tmp_path)
+    sessions_root = tmp_path / ".codex" / "sessions"
+    project_dir = "/tmp/project-a"
+    session_id = "019dfaeb-7c5b-7ba1-9e56-a33b5e0b5999"
+    rollout_date = date.today()
+    file_path = (
+        sessions_root
+        / f"{rollout_date:%Y}"
+        / f"{rollout_date:%m}"
+        / f"{rollout_date:%d}"
+        / f"rollout-{rollout_date:%Y-%m-%d}T01-02-03-{session_id}.jsonl"
+    )
+    write_jsonl_file(
+        file_path,
+        [
+            {
+                "timestamp": "2026-05-06T01:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": session_id, "cwd": project_dir},
+            },
+            {
+                "timestamp": "2026-05-06T01:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "# AGENTS.md instructions for /tmp/project-a\n"
+                                "<INSTRUCTIONS>\n"
+                                "# AGENTS.md\n"
+                                "## Canonical Global Instructions\n"
+                                "</INSTRUCTIONS>"
+                            ),
+                        }
+                    ],
+                },
+            },
+            {
+                "timestamp": "2026-05-06T01:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "Сделай отчет по ревью анализу",
+                        }
+                    ],
+                },
+            },
+        ],
+    )
+
+    session_file_infos = await backend.list_session_files_for_project(project_dir)
+
+    assert session_file_infos[0].preview == "Сделай отчет по ревью анализу"
+
+
 async def test_session_file_exists_for_project_scans_all_history(
     backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

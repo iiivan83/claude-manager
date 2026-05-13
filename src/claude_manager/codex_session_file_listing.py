@@ -28,6 +28,9 @@ from claude_manager.coding_agent_backend import SessionFileInfo
 
 logger = logging.getLogger(__name__)
 
+CODEX_BOOTSTRAP_AGENTS_PREFIX = "# AGENTS.md instructions for "
+CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER = "<INSTRUCTIONS>"
+
 
 def _iter_session_dirs_in_lookback_window(
     sessions_root: str,
@@ -63,6 +66,15 @@ def _read_session_meta_record_blocking(file_path: str) -> dict[str, object] | No
     return None
 
 
+def _is_codex_bootstrap_user_text(raw_text: str) -> bool:
+    """Return whether text is Codex's injected AGENTS instructions block."""
+    stripped_text = raw_text.lstrip()
+    return (
+        stripped_text.startswith(CODEX_BOOTSTRAP_AGENTS_PREFIX)
+        and CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER in stripped_text
+    )
+
+
 def _read_first_user_response_item_blocking(file_path: str) -> object | None:
     """Return content blocks for the first user response_item in a rollout file."""
     raw_lines = _read_file_lines_blocking(file_path, MAX_LINES_FOR_PREVIEW)
@@ -74,8 +86,14 @@ def _read_first_user_response_item_blocking(file_path: str) -> object | None:
             continue
         if payload.get("type") != RESPONSE_ITEM_TYPE_MESSAGE:
             continue
-        if payload.get("role") == RESPONSE_ITEM_ROLE_USER:
-            return payload.get("content")
+        if payload.get("role") != RESPONSE_ITEM_ROLE_USER:
+            continue
+        content_blocks = payload.get("content")
+        if _is_codex_bootstrap_user_text(
+            _extract_text_from_content_blocks(content_blocks)
+        ):
+            continue
+        return content_blocks
     return None
 
 
