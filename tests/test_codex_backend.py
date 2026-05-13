@@ -441,6 +441,31 @@ async def test_list_session_files_skips_codex_bootstrap_user_message(
     assert session_file_infos[0].preview == "Сделай отчет по ревью анализу"
 
 
+async def test_list_session_files_uses_file_caption_as_preview(
+    backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex session previews show the original file caption, not bot boilerplate."""
+    patch_codex_home(monkeypatch, tmp_path)
+    sessions_root = tmp_path / ".codex" / "sessions"
+    project_dir = "/tmp/project-a"
+    session_id = "019dfaeb-7c5b-7ba1-9e56-a33b5e0b5888"
+    make_rollout_file(
+        sessions_root,
+        session_id,
+        project_dir,
+        user_text=(
+            "Пользователь отправил файл с подписью: "
+            "Добавь понятное превью сессии. "
+            "Файл: /tmp/screenshot.jpg. "
+            "Прочитай файл инструментом Read и выполни задачу из подписи"
+        ),
+    )
+
+    session_file_infos = await backend.list_session_files_for_project(project_dir)
+
+    assert session_file_infos[0].preview == "Добавь понятное превью сессии"
+
+
 async def test_session_file_exists_for_project_scans_all_history(
     backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

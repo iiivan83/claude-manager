@@ -13,6 +13,8 @@ import os
 import re
 from dataclasses import dataclass
 
+from claude_manager.session_request_preview import clean_session_request_preview
+
 logger = logging.getLogger(__name__)
 
 # Относительный путь от домашней директории к папке проектов Claude Code
@@ -35,12 +37,6 @@ COMMAND_XML_TAGS = {
     "local-command-stdout",
     "local-command-caveat",
 }
-
-# Регулярное выражение для удаления XML-тегов из превью
-XML_TAG_PATTERN = re.compile(r"<[^>]+>")
-
-# Регулярное выражение для замены множественных пробелов на один
-WHITESPACE_PATTERN = re.compile(r"\s+")
 
 # Регулярное выражение для санитации пути проекта — заменяет всё,
 # что не буква и не цифра, на дефис. Повторяет sanitizePath() из
@@ -139,11 +135,7 @@ def _is_command_message(text: str) -> bool:
 
 def _clean_preview(raw_text: str) -> str:
     """Очищает текст превью от XML-тегов и обрезает до максимальной длины."""
-    without_tags = XML_TAG_PATTERN.sub("", raw_text)
-    collapsed = WHITESPACE_PATTERN.sub(" ", without_tags).strip()
-    if len(collapsed) > PREVIEW_MAX_LENGTH:
-        return collapsed[:PREVIEW_MAX_LENGTH] + "..."
-    return collapsed
+    return clean_session_request_preview(raw_text, PREVIEW_MAX_LENGTH)
 
 
 def _extract_text_from_content(content: str | list) -> str:

@@ -13,6 +13,7 @@ from claude_manager.coding_agent_backend import (
     SessionFileSnapshot,
     SessionMessage,
 )
+from claude_manager.session_request_preview import clean_session_request_preview
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,6 @@ MAX_LINES_FOR_PREVIEW = 50
 LOOKBACK_DAYS_FOR_SESSION_LISTING = 30
 MAX_CONCURRENT_FILE_READS = 8
 
-WHITESPACE_PATTERN = re.compile(r"\s+")
 ROLLOUT_FILENAME_PATTERN = re.compile(
     r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
@@ -78,10 +78,7 @@ def _extract_text_from_content_blocks(content_blocks: object) -> str:
 
 def _clean_preview_text(raw_text: str) -> str:
     """Collapse whitespace and trim a Codex session-list preview."""
-    collapsed_text = WHITESPACE_PATTERN.sub(" ", raw_text).strip()
-    if len(collapsed_text) > PREVIEW_MAX_LENGTH:
-        return collapsed_text[:PREVIEW_MAX_LENGTH] + "..."
-    return collapsed_text
+    return clean_session_request_preview(raw_text, PREVIEW_MAX_LENGTH)
 
 
 def _read_file_lines_blocking(

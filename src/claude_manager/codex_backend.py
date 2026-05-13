@@ -18,7 +18,7 @@ from claude_manager.codex_session_file_reader import (
     RESPONSE_ITEM_TYPE_MESSAGE, ROLLOUT_FILENAME_PATTERN,
     ROLLOUT_TYPE_COMPACTED, ROLLOUT_TYPE_EVENT_MSG,
     ROLLOUT_TYPE_RESPONSE_ITEM, ROLLOUT_TYPE_SESSION_META,
-    ROLLOUT_TYPE_TURN_CONTEXT, WHITESPACE_PATTERN, _clean_preview_text,
+    ROLLOUT_TYPE_TURN_CONTEXT,
     _compute_is_turn_active_for_codex, _extract_text_from_content_blocks,
     _extract_uuid_from_rollout_filename, _parse_iso_timestamp_to_unix,
     _parse_jsonl_string_lines, _read_file_lines_blocking,

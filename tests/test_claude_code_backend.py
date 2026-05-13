@@ -260,6 +260,43 @@ async def test_list_session_files_for_project_returns_recent_metadata(
     ]
 
 
+async def test_list_session_files_uses_file_caption_as_preview(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude session previews show the original file caption, not bot boilerplate."""
+    monkeypatch.setattr(os.path, "expanduser", lambda _path: str(tmp_path))
+    project_dir = "/tmp/project_a"
+    sessions_dir = (
+        tmp_path / ".claude" / "projects" / _encode_project_path(project_dir)
+    )
+    sessions_dir.mkdir(parents=True)
+    session_file = sessions_dir / "file-task.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {
+                "sessionId": "file-task",
+                "timestamp": "2026-05-13T01:00:00Z",
+                "type": "user",
+                "message": {
+                    "content": (
+                        "Пользователь отправил файл с подписью: "
+                        "Добавь понятное превью сессии. "
+                        "Файл: /tmp/screenshot.jpg. "
+                        "Прочитай файл инструментом Read и выполни задачу из подписи"
+                    )
+                },
+            },
+        ],
+    )
+
+    session_file_infos = await backend.list_session_files_for_project(project_dir)
+
+    assert session_file_infos[0].preview == "Добавь понятное превью сессии"
+
+
 async def test_read_messages_from_session_file_parses_user_and_assistant(
     backend: ClaudeCodeBackend,
     tmp_path: Path,

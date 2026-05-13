@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from datetime import datetime
 
 from claude_manager.claude_code_session_path import build_sessions_path
@@ -15,6 +14,7 @@ from claude_manager.coding_agent_backend import (
     SessionFileSnapshot,
     SessionMessage,
 )
+from claude_manager.session_request_preview import clean_session_request_preview
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,6 @@ COMMAND_XML_TAGS = frozenset((
     "command-name", "command-message", "command-args",
     "local-command-stdout", "local-command-caveat",
 ))
-
-XML_TAG_PATTERN = re.compile(r"<[^>]+>")
-WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def extract_text_from_message_content(content: object) -> str:
@@ -77,11 +74,7 @@ def parse_jsonl_string_lines(raw_lines: list[str], file_path: str) -> list[dict[
 
 def _clean_preview_text(raw_text: str) -> str:
     """Remove Claude command XML and collapse whitespace for session previews."""
-    without_tags = XML_TAG_PATTERN.sub("", raw_text)
-    collapsed_text = WHITESPACE_PATTERN.sub(" ", without_tags).strip()
-    if len(collapsed_text) > PREVIEW_MAX_LENGTH:
-        return collapsed_text[:PREVIEW_MAX_LENGTH] + "..."
-    return collapsed_text
+    return clean_session_request_preview(raw_text, PREVIEW_MAX_LENGTH)
 
 
 def _is_command_xml_message(text: str) -> bool:
