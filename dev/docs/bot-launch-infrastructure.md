@@ -61,6 +61,23 @@ Python 3.13 может крэшиться при инициализации (`In
 3. Если Python работал дольше 5 секунд — это не startup crash, выходит с его exit code. launchd перезапустит через `KeepAlive`
 4. Если все 3 попытки исчерпаны — отправляет уведомление в Telegram (или macOS notification как fallback)
 
+### Post-flight проверка restart-скрипта
+
+`restart-claude-manager.sh` перезапускает сервис через `launchctl kickstart -k`, но успешность проверяет не только по `launchctl list`.
+
+Почему одной строки `launchctl list` недостаточно:
+
+- Первая колонка показывает PID shell-обёртки `~/.local/bin/start-claude-manager.sh`, а не обязательно PID Python-бота
+- Вторая колонка может сохранять старый `last exit code = -15` после штатного kill старого процесса во время kickstart
+- Shell-обёртка может быть жива, пока ждёт retry-паузу после startup crash, а Python-бот в этот момент ещё не запущен
+
+Правильный критерий успешного post-flight:
+
+1. `launchctl list` показывает числовой PID wrapper-процесса
+2. Под этим PID есть дочерний Python-процесс с запуском `runpy._run_module_as_main("claude_manager")`
+
+Только после этого restart считается успешным. Если wrapper жив, но Python-процесс ещё не найден, скрипт ждёт следующую post-flight попытку.
+
 ## launchd plist
 
 Файл: `~/Library/LaunchAgents/com.ivan.claude-manager.plist`
@@ -114,17 +131,21 @@ python -c "import claude_manager; print('import OK')"
 # 1. Проверить статус launchd
 launchctl list | grep claude-manager
 # PID  Exit  Label
-# 1234  0    com.ivan.claude-manager  ← работает (PID есть, exit 0)
+# 1234  -15  com.ivan.claude-manager  ← wrapper жив; дополнительно проверить Python-потомка
 # -     126  com.ivan.claude-manager  ← не работает (PID нет, exit 126)
 
-# 2. Проверить error-лог (здесь видны TCC-ошибки, Python-крэши)
+# 2. Проверить, что под wrapper есть Python-бот
+WRAPPER_PID=$(launchctl list | awk '/com.ivan.claude-manager/ {print $1}')
+ps -axo ppid=,command= | awk -v wrapper_pid="$WRAPPER_PID" '$1 == wrapper_pid && /runpy\._run_module_as_main\("claude_manager"\)/'
+
+# 3. Проверить error-лог (здесь видны TCC-ошибки, Python-крэши)
 tail -20 ~/Library/Logs/claude-manager.error.log
 
-# 3. Проверить что Python может импортировать модуль
+# 4. Проверить что Python может импортировать модуль
 source .venv/bin/activate
 python -c "import claude_manager; print('OK')"
 
-# 4. Проверить UF_HIDDEN на .pth (должно быть 0x0)
+# 5. Проверить UF_HIDDEN на .pth (должно быть 0x0)
 python -c "
 import os, stat
 s = os.stat('.venv/lib/python3.13/site-packages/__editable__.claude_manager-0.1.0.pth')
