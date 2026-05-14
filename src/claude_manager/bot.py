@@ -8,6 +8,7 @@
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -23,6 +24,7 @@ from telegram.ext import (
 )
 
 from claude_manager import (
+    all_projects_monitor,
     claude_interaction,
     coding_agent_backend,
     config,
@@ -69,7 +71,7 @@ BOT_COMMANDS = [
     ("new", "Новая сессия"),
     ("agent", "Выбор CLI-агента"),
     ("sessions", "Список сессий"),
-    ("all", "Мониторинг всех сессий"),
+    ("all", "Мониторинг всех проектов"),
     ("stop", "Остановить активного агента"),
     ("projects", "Список проектов для переключения"),
     ("silence_on", "Режим тишины: вкл"),
@@ -87,6 +89,19 @@ PROJECT_SWITCH_SUCCESS_TEMPLATE = "Переключено на проект: {na
 PROJECT_SWITCH_PENDING_TEMPLATE = "Непрочитанных сообщений: {count}"
 PROJECT_SWITCH_ERROR_TEMPLATE = "Ошибка переключения: {error}"
 PROJECT_ALREADY_ACTIVE_TEMPLATE = "Уже работаю в проекте: {name}"
+ALL_PROJECTS_MODE_LINE = "/all all"
+ALL_PROJECTS_MODE_ENABLED_MESSAGE = (
+    "Режим all включён: показываю сообщения из всех проектов.\n"
+    "Писать агенту отсюда нельзя — сначала выберите проект и сессию."
+)
+ALL_PROJECTS_MODE_INPUT_WARNING = (
+    "Вы в режиме all по всем проектам. Чтобы писать агенту, сначала войдите "
+    "в проект и сессию: выберите проект через /projects или нажмите команду "
+    "вида /1s2 в сообщении all."
+)
+PROJECT_SESSION_COMMAND_PATTERN = re.compile(
+    r"^/(?P<project>\d+)s(?P<session>\d+)$"
+)
 
 # Метка launchd-сервиса бота (используется для самоперезапуска через /restart)
 LAUNCHD_SERVICE_LABEL = "com.ivan.claude-manager"
@@ -218,6 +233,21 @@ def _parse_agent_callback_data(raw_data: object) -> BackendName | None:
         return None
 
 
+def _monitoring_mode_message_for_chat(chat_id: int) -> str:
+    """Return the right warning for local monitoring or global all mode."""
+    if all_projects_monitor.is_enabled_for_chat(chat_id):
+        return ALL_PROJECTS_MODE_INPUT_WARNING
+    return claude_interaction.MONITORING_MODE_MESSAGE
+
+
+def _parse_project_session_command(raw_text: str) -> tuple[int, int] | None:
+    """Parse an all-mode command like /3s12."""
+    match = PROJECT_SESSION_COMMAND_PATTERN.match(raw_text)
+    if match is None:
+        return None
+    return int(match.group("project")), int(match.group("session"))
+
+
 async def _build_agent_switch_confirmation(
     chat_id: int,
     target_backend: BackendName,
@@ -337,6 +367,43 @@ async def send_watcher_message(
         await telegram_sender.send_telegram_message(_application.bot, chat_id, part)
 
 
+async def send_all_projects_watcher_message(
+    chat_id: int,
+    *,
+    project_number: int,
+    session_number: int,
+    project_name: str,
+    session_id: str,
+    backend: BackendName,
+    text: str,
+    is_final: bool,
+) -> None:
+    """Send a watcher message from global all-project mode."""
+    del session_id
+
+    if not is_final and silence_mode_registry.is_enabled():
+        return
+
+    if is_final:
+        text = await file_delivery.process_file_markers(_application.bot, chat_id, text)
+        text = await file_delivery.process_show_file_markers(_application.bot, chat_id, text)
+
+    parts = message_splitter.prepare_message(text)
+    if not is_final:
+        parts = [f"<i>{part}</i>" for part in parts]
+
+    status_icon = "\u2705" if is_final else "\u23f3"
+    backend_label = _get_backend_display_name(backend)
+    header = (
+        f"/{project_number}s{session_number} "
+        f"{project_name} {backend_label} {status_icon} "
+    )
+    parts[0] = header + parts[0]
+
+    for part in parts:
+        await telegram_sender.send_telegram_message(_application.bot, chat_id, part)
+
+
 # --- Обработчики команд ---
 
 
@@ -417,6 +484,9 @@ async def post_init(application: Application) -> None:
     asyncio.create_task(
         session_watcher.start(_watcher_callback, _get_current_session_async)
     )
+    asyncio.create_task(
+        all_projects_monitor.start(_all_projects_watcher_callback)
+    )
 
     await _notify_restart_complete(application)
 
@@ -441,6 +511,29 @@ async def _watcher_callback(
     )
 
 
+async def _all_projects_watcher_callback(
+    chat_id: int,
+    project_number: int,
+    session_number: int,
+    project_name: str,
+    session_id: str,
+    backend: BackendName,
+    text: str,
+    is_final: bool,
+) -> None:
+    """Callback for the global all-project monitor."""
+    await send_all_projects_watcher_message(
+        chat_id,
+        project_number=project_number,
+        session_number=session_number,
+        project_name=project_name,
+        session_id=session_id,
+        backend=backend,
+        text=text,
+        is_final=is_final,
+    )
+
+
 async def _get_current_session_async(chat_id: int) -> ActiveSession | None:
     """Возвращает привязанную сессию для watcher (async-обёртка)."""
     return session_manager.get_active_session(chat_id)
@@ -454,6 +547,15 @@ async def handle_new(
         return
 
     chat_id = update.effective_chat.id
+
+    if all_projects_monitor.is_enabled_for_chat(chat_id):
+        await telegram_sender.send_telegram_message(
+            _application.bot,
+            chat_id,
+            ALL_PROJECTS_MODE_INPUT_WARNING,
+            parse_mode=None,
+        )
+        return
 
     try:
         backend = current_backend_registry.get_current()
@@ -641,22 +743,32 @@ async def handle_stop(
 async def handle_all(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Обработчик команды /all — переводит в режим мониторинга."""
+    """Обработчик команды /all — включает глобальный мониторинг всех проектов."""
     if not _check_access(update):
         return
 
     chat_id = update.effective_chat.id
     await session_manager.unbind_session(chat_id)
+    await all_projects_monitor.enable_for_chat(chat_id)
     await telegram_sender.send_telegram_message(_application.bot,
         chat_id,
-        "Режим мониторинга всех сессий",
+        ALL_PROJECTS_MODE_ENABLED_MESSAGE,
         parse_mode=None,
     )
 
 
-def _format_project_line(project: project_manager.ProjectInfo, number: int) -> str:
+def _format_project_line(
+    project: project_manager.ProjectInfo,
+    number: int,
+    *,
+    suppress_current_marker: bool = False,
+) -> str:
     """Форматирует одну строку списка проектов с номером и маркером текущего."""
-    marker = PROJECT_CURRENT_MARKER + " " if project.is_current else ""
+    marker = (
+        PROJECT_CURRENT_MARKER + " "
+        if project.is_current and not suppress_current_marker
+        else ""
+    )
     return f"{marker}/p{number} {project.name}"
 
 
@@ -675,11 +787,18 @@ async def handle_projects(
         await telegram_sender.send_telegram_message(_application.bot, chat_id, message, parse_mode=None)
         return
 
-    # Каждая строка — кликабельная команда /pN. parse_mode=None сохраняет кликабельность
-    lines = [
-        _format_project_line(project, number)
+    # Каждая строка — кликабельная команда. parse_mode=None сохраняет кликабельность
+    all_mode_enabled = all_projects_monitor.is_enabled_for_chat(chat_id)
+    all_marker = PROJECT_CURRENT_MARKER + " " if all_mode_enabled else ""
+    lines = [f"{all_marker}{ALL_PROJECTS_MODE_LINE}"]
+    lines.extend(
+        _format_project_line(
+            project,
+            number,
+            suppress_current_marker=all_mode_enabled,
+        )
         for number, project in enumerate(projects, start=1)
-    ]
+    )
     text = "\n".join(lines)
     await telegram_sender.send_telegram_message(_application.bot, chat_id, text, parse_mode=None)
 
@@ -763,6 +882,29 @@ async def _deliver_pending_messages(
         )
 
 
+async def _include_pending_for_all_mode_same_project(
+    result: project_manager.SwitchResult,
+    target_project: project_manager.ProjectInfo,
+    was_all_projects_mode: bool,
+) -> project_manager.SwitchResult:
+    """Collect pending messages when all mode exits into the already active project."""
+    if not was_all_projects_mode or not result.success or not result.already_active:
+        return result
+
+    pending_count, pending_messages = await project_manager.collect_pending_messages_for_project(
+        target_project.absolute_path
+    )
+    return project_manager.SwitchResult(
+        success=True,
+        already_active=False,
+        old_path=result.old_path,
+        new_path=result.new_path,
+        pending_messages_count=pending_count,
+        pending_messages=pending_messages,
+        error_message=result.error_message,
+    )
+
+
 async def handle_switch_project(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -771,23 +913,138 @@ async def handle_switch_project(
         return
 
     chat_id = update.effective_chat.id
+    was_all_projects_mode = all_projects_monitor.disable_for_chat(chat_id)
     # Отбрасываем префикс "/p" и парсим число. Регулярное выражение в хендлере
     # гарантирует, что текст имеет вид /p<digits> — ошибки int() быть не может
     project_number = int(update.message.text[2:])
 
-    target_project = await _resolve_project_by_number(project_number)
-    if target_project is None:
-        message = INVALID_PROJECT_NUMBER_TEMPLATE.format(number=project_number)
-        await telegram_sender.send_telegram_message(_application.bot, chat_id, message, parse_mode=None)
+    try:
+        target_project = await _resolve_project_by_number(project_number)
+        if target_project is None:
+            message = INVALID_PROJECT_NUMBER_TEMPLATE.format(number=project_number)
+            await telegram_sender.send_telegram_message(_application.bot, chat_id, message, parse_mode=None)
+            return
+
+        result = await project_manager.switch_project(target_project.absolute_path)
+        result = await _include_pending_for_all_mode_same_project(
+            result,
+            target_project,
+            was_all_projects_mode,
+        )
+        response_text = _format_switch_result_message(result, target_project.name)
+        await telegram_sender.send_telegram_message(_application.bot, chat_id, response_text, parse_mode=None)
+
+        # Доставка пропущенных сообщений после переключения
+        if result.success and result.pending_messages_count > 0:
+            await _deliver_pending_messages(chat_id, result.pending_messages)
+    finally:
+        if was_all_projects_mode and not all_projects_monitor.has_enabled_chats():
+            session_watcher.resume_all()
+
+
+async def handle_switch_project_session(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Обработчик команды из all-режима: /<project>s<session>."""
+    if not _check_access(update):
         return
 
-    result = await project_manager.switch_project(target_project.absolute_path)
-    response_text = _format_switch_result_message(result, target_project.name)
-    await telegram_sender.send_telegram_message(_application.bot, chat_id, response_text, parse_mode=None)
+    chat_id = update.effective_chat.id
+    parsed_command = _parse_project_session_command(update.message.text)
+    if parsed_command is None:
+        return
+    project_number, session_number = parsed_command
 
-    # Доставка пропущенных сообщений после переключения
-    if result.success and result.pending_messages_count > 0:
-        await _deliver_pending_messages(chat_id, result.pending_messages)
+    link_target = all_projects_monitor.resolve_link(
+        project_number,
+        session_number,
+    )
+    was_all_projects_mode = all_projects_monitor.disable_for_chat(chat_id)
+
+    try:
+        target_project = await _resolve_project_by_number(project_number)
+        if link_target is not None:
+            target_project = project_manager.ProjectInfo(
+                name=link_target.project_name,
+                absolute_path=link_target.project_path,
+                is_current=target_project.is_current if target_project else False,
+            )
+
+        if target_project is None:
+            message = INVALID_PROJECT_NUMBER_TEMPLATE.format(number=project_number)
+            await telegram_sender.send_telegram_message(
+                _application.bot,
+                chat_id,
+                message,
+                parse_mode=None,
+            )
+            return
+
+        result = await project_manager.switch_project(target_project.absolute_path)
+        result = await _include_pending_for_all_mode_same_project(
+            result,
+            target_project,
+            was_all_projects_mode,
+        )
+
+        if not result.success:
+            response_text = _format_switch_result_message(result, target_project.name)
+            await telegram_sender.send_telegram_message(
+                _application.bot,
+                chat_id,
+                response_text,
+                parse_mode=None,
+            )
+            return
+
+        if link_target is not None:
+            bound_number = await session_manager.set_active_session(
+                chat_id,
+                link_target.session_id,
+                link_target.backend,
+            )
+            display_name = _get_backend_display_name(link_target.backend)
+            session_found = True
+        else:
+            switch_session_result = await session_manager.switch_to_session(
+                chat_id,
+                session_number,
+            )
+            session_found = switch_session_result.found
+            bound_number = switch_session_result.day_number
+            display_name = _get_backend_display_name(switch_session_result.backend)
+
+        if not session_found:
+            await telegram_sender.send_telegram_message(
+                _application.bot,
+                chat_id,
+                f"Сессия #{session_number} не найдена в проекте {target_project.name}",
+                parse_mode=None,
+            )
+            return
+
+        response_text = (
+            f"Переключено на проект: {target_project.name}\n"
+            f"Подключён к сессии #{bound_number} ({display_name})"
+        )
+        visible_pending_count = _count_visible_pending_messages(result)
+        if visible_pending_count > 0:
+            response_text += "\n" + PROJECT_SWITCH_PENDING_TEMPLATE.format(
+                count=visible_pending_count,
+            )
+        await telegram_sender.send_telegram_message(
+            _application.bot,
+            chat_id,
+            response_text,
+            parse_mode=None,
+        )
+
+        if result.pending_messages_count > 0:
+            await _deliver_pending_messages(chat_id, result.pending_messages)
+    finally:
+        if was_all_projects_mode and not all_projects_monitor.has_enabled_chats():
+            session_watcher.resume_all()
 
 
 async def handle_switch_session(
@@ -850,7 +1107,7 @@ async def handle_message(
 
     if session_manager.is_monitoring_mode(chat_id):
         await telegram_sender.send_telegram_message(_application.bot,
-            chat_id, claude_interaction.MONITORING_MODE_MESSAGE, parse_mode=None
+            chat_id, _monitoring_mode_message_for_chat(chat_id), parse_mode=None
         )
         return
 
@@ -917,7 +1174,7 @@ async def handle_photo(
 
     if session_manager.is_monitoring_mode(chat_id):
         await telegram_sender.send_telegram_message(_application.bot,
-            chat_id, claude_interaction.MONITORING_MODE_MESSAGE, parse_mode=None
+            chat_id, _monitoring_mode_message_for_chat(chat_id), parse_mode=None
         )
         return
 
@@ -947,7 +1204,7 @@ async def handle_document(
 
     if session_manager.is_monitoring_mode(chat_id):
         await telegram_sender.send_telegram_message(_application.bot,
-            chat_id, claude_interaction.MONITORING_MODE_MESSAGE, parse_mode=None
+            chat_id, _monitoring_mode_message_for_chat(chat_id), parse_mode=None
         )
         return
 
@@ -1065,6 +1322,12 @@ def _register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("silence_on", handle_silence_on))
     application.add_handler(CommandHandler("silence_off", handle_silence_off))
     application.add_handler(CommandHandler("restart", handle_restart))
+    application.add_handler(
+        MessageHandler(
+            filters.Regex(r"^/\d+s\d+$"),
+            handle_switch_project_session,
+        )
+    )
     application.add_handler(
         MessageHandler(filters.Regex(r"^/\d+$"), handle_switch_session)
     )
