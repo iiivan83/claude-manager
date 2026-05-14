@@ -86,8 +86,6 @@ def _parse_projects_response(response_text: str) -> list[ParsedProject]:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.endswith("/all all") or stripped == "/all all":
-            continue
         match = _PROJECT_LINE_PATTERN.match(stripped)
         assert match, (
             f"Не удалось распарсить строку проекта: {stripped!r}. "
