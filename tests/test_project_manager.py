@@ -446,6 +446,54 @@ class TestSwitchProject:
         assert result.pending_messages[1].is_final is True
 
     @pytest.mark.asyncio()
+    async def test_collect_pending_messages_for_active_project_uses_existing_collector(
+        self,
+        projects_root: Path,
+        last_project_file: Path,
+    ) -> None:
+        """Public wrapper collects pending messages without switching project."""
+        target = projects_root / "project_alpha"
+        session_id = "claude-session"
+        file_path = str(target / "session.jsonl")
+        session_file = _session_file(session_id, file_path)
+        snapshot = SessionFileSnapshot(
+            messages=[
+                _assistant_message("old"),
+                _assistant_message("new"),
+            ],
+            raw_record_count=2,
+            last_record=None,
+            is_turn_active=False,
+        )
+        fake_backend = FakeProjectBackend(
+            BackendName.CLAUDE,
+            session_files=[session_file],
+            snapshots={file_path: snapshot},
+        )
+        unread_buffer.save_snapshot(
+            session_id,
+            BackendName.CLAUDE,
+            raw_record_count=1,
+            last_delivered_idx=0,
+        )
+
+        patches = _patch_config_paths(projects_root, target, last_project_file)
+        with patches[0], patches[1], patches[2], patch.object(
+            coding_agent_backend,
+            "get_all_backends",
+            return_value=[fake_backend],
+        ):
+            count, pending = await project_manager.collect_pending_messages_for_project(
+                str(target)
+            )
+
+        assert count == 1
+        assert pending[0].session_id == session_id
+        assert pending[0].text == "new"
+        assert pending[0].backend == BackendName.CLAUDE
+        assert pending[0].is_final is True
+
+    @pytest.mark.asyncio()
     async def test_current_backend_registry_preserved_across_switch(
         self, projects_root: Path, last_project_file: Path
     ) -> None:

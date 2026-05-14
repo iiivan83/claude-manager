@@ -493,6 +493,13 @@ async def _collect_pending_messages(
     return len(pending_items), pending_items
 
 
+async def collect_pending_messages_for_project(
+    target_path: str,
+) -> tuple[int, list[PendingDeliveryItem]]:
+    """Public wrapper collecting unread messages for an already active project."""
+    return await _collect_pending_messages(target_path)
+
+
 async def _finalize_successful_switch(
     old_path: str, target_path: str,
 ) -> SwitchResult:
