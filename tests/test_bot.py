@@ -9,6 +9,7 @@ import pytest
 from telegram.constants import ChatAction, ParseMode
 
 from claude_manager import (
+    all_projects_monitor,
     coding_agent_backend,
     current_backend_registry,
     daily_session_registry,
@@ -41,8 +42,10 @@ from claude_manager.bot import (
     handle_sessions,
     handle_stop,
     handle_switch_project,
+    handle_switch_project_session,
     handle_switch_session,
     post_init,
+    send_all_projects_watcher_message,
     send_response,
     send_watcher_message,
     setup_bot,
@@ -465,6 +468,27 @@ class TestHandleNew:
         await handle_new(update, context)
         _setup_application.bot.send_message.assert_not_called()
 
+    @pytest.mark.asyncio()
+    @patch.object(all_projects_monitor, "is_enabled_for_chat")
+    @patch.object(session_manager, "create_new_session", new_callable=AsyncMock)
+    async def test_handle_new_blocked_in_all_projects_mode(
+        self,
+        mock_create_session: AsyncMock,
+        mock_is_all_projects: MagicMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """В глобальном all-режиме /new не создаёт скрытую сессию текущего проекта."""
+        mock_is_all_projects.return_value = True
+
+        update = _make_update(text="/new")
+        context = _make_context()
+        await handle_new(update, context)
+
+        mock_create_session.assert_not_awaited()
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert "проект" in sent_text.lower()
+
 
 class TestHandleSessions:
     """Тесты команды /sessions."""
@@ -862,21 +886,25 @@ class TestHandleAll:
     """Тесты команды /all."""
 
     @pytest.mark.asyncio()
+    @patch.object(all_projects_monitor, "enable_for_chat", new_callable=AsyncMock)
     @patch.object(session_manager, "unbind_session", new_callable=AsyncMock)
     async def test_handle_all_switches_to_monitoring(
         self,
         mock_unbind: AsyncMock,
+        mock_enable_all_projects: AsyncMock,
         _setup_application: MagicMock,
     ) -> None:
-        """Команда /all переводит в режим мониторинга."""
+        """Команда /all переводит в глобальный режим мониторинга всех проектов."""
         update = _make_update(text="/all")
         context = _make_context()
         await handle_all(update, context)
 
         mock_unbind.assert_called_once_with(TEST_CHAT_ID)
+        mock_enable_all_projects.assert_awaited_once_with(TEST_CHAT_ID)
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "мониторинг" in sent_text.lower()
+        assert "all" in sent_text.lower()
+        assert "проект" in sent_text.lower()
 
 
 class TestHandleSwitchSession:
@@ -968,6 +996,28 @@ class TestHandleMessage:
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
         assert "мониторинг" in sent_text.lower()
+
+    @pytest.mark.asyncio()
+    @patch.object(all_projects_monitor, "is_enabled_for_chat")
+    @patch.object(session_manager, "is_monitoring_mode")
+    async def test_handle_message_in_all_projects_mode_mentions_project(
+        self,
+        mock_is_monitoring: MagicMock,
+        mock_is_all_projects: MagicMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """В all-режиме текст не уходит в LLM, подсказка просит войти в проект."""
+        mock_is_monitoring.return_value = True
+        mock_is_all_projects.return_value = True
+
+        update = _make_update(text="запрос")
+        context = _make_context()
+        await handle_message(update, context)
+
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert "проект" in sent_text.lower()
+        assert "сесси" in sent_text.lower()
 
     @pytest.mark.asyncio()
     @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
@@ -1380,6 +1430,32 @@ class TestSendWatcherMessage:
             TEST_CHAT_ID, "Готово", TEST_SESSION_ID, 1, is_final=True
         )
         _setup_application.bot.send_message.assert_called()
+
+
+class TestSendAllProjectsWatcherMessage:
+    """Тесты отправки сообщений глобального all-режима."""
+
+    @pytest.mark.asyncio()
+    async def test_header_starts_with_project_and_session_command(
+        self,
+        _setup_application: MagicMock,
+    ) -> None:
+        """All-сообщение начинается с кликабельной команды /<project>s<session>."""
+        await send_all_projects_watcher_message(
+            TEST_CHAT_ID,
+            project_number=3,
+            session_number=12,
+            project_name="bloger",
+            session_id=TEST_SESSION_ID,
+            backend=BackendName.CLAUDE,
+            text="Ответ из другого проекта",
+            is_final=True,
+        )
+
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert sent_text.startswith("/3s12 bloger")
+        assert "Ответ из другого проекта" in sent_text
 # --- Тесты setup_bot ---
 
 
@@ -1570,7 +1646,7 @@ class TestHandleProjects:
 
     @pytest.mark.asyncio()
     async def test_shows_all_projects(self) -> None:
-        """Список проектов отображается со всеми именами и командами /pN."""
+        """Список проектов отображается со всеми именами, командами /pN и режимом /all."""
         projects = [
             _make_project_info("alpha"),
             _make_project_info("beta"),
@@ -1586,6 +1662,7 @@ class TestHandleProjects:
             await handle_projects(update, context)
 
         sent_text = bot_module._application.bot.send_message.call_args.args[1]
+        assert "/all all" in sent_text
         assert "/p1" in sent_text
         assert "alpha" in sent_text
         assert "/p2" in sent_text
@@ -1632,6 +1709,31 @@ class TestHandleProjects:
 
         call_kwargs = bot_module._application.bot.send_message.call_args.kwargs
         assert call_kwargs.get("parse_mode") is None
+
+    @pytest.mark.asyncio()
+    @patch.object(all_projects_monitor, "is_enabled_for_chat")
+    async def test_marks_all_mode_when_enabled(
+        self,
+        mock_is_all_projects: MagicMock,
+    ) -> None:
+        """В списке проектов текущий all-режим помечается тем же маркером."""
+        mock_is_all_projects.return_value = True
+        projects = [_make_project_info("alpha", is_current=True)]
+        update = _make_update()
+        context = MagicMock()
+
+        with patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ):
+            await handle_projects(update, context)
+
+        sent_text = bot_module._application.bot.send_message.call_args.args[1]
+        lines = sent_text.splitlines()
+        all_line = lines[0]
+        alpha_line = next(line for line in lines if "alpha" in line)
+        assert PROJECT_CURRENT_MARKER in all_line
+        assert PROJECT_CURRENT_MARKER not in alpha_line
 
 
 # --- Тесты команды /pN ---
@@ -1841,6 +1943,62 @@ class TestHandleSwitchProject:
         assert "Нет прав" in sent
 
     @pytest.mark.asyncio()
+    async def test_all_mode_same_project_collects_pending_messages(self) -> None:
+        """Выход из all в уже активный проект всё равно доставляет all-сообщения."""
+        projects = [_make_project_info("alpha", path="/fake/alpha", is_current=True)]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+        pending = [
+            project_manager.PendingDeliveryItem(
+                session_id="sess-alpha",
+                backend=BackendName.CLAUDE,
+                text="Ответ из all",
+                is_final=True,
+            )
+        ]
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=True,
+            old_path="/fake/alpha", new_path="/fake/alpha",
+            pending_messages_count=0, pending_messages=[],
+            error_message="",
+        )
+
+        with patch.object(
+            all_projects_monitor,
+            "disable_for_chat",
+            return_value=True,
+        ), patch.object(
+            all_projects_monitor,
+            "has_enabled_chats",
+            return_value=False,
+        ), patch.object(
+            session_watcher,
+            "resume_all",
+        ), patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager,
+            "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ), patch.object(
+            project_manager,
+            "collect_pending_messages_for_project",
+            new=AsyncMock(return_value=(1, pending)),
+        ) as collect_mock, patch.object(
+            bot_module,
+            "_deliver_pending_messages",
+            new=AsyncMock(),
+        ) as deliver_mock:
+            await handle_switch_project(update, context)
+
+        collect_mock.assert_awaited_once_with("/fake/alpha")
+        deliver_mock.assert_awaited_once_with(TEST_CHAT_ID, pending)
+        sent = bot_module._application.bot.send_message.call_args.args[1]
+        assert "Переключено на проект" in sent
+        assert "Непрочитанных сообщений: 1" in sent
+
+    @pytest.mark.asyncio()
     async def test_delivers_pending_messages_after_switch(self) -> None:
         """При наличии pending_messages каждое доставляется через send_response."""
         from claude_manager.unread_buffer import PendingMessage
@@ -1936,6 +2094,66 @@ class TestHandleSwitchProject:
             "codex-session",
             BackendName.CODEX,
         ) is not None
+
+
+class TestHandleSwitchProjectSession:
+    """Тесты кликабельной команды /<project>s<session> из all-режима."""
+
+    @pytest.mark.asyncio()
+    async def test_switches_project_and_binds_session_from_all_link(self) -> None:
+        """Команда из all-режима переключает проект и привязывает конкретную сессию."""
+        target = all_projects_monitor.AllProjectSessionLink(
+            project_number=2,
+            session_number=9,
+            project_name="beta",
+            project_path="/fake/beta",
+            session_id="sess-beta",
+            backend=BackendName.CODEX,
+        )
+        projects = [
+            _make_project_info("alpha"),
+            _make_project_info("beta", path="/fake/beta"),
+        ]
+        update = _make_update(text="/2s9")
+        context = MagicMock()
+        switch_result = project_manager.SwitchResult(
+            success=True, already_active=False,
+            old_path="/fake/alpha", new_path="/fake/beta",
+            pending_messages_count=0, pending_messages=[],
+            error_message="",
+        )
+
+        with patch.object(
+            all_projects_monitor,
+            "resolve_link",
+            return_value=target,
+        ), patch.object(
+            all_projects_monitor,
+            "disable_for_chat",
+            return_value=True,
+        ) as disable_mock, patch.object(
+            project_manager, "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager, "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ) as switch_mock, patch.object(
+            session_manager,
+            "set_active_session",
+            new=AsyncMock(return_value=9),
+        ) as set_active_mock:
+            await handle_switch_project_session(update, context)
+
+        disable_mock.assert_called_once_with(TEST_CHAT_ID)
+        switch_mock.assert_awaited_once_with("/fake/beta")
+        set_active_mock.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "sess-beta",
+            BackendName.CODEX,
+        )
+        sent_text = bot_module._application.bot.send_message.call_args.args[1]
+        assert "beta" in sent_text
+        assert "#9" in sent_text
 
 
 # --- Тесты send_response с файловыми маркерами ---
