@@ -19,6 +19,48 @@ POST_FLIGHT_CHECK_COUNT=3
 POST_FLIGHT_CHECK_INTERVAL_SECONDS=10
 LOG_TAIL_LINES=20
 
+launchctl_service_pid_from_status() {
+    local service_status="$1"
+    awk '{print $1}' <<< "$service_status"
+}
+
+launchctl_service_exit_code_from_status() {
+    local service_status="$1"
+    awk '{print $2}' <<< "$service_status"
+}
+
+launchctl_service_has_running_pid() {
+    local service_status="$1"
+    local service_pid
+
+    service_pid=$(launchctl_service_pid_from_status "$service_status")
+    [[ "$service_pid" =~ ^[0-9]+$ ]]
+}
+
+process_table_has_claude_manager_python_child() {
+    local wrapper_pid="$1"
+    local process_table="$2"
+
+    awk -v wrapper_pid="$wrapper_pid" '
+        $1 == wrapper_pid && /runpy\._run_module_as_main\("claude_manager"\)/ {
+            found = 1
+        }
+        END { exit found ? 0 : 1 }
+    ' <<< "$process_table"
+}
+
+claude_manager_python_child_is_running() {
+    local wrapper_pid="$1"
+    local process_table
+
+    process_table=$(ps -axo ppid=,command=)
+    process_table_has_claude_manager_python_child "$wrapper_pid" "$process_table"
+}
+
+if [[ "${CLAUDE_MANAGER_RESTART_SOURCE_ONLY:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 # Защита от вызова изнутри бота: скрипт убьёт собственное дерево процессов
 BOT_PID=$(launchctl list | awk "/$SERVICE_LABEL/ {print \$1}")
 if [[ -n "$BOT_PID" && "$BOT_PID" != "-" ]]; then
@@ -66,6 +108,8 @@ echo ""
 echo "=== Post-flight ==="
 
 POST_FLIGHT_OK=false
+SERVICE_PID="-"
+EXIT_CODE="unknown"
 
 for CHECK_NUMBER in $(seq 1 "$POST_FLIGHT_CHECK_COUNT"); do
     sleep "$POST_FLIGHT_CHECK_INTERVAL_SECONDS"
@@ -80,23 +124,25 @@ for CHECK_NUMBER in $(seq 1 "$POST_FLIGHT_CHECK_COUNT"); do
         exit 1
     fi
 
-    EXIT_CODE=$(echo "$SERVICE_STATUS" | awk '{print $2}')
+    SERVICE_PID=$(launchctl_service_pid_from_status "$SERVICE_STATUS")
+    EXIT_CODE=$(launchctl_service_exit_code_from_status "$SERVICE_STATUS")
 
-    # exit code "0" или "-" (процесс ещё работает) — успех
-    if [[ "$EXIT_CODE" == "0" || "$EXIT_CODE" == "-" ]]; then
-        echo "OK: сервис в launchctl list, exit code = $EXIT_CODE (попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT)"
+    # Живой PID wrapper-а ещё не значит, что Python-бот уже поднялся.
+    if launchctl_service_has_running_pid "$SERVICE_STATUS" \
+        && claude_manager_python_child_is_running "$SERVICE_PID"; then
+        echo "OK: сервис в launchctl list, PID = $SERVICE_PID, Python-бот запущен, last exit code = $EXIT_CODE (попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT)"
         POST_FLIGHT_OK=true
         break
     fi
 
-    # Ненулевой exit code — процесс крэшнулся, но launchd может перезапустить (ThrottleInterval)
+    # Wrapper может переживать retry-паузу после startup crash — ждём Python-процесс.
     if [[ "$CHECK_NUMBER" -lt "$POST_FLIGHT_CHECK_COUNT" ]]; then
-        echo "WARN: попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT, exit code $EXIT_CODE — жду следующей проверки..."
+        echo "WARN: попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT, PID = $SERVICE_PID, exit code $EXIT_CODE — Python-бот ещё не найден, жду следующей проверки..."
     fi
 done
 
 if [[ "$POST_FLIGHT_OK" != "true" ]]; then
-    echo "FAIL: сервис не поднялся после $POST_FLIGHT_CHECK_COUNT проверок, последний exit code = $EXIT_CODE"
+    echo "FAIL: сервис не поднялся после $POST_FLIGHT_CHECK_COUNT проверок, последний PID = $SERVICE_PID, последний exit code = $EXIT_CODE"
     echo ""
     echo "Последние строки error.log:"
     tail -"$LOG_TAIL_LINES" "$ERROR_LOG_FILE" 2>/dev/null || echo "(лог не найден)"
