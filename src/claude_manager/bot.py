@@ -905,6 +905,19 @@ async def _include_pending_for_all_mode_same_project(
     )
 
 
+async def _restore_all_projects_mode_after_failed_project_switch(
+    chat_id: int,
+    result: project_manager.SwitchResult,
+    was_all_projects_mode: bool,
+) -> bool:
+    """Restore global all-project monitoring after an unsuccessful project switch."""
+    if result.success or not was_all_projects_mode:
+        return False
+
+    await all_projects_monitor.enable_for_chat(chat_id)
+    return True
+
+
 async def handle_switch_project(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -913,7 +926,8 @@ async def handle_switch_project(
         return
 
     chat_id = update.effective_chat.id
-    was_all_projects_mode = all_projects_monitor.disable_for_chat(chat_id)
+    was_all_projects_mode = False
+    all_projects_mode_restored_after_switch_failure = False
     # Отбрасываем префикс "/p" и парсим число. Регулярное выражение в хендлере
     # гарантирует, что текст имеет вид /p<digits> — ошибки int() быть не может
     project_number = int(update.message.text[2:])
@@ -925,7 +939,15 @@ async def handle_switch_project(
             await telegram_sender.send_telegram_message(_application.bot, chat_id, message, parse_mode=None)
             return
 
+        was_all_projects_mode = all_projects_monitor.disable_for_chat(chat_id)
         result = await project_manager.switch_project(target_project.absolute_path)
+        all_projects_mode_restored_after_switch_failure = (
+            await _restore_all_projects_mode_after_failed_project_switch(
+                chat_id,
+                result,
+                was_all_projects_mode,
+            )
+        )
         result = await _include_pending_for_all_mode_same_project(
             result,
             target_project,
@@ -938,7 +960,11 @@ async def handle_switch_project(
         if result.success and result.pending_messages_count > 0:
             await _deliver_pending_messages(chat_id, result.pending_messages)
     finally:
-        if was_all_projects_mode and not all_projects_monitor.has_enabled_chats():
+        if (
+            was_all_projects_mode
+            and not all_projects_mode_restored_after_switch_failure
+            and not all_projects_monitor.has_enabled_chats()
+        ):
             session_watcher.resume_all()
 
 
@@ -960,7 +986,8 @@ async def handle_switch_project_session(
         project_number,
         session_number,
     )
-    was_all_projects_mode = all_projects_monitor.disable_for_chat(chat_id)
+    was_all_projects_mode = False
+    all_projects_mode_restored_after_switch_failure = False
 
     try:
         target_project = await _resolve_project_by_number(project_number)
@@ -981,7 +1008,15 @@ async def handle_switch_project_session(
             )
             return
 
+        was_all_projects_mode = all_projects_monitor.disable_for_chat(chat_id)
         result = await project_manager.switch_project(target_project.absolute_path)
+        all_projects_mode_restored_after_switch_failure = (
+            await _restore_all_projects_mode_after_failed_project_switch(
+                chat_id,
+                result,
+                was_all_projects_mode,
+            )
+        )
         result = await _include_pending_for_all_mode_same_project(
             result,
             target_project,
@@ -1043,7 +1078,11 @@ async def handle_switch_project_session(
         if result.pending_messages_count > 0:
             await _deliver_pending_messages(chat_id, result.pending_messages)
     finally:
-        if was_all_projects_mode and not all_projects_monitor.has_enabled_chats():
+        if (
+            was_all_projects_mode
+            and not all_projects_mode_restored_after_switch_failure
+            and not all_projects_monitor.has_enabled_chats()
+        ):
             session_watcher.resume_all()
 
 

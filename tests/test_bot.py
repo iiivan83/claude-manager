@@ -1842,6 +1842,54 @@ class TestHandleSwitchProject:
         assert "99" in sent
 
     @pytest.mark.asyncio()
+    async def test_failed_switch_restores_all_projects_mode(self) -> None:
+        """Failed project switch from all mode restores global monitoring."""
+        projects = [_make_project_info("alpha", path="/fake/alpha")]
+        update = _make_update(text="/p1")
+        context = MagicMock()
+        switch_result = project_manager.SwitchResult(
+            success=False,
+            already_active=False,
+            old_path="/fake/beta",
+            new_path="/fake/alpha",
+            pending_messages_count=0,
+            pending_messages=[],
+            error_message="switch failed",
+        )
+
+        with patch.object(
+            all_projects_monitor,
+            "disable_for_chat",
+            return_value=True,
+        ) as disable_mock, patch.object(
+            all_projects_monitor,
+            "enable_for_chat",
+            new_callable=AsyncMock,
+        ) as enable_mock, patch.object(
+            all_projects_monitor,
+            "has_enabled_chats",
+            return_value=False,
+        ), patch.object(
+            session_watcher,
+            "resume_all",
+        ) as resume_all_mock, patch.object(
+            project_manager,
+            "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager,
+            "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ):
+            await handle_switch_project(update, context)
+
+        disable_mock.assert_called_once_with(TEST_CHAT_ID)
+        enable_mock.assert_awaited_once_with(TEST_CHAT_ID)
+        resume_all_mock.assert_not_called()
+        sent = bot_module._application.bot.send_message.call_args.args[1]
+        assert "switch failed" in sent
+
+    @pytest.mark.asyncio()
     async def test_already_active_shows_message(self) -> None:
         """already_active=True → сообщение PROJECT_ALREADY_ACTIVE_TEMPLATE."""
         projects = [_make_project_info("alpha", path="/fake/alpha", is_current=True)]
@@ -2209,6 +2257,74 @@ class TestHandleSwitchProjectSession:
         sent_text = bot_module._application.bot.send_message.call_args.args[1]
         assert "beta" in sent_text
         assert "#9" in sent_text
+
+    @pytest.mark.asyncio()
+    async def test_failed_link_switch_restores_all_projects_mode(self) -> None:
+        """Failed all-link project switch restores global monitoring."""
+        target = all_projects_monitor.AllProjectSessionLink(
+            project_number=2,
+            session_number=9,
+            project_name="beta",
+            project_path="/fake/beta",
+            session_id="sess-beta",
+            backend=BackendName.CODEX,
+        )
+        projects = [
+            _make_project_info("alpha"),
+            _make_project_info("beta", path="/fake/beta"),
+        ]
+        update = _make_update(text="/2s9")
+        context = MagicMock()
+        switch_result = project_manager.SwitchResult(
+            success=False,
+            already_active=False,
+            old_path="/fake/alpha",
+            new_path="/fake/beta",
+            pending_messages_count=0,
+            pending_messages=[],
+            error_message="switch failed",
+        )
+
+        with patch.object(
+            all_projects_monitor,
+            "resolve_link",
+            return_value=target,
+        ), patch.object(
+            all_projects_monitor,
+            "disable_for_chat",
+            return_value=True,
+        ) as disable_mock, patch.object(
+            all_projects_monitor,
+            "enable_for_chat",
+            new_callable=AsyncMock,
+        ) as enable_mock, patch.object(
+            all_projects_monitor,
+            "has_enabled_chats",
+            return_value=False,
+        ), patch.object(
+            session_watcher,
+            "resume_all",
+        ) as resume_all_mock, patch.object(
+            project_manager,
+            "scan_available_projects",
+            new=AsyncMock(return_value=projects),
+        ), patch.object(
+            project_manager,
+            "switch_project",
+            new=AsyncMock(return_value=switch_result),
+        ), patch.object(
+            session_manager,
+            "set_active_session",
+            new_callable=AsyncMock,
+        ) as set_active_mock:
+            await handle_switch_project_session(update, context)
+
+        disable_mock.assert_called_once_with(TEST_CHAT_ID)
+        enable_mock.assert_awaited_once_with(TEST_CHAT_ID)
+        resume_all_mock.assert_not_called()
+        set_active_mock.assert_not_awaited()
+        sent_text = bot_module._application.bot.send_message.call_args.args[1]
+        assert "switch failed" in sent_text
 
 
 # --- Тесты send_response с файловыми маркерами ---
