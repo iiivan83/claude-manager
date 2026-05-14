@@ -72,6 +72,7 @@ BOT_COMMANDS = [
     ("agent", "Выбор CLI-агента"),
     ("sessions", "Список сессий"),
     ("all", "Мониторинг всех проектов"),
+    ("all_projects", "Мониторинг всех проектов"),
     ("stop", "Остановить активного агента"),
     ("projects", "Список проектов для переключения"),
     ("silence_on", "Режим тишины: вкл"),
@@ -1356,7 +1357,7 @@ def _register_handlers(application: Application) -> None:
     )
     application.add_handler(CommandHandler("sessions", handle_sessions))
     application.add_handler(CommandHandler("stop", handle_stop))
-    application.add_handler(CommandHandler("all", handle_all))
+    application.add_handler(CommandHandler(["all", "all_projects"], handle_all))
     application.add_handler(CommandHandler("projects", handle_projects))
     application.add_handler(CommandHandler("silence_on", handle_silence_on))
     application.add_handler(CommandHandler("silence_off", handle_silence_off))

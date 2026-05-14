@@ -909,6 +909,27 @@ class TestHandleAll:
         assert "all" in sent_text.lower()
         assert "проект" in sent_text.lower()
 
+    @pytest.mark.asyncio()
+    @patch.object(all_projects_monitor, "enable_for_chat", new_callable=AsyncMock)
+    @patch.object(session_manager, "unbind_session", new_callable=AsyncMock)
+    async def test_handle_all_projects_alias_switches_to_monitoring(
+        self,
+        mock_unbind: AsyncMock,
+        mock_enable_all_projects: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Command /all_projects enables global monitoring across projects."""
+        update = _make_update(text="/all_projects")
+        context = _make_context()
+        await handle_all(update, context)
+
+        mock_unbind.assert_called_once_with(TEST_CHAT_ID)
+        mock_enable_all_projects.assert_awaited_once_with(TEST_CHAT_ID)
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert "all" in sent_text.lower()
+        assert "проект" in sent_text.lower()
+
 
 class TestHandleSwitchSession:
     """Тесты переключения на сессию по номеру."""
@@ -1537,6 +1558,35 @@ class TestSetupBot:
         # (new, sessions, stop, all, /N, text, photo, document)
         assert mock_app.add_handler.call_count >= 10
 
+    @patch("claude_manager.bot.ApplicationBuilder")
+    def test_setup_bot_registers_all_projects_command_alias(
+        self,
+        mock_builder_class: MagicMock,
+    ) -> None:
+        """setup_bot registers /all_projects as an alias for all-project mode."""
+        mock_app = MagicMock()
+        mock_app.add_handler = MagicMock()
+        mock_builder = MagicMock()
+        mock_builder.token.return_value = mock_builder
+        mock_builder.post_init.return_value = mock_builder
+        mock_builder.concurrent_updates.return_value = mock_builder
+        mock_builder.connect_timeout.return_value = mock_builder
+        mock_builder.read_timeout.return_value = mock_builder
+        mock_builder.write_timeout.return_value = mock_builder
+        mock_builder.pool_timeout.return_value = mock_builder
+        mock_builder.connection_pool_size.return_value = mock_builder
+        mock_builder.build.return_value = mock_app
+        mock_builder_class.return_value = mock_builder
+
+        setup_bot()
+
+        registered_commands = [
+            command
+            for call in mock_app.add_handler.call_args_list
+            for command in getattr(call.args[0], "commands", set())
+        ]
+        assert "all_projects" in registered_commands
+
 
 # --- Тесты post_init ---
 
@@ -1572,6 +1622,7 @@ class TestPostInit:
         mock_app.bot.set_my_commands.assert_called_once()
         commands = mock_app.bot.set_my_commands.call_args[0][0]
         assert len(commands) == len(BOT_COMMANDS)
+        assert any(command.command == "all_projects" for command in commands)
 
     @pytest.mark.asyncio()
     @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
