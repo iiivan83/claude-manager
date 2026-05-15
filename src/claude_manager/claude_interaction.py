@@ -13,6 +13,7 @@ import asyncio
 import logging
 
 from claude_manager import (
+    all_projects_monitor,
     coding_agent_backend,
     config,
     daily_session_registry,
@@ -20,8 +21,9 @@ from claude_manager import (
     session_manager,
     session_reader,
     session_watcher,
+    unread_buffer,
 )
-from claude_manager.coding_agent_backend import BackendName
+from claude_manager.coding_agent_backend import BackendName, SessionUnreadState
 from claude_manager.session_manager import ActiveSession
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,32 @@ watchdog_tasks: WatchdogTaskRegistry = WatchdogTaskRegistry()
 def _get_backend_display_name(backend: BackendName) -> str:
     """Возвращает человекочитаемое имя CLI-backend-а."""
     return coding_agent_backend.get_backend(backend).display_name
+
+
+def _chat_is_not_viewing_all_projects(chat_id: int) -> bool:
+    """Return whether the chat is outside global all-projects view."""
+    return not all_projects_monitor.is_enabled_for_chat(chat_id)
+
+
+def _save_last_delivered_message_index_for_later_project_view(
+    session_id: str,
+    backend: BackendName,
+) -> None:
+    """Save the session cursor so project view can deliver skipped messages."""
+    if unread_buffer.restore_snapshot(session_id, backend) is not None:
+        return
+
+    last_seen_by_session = session_watcher.get_seen_counts_snapshot(backend)
+    last_seen_position = last_seen_by_session.get(
+        session_id,
+        SessionUnreadState(raw_record_count=0, last_delivered_idx=-1),
+    )
+    unread_buffer.save_snapshot(
+        session_id,
+        backend,
+        raw_record_count=last_seen_position.raw_record_count,
+        last_delivered_idx=last_seen_position.last_delivered_idx,
+    )
 
 
 def build_file_task(file_path: str, caption: str | None, is_image: bool) -> str:
@@ -432,8 +460,21 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
                 "подавляем доставку: session_id=%s",
                 original_project_path, config.WORKING_DIR, session_id,
             )
-        else:
+        elif result.is_error or _chat_is_not_viewing_all_projects(chat_id):
             session_id = await handle_claude_result(chat_id, session_id, result)
+        else:
+            session_id = result.session_id
+            _save_last_delivered_message_index_for_later_project_view(
+                session_id,
+                backend,
+            )
+            logger.info(
+                "Чат %d уже в режиме all, обычная доставка подавлена: "
+                "session_id=%s, backend=%s",
+                chat_id,
+                session_id,
+                backend.value,
+            )
     except process_manager.ProcessStoppedError:
         logger.info("Запрос прерван командой /stop: session_id=%s", session_id)
     except process_manager.ProcessNotFoundError:

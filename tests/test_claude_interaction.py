@@ -12,8 +12,9 @@ from claude_manager import (
     session_manager,
     session_reader,
     session_watcher,
+    unread_buffer,
 )
-from claude_manager.coding_agent_backend import BackendName
+from claude_manager.coding_agent_backend import BackendName, SessionUnreadState
 from claude_manager.claude_interaction import (
     AGENT_SILENCE_TIMEOUT_SECONDS,
     EMPTY_RESPONSE_TEXT,
@@ -857,6 +858,62 @@ class TestSendToClaudeAndRespondBehavior:
             await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
 
             assert mock_send.call_args.kwargs["backend"] == BackendName.CLAUDE
+
+
+@pytest.mark.asyncio()
+@patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+@patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+@patch.object(session_manager, "get_bound_session")
+async def test_chat_in_all_projects_mode_does_not_receive_plain_session_response_from_earlier_request(
+    mock_get_bound: MagicMock,
+    mock_register: AsyncMock,
+    mock_send_response: AsyncMock,
+) -> None:
+    """All-project mode suppresses a plain session reply from an older request."""
+    mock_get_bound.return_value = TEST_SESSION_ID
+    mock_register.return_value = 35
+    previous_seen_position = SessionUnreadState(
+        raw_record_count=10,
+        last_delivered_idx=3,
+    )
+    unread_buffer._snapshots.clear()
+
+    try:
+        with patch(
+            "claude_manager.claude_interaction.all_projects_monitor.is_enabled_for_chat",
+            return_value=True,
+        ), patch.object(
+            session_watcher,
+            "get_seen_counts_snapshot",
+            return_value={TEST_SESSION_ID: previous_seen_position},
+        ), patch.object(
+            process_manager,
+            "send_message",
+            new_callable=AsyncMock,
+        ) as mock_send, patch.object(
+            session_watcher,
+            "pause_session",
+        ), patch.object(
+            session_watcher,
+            "resume_session",
+            new_callable=AsyncMock,
+        ):
+            mock_send.return_value = SendResult(
+                text="Ответ из старого запроса",
+                session_id=TEST_SESSION_ID,
+                is_error=False,
+                retries_used=0,
+            )
+
+            await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
+
+        mock_send_response.assert_not_awaited()
+        assert unread_buffer.restore_snapshot(
+            TEST_SESSION_ID,
+            BackendName.CLAUDE,
+        ) == previous_seen_position
+    finally:
+        unread_buffer._snapshots.clear()
 
 
 # --- Тесты замыканий _on_progress, _on_retry, _on_session_id_changed ---
