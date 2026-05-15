@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_manager.bot import (
-    IMAGE_EXTENSIONS,
+from claude_manager.claude_interaction import build_file_task as _build_file_task
+from claude_manager.file_delivery import IMAGE_EXTENSIONS
+from claude_manager.telegram_file_downloader import (
     RECEIVED_FILES_DIR,
-    _build_file_task,
-    _generate_file_name,
+    generate_file_name as _generate_file_name,
 )
 
 

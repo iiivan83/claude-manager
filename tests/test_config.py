@@ -83,6 +83,12 @@ class TestLoadConfigSuccess:
             load_config()
             assert config.WORKING_DIR == os.getcwd()
 
+    def test_current_backend_file_default_path(self) -> None:
+        """CURRENT_BACKEND_FILE points to the global backend state file."""
+        assert config.CURRENT_BACKEND_FILE == (
+            Path.home() / ".claude-manager-current-backend"
+        )
+
 
 # --- Юнит-тесты _parse_allowed_user_ids ---
 

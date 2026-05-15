@@ -2,8 +2,8 @@
   "pipeline": "feature-pipeline",
   "pipeline_name": "fix-duplicate-session-numbers",
   "timestamp_start": "2026-04-12T21:17:00Z",
-  "timestamp_end": null,
-  "status": "in_progress",
+  "timestamp_end": "2026-04-12T21:46:00Z",
+  "status": "completed",
   "scale": "medium",
   "rollbacks_count": 0,
   "entries": [
@@ -225,7 +225,17 @@
       "details": "Финальная проверка: прогон всех тестов + коммит",
       "output_file": "agent-outputs/10-finalizer.json",
       "fix_cycle_attempt": 0,
-      "duration_ms": 0
+      "duration_ms": 80344
+    },
+    {
+      "timestamp": "2026-04-12T21:46:00Z",
+      "phase": "10",
+      "agent": "feature-finalizer",
+      "action": "complete",
+      "details": "590 тестов зелёные. Коммит d8057fd. Пайплайн завершён.",
+      "output_file": "agent-outputs/10-finalizer.json",
+      "fix_cycle_attempt": 0,
+      "duration_ms": 80344
     }
   ]
 }

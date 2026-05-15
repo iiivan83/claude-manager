@@ -14,7 +14,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from claude_manager import daily_session_registry, session_manager
+from claude_manager import (
+    config,
+    current_backend_registry,
+    daily_session_registry,
+    session_manager,
+)
+from claude_manager.coding_agent_backend import BackendName
 from claude_manager.daily_session_registry import REGISTRY_FILENAME
 from claude_manager.session_manager import BINDINGS_FILENAME
 
@@ -34,6 +40,9 @@ SESSION_REAL = "eb5ac5bc-2ac6-45ad-8ca9-bb3a1a741f1e"
 @pytest.fixture(autouse=True)
 def _reset_module_state(tmp_path: Path) -> None:
     """Сбрасывает состояние обоих модулей перед каждым тестом."""
+    original_current_backend_file = config.CURRENT_BACKEND_FILE
+    config.CURRENT_BACKEND_FILE = tmp_path / ".claude-manager-current-backend"
+
     # daily_session_registry
     daily_session_registry._registry = {}
     daily_session_registry._registry_path = tmp_path / REGISTRY_FILENAME
@@ -43,7 +52,17 @@ def _reset_module_state(tmp_path: Path) -> None:
     # session_manager
     session_manager._bindings = {}
     session_manager._bindings_path = tmp_path / BINDINGS_FILENAME
+    session_manager._bindings_loaded_from_disk = True
     session_manager._lock = asyncio.Lock()
+
+    current_backend_registry._current_backend = current_backend_registry.DEFAULT_BACKEND
+    current_backend_registry._loaded_from_disk = False
+
+    yield
+
+    config.CURRENT_BACKEND_FILE = original_current_backend_file
+    current_backend_registry._current_backend = current_backend_registry.DEFAULT_BACKEND
+    current_backend_registry._loaded_from_disk = False
 
 
 # --- Тесты: создание сессии и регистрация ---
@@ -209,6 +228,86 @@ class TestFindByNumber:
             assert session_manager.get_bound_session(CHAT_ID) == SESSION_BETA
 
 
+# --- Тесты: выбор backend-а для новых сессий ---
+
+
+class TestAgentBackendSelectionLifecycle:
+    """Интеграционные тесты выбора CLI-backend-а для новых сессий."""
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_new_session_after_agent_codex_uses_codex(
+        self,
+        _mock_today: object,
+    ) -> None:
+        """После выбора Codex новая сессия создаётся как Codex-сессия."""
+        current_backend_registry.load_state()
+        current_backend_registry.set_current(BackendName.CODEX)
+
+        selected_backend = current_backend_registry.get_current()
+        result = await session_manager.create_new_session(CHAT_ID, selected_backend)
+
+        active_session = session_manager.get_active_session(CHAT_ID)
+        daily_entry = await daily_session_registry.lookup_by_number(result.day_number)
+        assert result.backend == BackendName.CODEX
+        assert active_session is not None
+        assert active_session.backend == BackendName.CODEX
+        assert daily_entry is not None
+        assert daily_entry.backend == BackendName.CODEX
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_agent_switch_does_not_change_existing_active_session_backend(
+        self,
+        _mock_today: object,
+    ) -> None:
+        """Переключение глобального backend-а не меняет уже активную сессию."""
+        await session_manager.create_new_session(CHAT_ID, BackendName.CLAUDE)
+        active_before = session_manager.get_active_session(CHAT_ID)
+
+        current_backend_registry.load_state()
+        current_backend_registry.set_current(BackendName.CODEX)
+
+        active_after = session_manager.get_active_session(CHAT_ID)
+        assert active_after == active_before
+        assert active_after is not None
+        assert active_after.backend == BackendName.CLAUDE
+
+    @pytest.mark.asyncio()
+    async def test_agent_switch_persists_after_restart_load_state(self) -> None:
+        """Выбор Codex сохраняется на диск и переживает перезагрузку registry."""
+        current_backend_registry.load_state()
+        current_backend_registry.set_current(BackendName.CODEX)
+
+        current_backend_registry._current_backend = BackendName.CLAUDE
+        current_backend_registry._loaded_from_disk = False
+        current_backend_registry.load_state()
+
+        assert current_backend_registry.get_current() == BackendName.CODEX
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_existing_session_number_uses_own_backend_after_agent_switch(
+        self,
+        _mock_today: object,
+    ) -> None:
+        """Команда /N использует backend сессии, а не глобальный выбор /agent."""
+        await daily_session_registry.register_session(
+            SESSION_ALPHA,
+            BackendName.CLAUDE,
+        )
+        current_backend_registry.load_state()
+        current_backend_registry.set_current(BackendName.CODEX)
+
+        result = await session_manager.switch_to_session(CHAT_ID, 1)
+
+        active_session = session_manager.get_active_session(CHAT_ID)
+        assert result.found is True
+        assert result.backend == BackendName.CLAUDE
+        assert active_session is not None
+        assert active_session.backend == BackendName.CLAUDE
+
+
 # --- Тесты: отвязка и мониторинг ---
 
 
@@ -251,7 +350,10 @@ class TestFilePersistence:
         # Проверяем содержимое файла
         saved_data = json.loads(bindings_file.read_text("utf-8"))
         assert str(CHAT_ID) in saved_data
-        assert saved_data[str(CHAT_ID)] == SESSION_ALPHA
+        assert saved_data[str(CHAT_ID)] == {
+            "session_id": SESSION_ALPHA,
+            "backend": "claude",
+        }
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
@@ -269,5 +371,11 @@ class TestFilePersistence:
         # Проверяем содержимое файла
         saved_data = json.loads(registry_file.read_text("utf-8"))
         assert FAKE_TODAY in saved_data
-        assert saved_data[FAKE_TODAY]["1"] == SESSION_ALPHA
-        assert saved_data[FAKE_TODAY]["2"] == SESSION_BETA
+        assert saved_data[FAKE_TODAY]["1"] == {
+            "session_id": SESSION_ALPHA,
+            "backend": "claude",
+        }
+        assert saved_data[FAKE_TODAY]["2"] == {
+            "session_id": SESSION_BETA,
+            "backend": "claude",
+        }

@@ -327,4 +327,3 @@ class TestRestoreLastSelectedProject:
             assert config.WORKING_DIR == str(tmp_path)
         finally:
             config.WORKING_DIR = original_working_dir
-

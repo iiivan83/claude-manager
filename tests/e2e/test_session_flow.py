@@ -16,7 +16,13 @@
 import asyncio
 import re
 
-from tests.e2e.test_client import TelegramTestClient
+import pytest
+
+from tests.e2e.test_client import (
+    TelegramTestClient,
+    build_current_session_final_response_pattern,
+    has_foreign_watcher_noise,
+)
 
 # Таймаут ожидания ответа от Claude (секунды).
 # Команды бота (/new, /all) отвечают мгновенно, а Claude думает 10-30 сек.
@@ -107,8 +113,9 @@ async def test_flow02_two_sessions_and_navigation(
     await telegram_client.send_message(
         "Запомни кодовое слово: яблоко. Ответь ТОЛЬКО: ок"
     )
-    response = await telegram_client.wait_for_matching_response(
-        f"#{num_a} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_a),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
     )
 
     # 3. Создаём сессию B
@@ -121,8 +128,9 @@ async def test_flow02_two_sessions_and_navigation(
     await telegram_client.send_message(
         "Запомни кодовое слово: банан. Ответь ТОЛЬКО: ок"
     )
-    response = await telegram_client.wait_for_matching_response(
-        f"#{num_b} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_b),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
     )
 
     # 5. /sessions — обе сессии в списке
@@ -138,8 +146,9 @@ async def test_flow02_two_sessions_and_navigation(
     await telegram_client.send_message(
         "Какое кодовое слово я просил тебя запомнить? Ответь одним словом"
     )
-    response = await telegram_client.wait_for_matching_response(
-        f"#{num_a} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_a),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
     )
     assert "яблоко" in response.lower(), f"Ожидали 'яблоко': {response}"
 
@@ -151,8 +160,9 @@ async def test_flow02_two_sessions_and_navigation(
     await telegram_client.send_message(
         "Какое кодовое слово я просил тебя запомнить? Ответь одним словом"
     )
-    response = await telegram_client.wait_for_matching_response(
-        f"#{num_b} \u2705", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+    response = await telegram_client.wait_for_regex_response(
+        build_current_session_final_response_pattern(num_b),
+        timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS,
     )
     assert "банан" in response.lower(), f"Ожидали 'банан': {response}"
 
@@ -295,9 +305,24 @@ async def test_flow06_thinking_messages_arrive(
     # Claude может ответить быстро без thinking-блока, тогда ✅ может не быть
     # в отдельном сообщении (ответ приходит единственным сообщением).
     # Поэтому ждём любой ответ с номером нашей сессии, а ✅ проверяем мягко.
-    response = await telegram_client.wait_for_matching_response(
-        f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
-    )
+    try:
+        response = await telegram_client.wait_for_matching_response(
+            f"#{num}", timeout=CLAUDE_RESPONSE_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        # Грязная среда: за время теста бот занят пересылкой watcher-сообщений
+        # из чужих сессий (например, реальный пользователь активно работает с
+        # ботом). Это не регрессия — отдельная задача про изоляцию E2E-аккаунта.
+        if has_foreign_watcher_noise(
+            telegram_client._all_responses, num,
+        ):
+            pytest.skip(
+                f"Среда не чистая: ответа от своей сессии #{num} нет, "
+                "но в буфере есть watcher-уведомления из чужих сессий. "
+                "Тест надёжен только когда тестовый аккаунт — единственный "
+                "получатель уведомлений бота."
+            )
+        raise
 
     # 4. Собираем все ответы от нашей сессии для анализа
     session_responses = [

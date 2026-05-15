@@ -30,47 +30,50 @@ LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 # Библиотеки, чьи подробные логи нужно приглушить до WARNING
 SILENCED_LOGGERS = ("httpx", "telegram")
 
-# Путь к файлу с ошибками — туда пишутся строки уровня WARNING и выше.
+# Путь к основному лог-файлу — туда пишутся строки уровня INFO и выше.
 # Совпадает с путём, куда LaunchAgent перенаправляет stderr, чтобы ротация
-# применялась к тому же файлу, что и раньше.
-ERROR_LOG_PATH = os.path.join(
-    os.path.expanduser("~"), "Library", "Logs", "claude-manager.error.log"
+# применялась к тому же файлу.
+MAIN_LOG_PATH = os.path.join(
+    os.path.expanduser("~"), "Library", "Logs", "claude-manager.log"
 )
 
-# Максимальный размер одного файла error.log до ротации.
-# 10 MB — компромисс: достаточно для разбора недавних ошибок без постоянной ротации,
-# но не даёт одному файлу раздуться как раньше до сотен мегабайт (был прецедент: 314 MB).
-ERROR_LOG_MAX_BYTES = 10 * 1024 * 1024
+# Максимальный размер одного лог-файла до ротации.
+# 50 MB — INFO-поток на порядок плотнее WARNING, поэтому лимит выше прежних 10 MB.
+# Прежний ERROR_LOG_MAX_BYTES=10 MB был рассчитан на WARNING-only поток.
+MAIN_LOG_MAX_BYTES = 50 * 1024 * 1024
 
-# Сколько архивных копий error.log хранить (error.log.1, error.log.2, ...).
-# 5 копий × 10 MB = максимум 60 MB суммарного лога на диске (включая текущий).
-ERROR_LOG_BACKUP_COUNT = 5
+# Сколько архивных копий хранить (.log.1, .log.2, ...).
+# 10 копий × 50 MB = максимум 550 MB суммарного лога на диске (включая текущий).
+MAIN_LOG_BACKUP_COUNT = 10
 
 
 def _setup_logging() -> None:
     """Настраивает систему логирования для всего приложения."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format=LOG_FORMAT,
-        datefmt=LOG_DATE_FORMAT,
-    )
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
 
-    # Добавляем ротацию файла с ошибками: раньше error.log раздувался до 314 MB,
-    # потому что зациклившийся процесс бесконечно спамил warning-строки.
-    # RotatingFileHandler сам разбивает файл на куски при превышении размера
-    # и хранит ограниченное число архивных копий.
-    _attach_rotating_error_handler()
+    # StreamHandler пишет в stderr. Под LaunchAgent stderr перенаправлен
+    # в error.log — тот же файл, куда пишет RotatingFileHandler ниже,
+    # и каждая WARNING+ строка задваивается. Подключаем StreamHandler
+    # только при ручном запуске (stderr — терминал).
+    if sys.stderr.isatty():
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(
+            logging.Formatter(fmt=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+        )
+        root_logger.addHandler(console_handler)
 
-    # Приглушаем логи сторонних библиотек, чтобы не засоряли вывод
+    _attach_rotating_log_handler()
+
     for logger_name in SILENCED_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
-def _ensure_error_log_directory() -> bool:
-    """Создаёт папку для файла error.log, если её ещё нет. Возвращает успех."""
+def _ensure_log_directory() -> bool:
+    """Создаёт папку для лог-файла, если её ещё нет. Возвращает успех."""
     # Без папки RotatingFileHandler упадёт при первом же вызове —
     # os.makedirs рекурсивно создаст всю цепочку вложенных папок.
-    error_log_dir = os.path.dirname(ERROR_LOG_PATH)
+    error_log_dir = os.path.dirname(MAIN_LOG_PATH)
     try:
         os.makedirs(error_log_dir, exist_ok=True)
     except OSError as error:
@@ -85,17 +88,18 @@ def _ensure_error_log_directory() -> bool:
     return True
 
 
-def _build_rotating_error_handler() -> RotatingFileHandler:
-    """Создаёт настроенный RotatingFileHandler для файла error.log."""
+def _build_rotating_log_handler() -> RotatingFileHandler:
+    """Создаёт настроенный RotatingFileHandler для основного лог-файла."""
     rotating_handler = RotatingFileHandler(
-        ERROR_LOG_PATH,
-        maxBytes=ERROR_LOG_MAX_BYTES,
-        backupCount=ERROR_LOG_BACKUP_COUNT,
+        MAIN_LOG_PATH,
+        maxBytes=MAIN_LOG_MAX_BYTES,
+        backupCount=MAIN_LOG_BACKUP_COUNT,
         encoding="utf-8",
     )
-    # В error.log пишем только предупреждения и ошибки — иначе файл снова
-    # начнёт разбухать от информационных строк штатной работы бота.
-    rotating_handler.setLevel(logging.WARNING)
+    # INFO-уровень: без INFO-записей (создание процесса, result event, readline-таймауты)
+    # диагностика инцидентов невозможна (инцидент 22-04). Защита от раздувания —
+    # увеличенная ротация (50 MB × 10 копий) вместо прежнего WARNING-фильтра.
+    rotating_handler.setLevel(logging.INFO)
     rotating_handler.setFormatter(
         logging.Formatter(fmt=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
     )
@@ -117,15 +121,15 @@ def _has_rotating_handler_for_file(
     return False
 
 
-def _attach_rotating_error_handler() -> None:
+def _attach_rotating_log_handler() -> None:
     """Подключает к корневому логгеру файловый обработчик с ротацией по размеру."""
     # Шаг 1: подготовить папку. Если не получилось — тихо выходим
-    # (предупреждение уже залогировано внутри _ensure_error_log_directory).
-    if not _ensure_error_log_directory():
+    # (предупреждение уже залогировано внутри _ensure_log_directory).
+    if not _ensure_log_directory():
         return
 
     # Шаг 2: создать и настроить сам обработчик с ротацией.
-    rotating_handler = _build_rotating_error_handler()
+    rotating_handler = _build_rotating_log_handler()
 
     # Шаг 3: прицепить к корневому логгеру, если такого ещё нет.
     root_logger = logging.getLogger()

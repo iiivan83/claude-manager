@@ -1,9 +1,10 @@
-"""Парсинг маркеров [SEND_FILE:path], определение типа файла и рендеринг через telegramify-markdown.
+"""Парсинг маркеров [SEND_FILE:path] и [SHOW_FILE:path], определение типа файла и рендеринг.
 
-Утилитный модуль без состояния (как message_splitter). Отвечает за три задачи:
-1) парсинг маркеров [SEND_FILE:path] из текста
+Утилитный модуль без состояния (как message_splitter). Отвечает за четыре задачи:
+1) парсинг маркеров [SEND_FILE:path] и [SHOW_FILE:path] из текста
 2) определение типа файла — текстовый или бинарный
 3) рендеринг текстовых файлов через telegramify-markdown с разбивкой на чанки
+4) проверка размера файла для решения о fallback-доставке
 """
 
 import logging
@@ -23,6 +24,12 @@ SEND_FILE_PATTERN = r"\[SEND_FILE:([^\]]+)\]"
 
 # Регулярное выражение для вырезки целых маркеров из текста (с опциональным пробелом после)
 SEND_FILE_PATTERN_WITH_BRACKETS = r"\[SEND_FILE:[^\]]+\]\s*"
+
+# Регулярное выражение для извлечения путей из маркеров [SHOW_FILE:/path/to/file]
+SHOW_FILE_PATTERN = r"\[SHOW_FILE:([^\]]+)\]"
+
+# Регулярное выражение для вырезки целых маркеров [SHOW_FILE:...] из текста
+SHOW_FILE_PATTERN_WITH_BRACKETS = r"\[SHOW_FILE:[^\]]+\]\s*"
 
 # Расширения файлов, которые считаются текстовыми
 TEXT_EXTENSIONS = frozenset({
@@ -64,7 +71,19 @@ def extract_file_markers(text: str) -> list[str]:
 def strip_file_markers(text: str) -> str:
     """Вырезает все маркеры [SEND_FILE:...] из текста и схлопывает лишние пустые строки."""
     result = re.sub(SEND_FILE_PATTERN_WITH_BRACKETS, "", text).strip()
-    # Не больше двух переносов строки подряд (одна пустая строка между абзацами)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result
+
+
+def extract_show_file_markers(text: str) -> list[str]:
+    """Находит все маркеры [SHOW_FILE:/path] в тексте и возвращает список путей."""
+    raw_paths = re.findall(SHOW_FILE_PATTERN, text)
+    return [path.strip() for path in raw_paths]
+
+
+def strip_show_file_markers(text: str) -> str:
+    """Вырезает все маркеры [SHOW_FILE:...] из текста и схлопывает лишние пустые строки."""
+    result = re.sub(SHOW_FILE_PATTERN_WITH_BRACKETS, "", text).strip()
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result
 
@@ -161,6 +180,14 @@ def convert_entities(entities: list) -> list[MessageEntity]:
         )
         for entity in entities
     ]
+
+
+def is_too_large_for_inline(file_path: str) -> bool:
+    """Проверяет, превышает ли файл лимит для отображения в чате (1 МБ)."""
+    try:
+        return os.path.getsize(file_path) > MAX_TEXT_FILE_SIZE_BYTES
+    except OSError:
+        return False
 
 
 def check_binary_file(file_path: str) -> str | None:

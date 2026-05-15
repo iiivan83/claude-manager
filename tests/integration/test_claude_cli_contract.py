@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_manager.session_reader import _encode_project_path
+from claude_manager.claude_code_backend import ClaudeCodeBackend, _encode_project_path
 
 # Таймаут на вызов `claude -p` в секундах. Если CLI зависнет, не ждём вечно —
 # тест упадёт с TimeoutExpired, а не будет висеть.
@@ -36,10 +36,19 @@ MINIMAL_PROMPT = "say hi in one word"
 # Папка, где Claude Code CLI хранит сессии проектов.
 CLAUDE_PROJECTS_SUBDIR = ".claude/projects"
 
+REAL_CLAUDE_BINARY = Path(
+    os.environ.get("CLAUDE_REAL_BIN", "/Users/ivan/.npm-global/bin/claude")
+)
+CLAUDE_BINARY = (
+    str(REAL_CLAUDE_BINARY)
+    if REAL_CLAUDE_BINARY.exists()
+    else None
+)
+
 
 @pytest.mark.skipif(
-    shutil.which("claude") is None,
-    reason="Claude CLI не установлен в PATH — контрактный тест пропускается",
+    CLAUDE_BINARY is None,
+    reason="Реальный Claude CLI не найден — контрактный тест пропускается",
 )
 def test_encode_project_path_matches_real_claude_cli(tmp_path: Path) -> None:
     """Контрактный тест: `_encode_project_path` даёт то же имя папки,
@@ -56,7 +65,11 @@ def test_encode_project_path_matches_real_claude_cli(tmp_path: Path) -> None:
     expected_folder_name = _encode_project_path(str(resolved_project_dir))
 
     claude_projects_root = Path.home() / CLAUDE_PROJECTS_SUBDIR
-    expected_folder_path = claude_projects_root / expected_folder_name
+    backend = ClaudeCodeBackend()
+    expected_folder_path = Path(
+        backend.locate_session_files_directory_for_project(str(resolved_project_dir))
+    )
+    assert expected_folder_path.name == expected_folder_name
 
     # Если папка по какой-то причине уже существует от предыдущего прогона —
     # чистим, чтобы тест начал с нуля и проверил именно создание новой.
@@ -74,7 +87,7 @@ def test_encode_project_path_matches_real_claude_cli(tmp_path: Path) -> None:
         # --tools "" — отключить все инструменты (нам нужно только создание папки сессии)
         # --disable-slash-commands — отключить скиллы, чтобы не тянуть лишнее
         command = [
-            "claude",
+            CLAUDE_BINARY,
             "-p",
             "--output-format", "text",
             "--dangerously-skip-permissions",
@@ -87,6 +100,7 @@ def test_encode_project_path_matches_real_claude_cli(tmp_path: Path) -> None:
         # env без CLAUDECODE — иначе CLI может думать, что он уже внутри Claude Code сессии.
         child_env = os.environ.copy()
         child_env.pop("CLAUDECODE", None)
+        child_env["CLAUDE_REAL_BIN"] = str(REAL_CLAUDE_BINARY)
 
         completed = subprocess.run(
             command,
@@ -114,6 +128,7 @@ def test_encode_project_path_matches_real_claude_cli(tmp_path: Path) -> None:
             pytest.fail(
                 "Claude CLI не создал папку сессии по ожидаемому имени.\n"
                 f"  Ожидали: {expected_folder_path}\n"
+                f"  CLI binary: {CLAUDE_BINARY}\n"
                 f"  CLI exit code: {completed.returncode}\n"
                 f"  CLI stdout (первые 500 символов): {cli_stdout[:500]!r}\n"
                 f"  CLI stderr (первые 500 символов): {cli_stderr[:500]!r}\n"
@@ -131,5 +146,80 @@ def test_encode_project_path_matches_real_claude_cli(tmp_path: Path) -> None:
         )
     finally:
         # Всегда подчищаем за собой, чтобы тест не оставлял мусор в ~/.claude/projects/.
+        if expected_folder_path.exists():
+            shutil.rmtree(expected_folder_path, ignore_errors=True)
+
+
+@pytest.mark.skipif(
+    CLAUDE_BINARY is None,
+    reason="Реальный Claude CLI не найден — контрактный тест пропускается",
+)
+async def test_claude_backend_stream_json_and_session_file_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Контрактный тест: backend stdin, stream-json stdout и JSONL-файл совместимы."""
+    backend = ClaudeCodeBackend()
+    project_dir = tmp_path / "stream_json_claude_cli_contract"
+    project_dir.mkdir()
+    resolved_project_dir = project_dir.resolve()
+    expected_folder_path = Path(
+        backend.locate_session_files_directory_for_project(str(resolved_project_dir))
+    )
+
+    if expected_folder_path.exists():
+        shutil.rmtree(expected_folder_path, ignore_errors=True)
+
+    monkeypatch.setattr(
+        "claude_manager.claude_code_backend._resolve_claude_binary_path",
+        lambda: str(REAL_CLAUDE_BINARY),
+    )
+    command = backend.compose_subprocess_command_args(
+        "_new_contract123",
+        str(resolved_project_dir),
+        MINIMAL_PROMPT,
+        [],
+    )
+    child_env = os.environ.copy()
+    child_env.pop("CLAUDECODE", None)
+    child_env["CLAUDE_REAL_BIN"] = str(REAL_CLAUDE_BINARY)
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(resolved_project_dir),
+            input=backend.encode_user_message_for_cli_stdin(MINIMAL_PROMPT, []),
+            capture_output=True,
+            timeout=CLAUDE_CLI_TIMEOUT_SECONDS,
+            env=child_env,
+            check=False,
+        )
+        assert completed.returncode == 0, (
+            "Claude CLI stream-json contract run failed.\n"
+            f"  CLI binary: {REAL_CLAUDE_BINARY}\n"
+            f"  stdout: {completed.stdout[:500]!r}\n"
+            f"  stderr: {completed.stderr[:500]!r}"
+        )
+
+        events = [
+            parsed_event
+            for raw_line in completed.stdout.decode("utf-8").splitlines()
+            if (parsed_event := backend.parse_stdout_line_into_event(raw_line))
+        ]
+        assert events, "Claude CLI produced no stream-json events"
+        assert any(event.get("type") == "system" for event in events)
+        result_events = [
+            event for event in events if backend.is_turn_complete_event(event)
+        ]
+        assert result_events, "Claude CLI produced no terminal result event"
+        session_id = backend.read_session_id_from_event(result_events[-1])
+        assert session_id
+
+        session_file = expected_folder_path / f"{session_id}.jsonl"
+        assert session_file.exists()
+        snapshot = await backend.read_session_file_snapshot(str(session_file))
+        assert snapshot.raw_record_count > 0
+        assert snapshot.last_record is not None
+        assert snapshot.messages
+    finally:
         if expected_folder_path.exists():
             shutil.rmtree(expected_folder_path, ignore_errors=True)

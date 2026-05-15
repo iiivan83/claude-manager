@@ -1,118 +1,166 @@
 # Граф зависимостей модулей
 
-Дата генерации: 2026-03-29
-Источники: BRD (dev/docs/brd/brd-user-journeys.md), CLAUDE.md
-Корректировки: dev/docs/brd/brd-validation-report_29-03-23-47.md
+Дата обновления: 07-05-2026
 
-## Ключевые решения из валидации BRD
+Источники:
+- `dev/docs/brd/brd-user-journeys.md`
+- `CLAUDE.md`
+- `dev/docs/specs/coding_agent_backend_spec.md`
+- `dev/docs/specs/claude_code_backend_spec.md`
+- `dev/docs/specs/codex_backend_spec.md`
+- `dev/docs/specs/current_backend_registry_spec.md`
+- `dev/docs/specs/daily_session_registry_spec.md`
+- `dev/docs/specs/session_manager_spec.md`
+- `dev/docs/specs/process_manager_spec.md`
+- `dev/docs/specs/session_watcher_spec.md`
+- `dev/docs/specs/unread_buffer_spec.md`
+- `dev/docs/session-reports/07-05/10-03_codex-support-specs-analysis.md`
 
-Следующие решения из отчёта валидации влияют на декомпозицию:
+Этот граф заменяет Claude-only граф от 29-03-2026 для работ по поддержке Codex. Старые реализованные спеки остаются в `dev/docs/specs/realised/` как исторический снимок текущей реализации.
 
-- **Два состояния вместо трёх** — убрано Состояние 1 «Чистый лист». Бот всегда либо подключён к сессии, либо в режиме /all. При запуске/перезапуске без сохранённой привязки — автоматически в /all
-- **/new сразу запускает процесс Claude** — process_manager создаёт процесс немедленно при /new, не ждёт первого сообщения
-- **/N ищет сессию везде** — не только в дневном реестре, но и среди всех видимых сессий (session_reader + daily_session_registry)
-- **/stop прерывает цикл ретраев** — process_manager должен поддерживать отмену цикла повторных попыток
-- **Автоочистка received_files/** — при запуске бот удаляет файлы старше 7 дней
-- **При запуске/перезапуске — автоматически в режим /all** — bot.py при инициализации устанавливает режим мониторинга
+## Ключевые решения
+
+- **Контракт сессии расширяется до пары `(session_id, backend)`**. Голый `session_id` больше не является полным идентификатором там, где нужно запускать процесс, читать файл сессии, искать владельца или доставлять непрочитанные сообщения.
+- **Текущий backend используется только для новых сессий**. Уже существующая сессия всегда открывается тем CLI, который её создал. Команда `/agent` не переносит активную или старую сессию между Claude и Codex.
+- **Дневная нумерация остаётся общей**. Пользователь видит одну линейку `/1`, `/2`, `/3`, а не отдельные номера для Claude и Codex.
+- **Watcher работает по одному экземпляру на backend**. Координация общих операций (`pause_all`, `resume_all`, `reset_state`) остаётся фасадом поверх двух backend-aware watcher-инстанций.
+- **`claude_runner.py` становится тонкой subprocess-обёрткой**. Формирование CLI-команды, кодирование stdin и парсинг stdout переезжают в реализации `CodingAgentBackend`.
+- **Telegram-facing слой подключается последним**. `bot.py` и `claude_interaction.py` должны только связать уже готовые backend-aware контракты с пользовательскими командами.
+- **`/agent` нельзя реализовывать раньше session ownership**. Иначе пользователь сможет переключить глобальный backend, но `/N`, `/stop`, watcher и unread-доставка продолжат жить в Claude-only модели.
 
 ## Список CJM
 
 - **CJM-01** — Первый запуск и настройка
 - **CJM-02** — Отправка текстового сообщения
 - **CJM-03** — Отправка фотографии или файла
-- **CJM-04** — Создание новой сессии (/new)
-- **CJM-05** — Просмотр списка сессий (/sessions)
-- **CJM-06** — Переключение на сессию (/N)
-- **CJM-07** — Мониторинг всех сессий (/all)
-- **CJM-08** — Остановка Claude (/stop)
+- **CJM-04** — Создание новой сессии (`/new`)
+- **CJM-05** — Просмотр списка сессий (`/sessions`)
+- **CJM-06** — Переключение на сессию (`/N`)
+- **CJM-07** — Мониторинг всех сессий (`/all`)
+- **CJM-08** — Остановка активного CLI-процесса (`/stop`)
 - **CJM-09** — Защита от двойного запуска бота
+- **CJM-10** — Живой стриминг промежуточных обновлений через watcher
+- **CJM-11** — Переключение между проектами
+- **CJM-12** — Доставка файлов из ответа CLI
+- **CJM-13** — Отправка альбома фотографий
+- **CJM-14** — Перезапуск бота (`/restart`)
+- **CJM-15** — Режим тишины (Silence mode)
+- **CJM-16** — Переключение CLI-бэкенда (`/agent`)
 
-## Слой 0 (нет зависимостей от других модулей проекта)
+## Слой 0: базовые независимые модули
 
-- **config** — загрузка настроек из .env (токен бота, разрешённые пользователи, рабочая директория). CJM: 01. Зависимости: нет
-- **message_splitter** — разбивка длинных сообщений (>4096 символов) на части с починкой HTML-тегов, конвертация Markdown в HTML. CJM: 02, 03. Зависимости: нет
+- **`config`** — загрузка `.env`, пути к state-файлам, рабочая директория, белый список пользователей. CJM: 01, все сквозные механизмы. Зависимости: нет.
+- **`message_splitter`** — подготовка HTML/Markdown сообщений Telegram и разбивка по лимиту 4096 символов. CJM: 02, 03, 07, 12. Зависимости: нет.
+- **`coding_agent_backend`** — общий интерфейс CLI-бэкендов, enum `BackendName`, DTO для событий, файлов сессий, stop strategy и unread state. CJM: 02, 03, 04, 05, 06, 07, 08, 16. Зависимости: нет.
 
-## Слой 1 (зависит от слоя 0)
+## Слой 1: backend implementations и state без верхних слоёв
 
-- **claude_runner** — обёртка для запуска Claude Code CLI через subprocess, протокол stream-json (отправка через stdin, чтение из stdout). CJM: 02, 03, 04. Зависимости: config
-- **session_reader** — чтение файлов сессий Claude с диска (~/.claude/projects/...), извлечение метаданных (время создания, первое сообщение, ID сессии). CJM: 05, 06, 07. Зависимости: config
-- **daily_session_registry** — дневная нумерация сессий (#1, #2, #3...), сброс нумерации в полночь, персистентность через daily_sessions.json. CJM: 02, 03, 04, 05, 06. Зависимости: config
+- **`claude_code_backend`** — реализация `CodingAgentBackend` для Claude Code CLI. CJM: 02, 03, 04, 05, 06, 07, 08, 16. Зависимости: `coding_agent_backend`.
+- **`codex_backend`** — реализация `CodingAgentBackend` для Codex CLI. CJM: 02, 03, 04, 05, 06, 07, 08, 16. Зависимости: `coding_agent_backend`.
+- **`current_backend_registry`** — глобальное персистентное хранилище выбранного backend для новых сессий (`~/.claude-manager-current-backend`). CJM: 01, 04, 16. Зависимости: `config`, `coding_agent_backend`.
+- **`daily_session_registry`** — дневная нумерация сессий с записью `DailySessionEntry(session_id, backend)`. CJM: 02, 03, 04, 05, 06, 07, 11. Зависимости: `config`, `coding_agent_backend`.
+- **`unread_buffer`** — тонкий in-memory буфер cursor-состояния непрочитанных сообщений по ключу `(session_id, backend)`. CJM: 11. Зависимости: `config`, `coding_agent_backend`.
+- **`claude_runner`** — тонкая subprocess-обёртка для запуска CLI через backend-адаптер. CJM: 02, 03, 04, 06, 08. Зависимости: `config`, `coding_agent_backend`.
+- **`session_reader`** — legacy/compatibility утилита для чтения Claude-сессий. В backend-aware архитектуре прямое чтение файлов должно идти через `CodingAgentBackend`; `session_reader` остаётся только для совместимости до завершения миграции потребителей. CJM: 05, 06, 07. Зависимости: `config`.
 
-## Слой 2 (зависит от слоёв 0-1)
+## Слой 2: ownership и lifecycle
 
-- **session_manager** — связка chat_id с session_id, сохранение/восстановление привязок через sessions.json, управление состояниями (подключён к сессии / режим /all). CJM: 02, 03, 04, 05, 06, 07. Зависимости: config, daily_session_registry, session_reader
-- **process_manager** — управление процессами Claude (создание, остановка, ретраи до 10 раз), координация с watcher через механизм паузы, отправка сообщений в процесс и чтение ответов. CJM: 02, 03, 04, 08. Зависимости: claude_runner, config
+- **`session_manager`** — связка `chat_id ↔ ActiveSession(session_id, backend)`, режим `/all`, переключение `/N`, миграция старого `sessions.json`. CJM: 02, 03, 04, 06, 07, 11. Зависимости: `config`, `daily_session_registry`, `session_reader`, `coding_agent_backend`.
+- **`process_manager`** — lifecycle subprocess-ов по ключу `(session_id, backend)`, ретраи, `/stop`, temp→real remap, backend-specific stop strategy. CJM: 02, 03, 04, 08. Зависимости: `config`, `coding_agent_backend`, `current_backend_registry`, `claude_runner`.
 
-## Слой 3 (зависит от слоёв 0-2)
+## Слой 3: фоновые сессии и проекты
 
-- **session_watcher** — мониторинг файлов сессий в реальном времени (каждые 2 секунды), отслеживание новых ответов Claude, координация с process_manager для избежания дублей. CJM: 02, 03, 07. Зависимости: config, session_reader, daily_session_registry, session_manager
+- **`session_watcher`** — мониторинг файлов сессий двумя backend-aware watcher-инстанциями, buffer-and-hold, pause/resume, доставка watcher-сообщений с backend. CJM: 02, 03, 07, 10, 11. Зависимости: `config`, `coding_agent_backend`, `daily_session_registry`, `session_manager`.
+- **`project_manager`** — переключение проектов, глобальная пауза watcher, сброс state-модулей, восстановление pending messages. CJM: 11. Зависимости: `config`, `session_manager`, `daily_session_registry`, `session_watcher`, `unread_buffer`, `coding_agent_backend`.
 
-## Слой 4 (зависит от слоёв 0-3)
+## Слой 4: orchestration без Telegram API
 
-- **bot** — обработчики Telegram-команд (/new, /sessions, /all, /stop, /N), приём сообщений и фото, проверка доступа, отправка ответов в Telegram, управление состоянием пользователя, автоочистка received_files/. CJM: 01, 02, 03, 04, 05, 06, 07, 08. Зависимости: config, message_splitter, session_manager, process_manager, session_watcher, daily_session_registry, session_reader
+- **`claude_interaction`** — оркестрация запроса из Telegram в активный CLI backend: проверка занятости, pause/resume watcher, watchdog тишины, callback-и progress/retry/session-id, обработка `SendResult`. Имя файла остаётся историческим; поведение становится backend-aware. CJM: 02, 03, 04, 08, 11. Зависимости: `config`, `session_manager`, `daily_session_registry`, `process_manager`, `session_watcher`, `coding_agent_backend`.
 
-## Слой 5 (зависит от слоёв 0-4)
+## Слой 5: Telegram transport
 
-- **main** — точка входа: проверка настроек, защита от двойного запуска (файл-замок bot.pid через fcntl.flock), восстановление состояния, запуск Telegram polling. CJM: 01, 09. Зависимости: config, bot, session_manager
+- **`bot`** — обработчики Telegram-команд и сообщений: `/agent`, `/new`, `/sessions`, `/N`, `/all`, `/stop`, `/projects`, file delivery, media groups, silence mode, restart. CJM: 01–16. Зависимости: все нижние слои.
+
+## Слой 6: запуск приложения
+
+- **`main`** — настройка логов, single-instance lock, загрузка конфигурации, запуск Telegram polling. CJM: 01, 09. Зависимости: `config`, `bot`, `session_manager`, `current_backend_registry`.
 
 ## Порядок реализации
 
-1. [параллельно] config, message_splitter
-2. [параллельно] claude_runner, session_reader, daily_session_registry
-3. [параллельно] session_manager, process_manager
-4. [последовательно] session_watcher
-5. [последовательно] bot
-6. [последовательно] main
+1. **Закрыть документационные пробелы** — этот граф, `telegram_agent_backend_integration_spec.md`, `agent_backend_selection_user_journey_spec.md`.
+2. **Ввести общий контракт** — `coding_agent_backend`.
+3. **Добавить backend implementations и глобальный выбор backend-а** — `claude_code_backend`, `codex_backend`, `current_backend_registry`, новые константы в `config`, тонкий `claude_runner`.
+4. **Перевести хранение владения сессией** — `daily_session_registry`, `session_manager`, `unread_buffer`.
+5. **Перевести lifecycle процессов** — `process_manager` с composite key, backend-specific stop strategy, `SendResult.backend`.
+6. **Перевести фоновые ответы и переключение проектов** — `session_watcher`, `project_manager`, pending delivery через `SessionUnreadState`.
+7. **Подключить Telegram-facing слой** — `claude_interaction`, `bot.py`, `/agent`, `/new`, `/sessions`, `/N`, `/stop`, media/file flows.
+8. **Обновить запуск и тесты** — `main.post_init`, unit/integration/E2E проверки полного пользовательского контракта.
 
-## Сквозные механизмы
+## Граф зависимостей
 
-- **Проверка доступа** — проверка Telegram-ID по белому списку перед каждым действием. CJM: все. Модули: bot (реализация), config (хранение списка)
-- **Промежуточные обновления (прогресс)** — рассуждения Claude отправляются пользователю не чаще раза в 30 секунд, формат: #N + песочные часы + текст. CJM: 02, 03. Модули: process_manager (извлечение), bot (отправка), message_splitter (форматирование)
-- **Координация watcher/handler** — механизм паузы (счётчик active_requests), чтобы ответ не приходил дважды — от watcher и от handler. CJM: 02, 03, 07. Модули: session_watcher, process_manager, bot
-- **Защита от одновременной записи** — блокировка при записи в sessions.json и daily_sessions.json через asyncio Lock. CJM: 02, 03, 04, 05, 06. Модули: session_manager, daily_session_registry
-- **Обновление session_id** — при получении первого ответа Claude реальный session_id заменяет временный (_new_XXXX) во всех словарях. CJM: 02, 03, 04. Модули: process_manager, session_manager, daily_session_registry, bot
-- **Обработка ошибок Claude** — ретраи до 10 раз с интервалом 1 минута, уведомления пользователю, /stop прерывает цикл. CJM: 02, 03, 08. Модули: process_manager, bot
-- **Отправка сообщений в Telegram** — HTML-форматирование, fallback на plain text, разбивка, ретраи при ошибках сети, ожидание при RetryAfter. CJM: 02, 03, 04, 05, 06, 07, 08. Модули: bot, message_splitter
-- **Восстановление после перезапуска** — чтение sessions.json, восстановление привязок, сканирование сессий на диске, автопереход в /all если привязки нет. CJM: 01. Модули: main, session_manager, daily_session_registry, session_reader
-- **Автоочистка received_files/** — при запуске бот удаляет файлы старше 7 дней. CJM: 03. Модули: bot (при инициализации)
-- **Атомарная запись файлов** — запись через временный .tmp файл + переименование. CJM: 02, 03, 04, 05, 06. Модули: session_manager, daily_session_registry
-
-## Граф зависимостей (текстовая визуализация)
-
-```
+```text
 main
- └── bot
- │    ├── config
- │    ├── message_splitter
- │    ├── session_manager
- │    │    ├── config
- │    │    ├── daily_session_registry
- │    │    │    └── config
- │    │    └── session_reader
- │    │         └── config
- │    ├── process_manager
- │    │    ├── claude_runner
- │    │    │    └── config
- │    │    └── config
- │    ├── session_watcher
- │    │    ├── config
- │    │    ├── session_reader
- │    │    ├── daily_session_registry
- │    │    └── session_manager
- │    ├── daily_session_registry
- │    └── session_reader
  ├── config
- └── session_manager
+ ├── current_backend_registry
+ │    ├── config
+ │    └── coding_agent_backend
+ ├── session_manager
+ │    ├── config
+ │    ├── coding_agent_backend
+ │    ├── daily_session_registry
+ │    │    ├── config
+ │    │    └── coding_agent_backend
+ │    └── session_reader
+ │         └── config
+ └── bot
+      ├── config
+      ├── message_splitter
+      ├── coding_agent_backend
+      │    ├── claude_code_backend
+      │    └── codex_backend
+      ├── current_backend_registry
+      ├── claude_interaction
+      │    ├── session_manager
+      │    ├── daily_session_registry
+      │    ├── process_manager
+      │    │    ├── config
+      │    │    ├── coding_agent_backend
+      │    │    ├── current_backend_registry
+      │    │    └── claude_runner
+      │    │         ├── config
+      │    │         └── coding_agent_backend
+      │    └── session_watcher
+      │         ├── config
+      │         ├── coding_agent_backend
+      │         ├── daily_session_registry
+      │         └── session_manager
+      ├── project_manager
+      │    ├── config
+      │    ├── session_manager
+      │    ├── daily_session_registry
+      │    ├── session_watcher
+      │    ├── unread_buffer
+      │    │    ├── config
+      │    │    └── coding_agent_backend
+      │    └── coding_agent_backend
+      └── transport utilities
 ```
 
 ## Трейсабельность CJM → модули
 
-- **CJM-01** (Первый запуск) → config, main, session_manager, daily_session_registry, session_reader, bot
-- **CJM-02** (Текстовое сообщение) → bot, session_manager, process_manager, claude_runner, message_splitter, daily_session_registry, session_watcher
-- **CJM-03** (Фото/файл) → bot, session_manager, process_manager, claude_runner, message_splitter, daily_session_registry, session_watcher
-- **CJM-04** (Новая сессия /new) → bot, session_manager, process_manager, claude_runner, daily_session_registry
-- **CJM-05** (Список сессий /sessions) → bot, session_reader, daily_session_registry, session_manager
-- **CJM-06** (Переключение /N) → bot, session_manager, daily_session_registry, session_reader
-- **CJM-07** (Мониторинг /all) → bot, session_watcher, session_reader, session_manager, daily_session_registry
-- **CJM-08** (Остановка /stop) → bot, process_manager
-- **CJM-09** (Защита от двойного запуска) → main, config
+- **CJM-01** → `config`, `main`, `bot`, `session_manager`, `daily_session_registry`, `current_backend_registry`
+- **CJM-02** → `bot`, `claude_interaction`, `session_manager`, `process_manager`, `claude_runner`, `coding_agent_backend`, конкретный backend, `message_splitter`, `daily_session_registry`, `session_watcher`
+- **CJM-03** → `bot`, `telegram_file_downloader`, `media_group_handler`, `claude_interaction`, `process_manager`, `coding_agent_backend`, конкретный backend, `message_splitter`, `daily_session_registry`, `session_watcher`
+- **CJM-04** → `bot`, `current_backend_registry`, `session_manager`, `daily_session_registry`, `process_manager`
+- **CJM-05** → `bot`, `coding_agent_backend`, `claude_code_backend`, `codex_backend`, `daily_session_registry`, `session_manager`, `message_splitter`
+- **CJM-06** → `bot`, `session_manager`, `daily_session_registry`, `coding_agent_backend`, `process_manager`
+- **CJM-07** → `bot`, `session_watcher`, `coding_agent_backend`, `daily_session_registry`, `session_manager`
+- **CJM-08** → `bot`, `session_manager`, `process_manager`, `coding_agent_backend`
+- **CJM-09** → `main`, `config`
+- **CJM-10** → `session_watcher`, `coding_agent_backend`, конкретный backend, `bot`, `claude_interaction`
+- **CJM-11** → `bot`, `project_manager`, `session_watcher`, `unread_buffer`, `session_manager`, `daily_session_registry`, `coding_agent_backend`
+- **CJM-12** → `bot`, `file_delivery`, `file_sender`, `message_splitter`
+- **CJM-13** → `bot`, `media_group_handler`, `telegram_file_downloader`, `claude_interaction`, `process_manager`
+- **CJM-14** → `bot`
+- **CJM-15** → `bot`, `silence_mode_registry`
+- **CJM-16** → `bot`, `current_backend_registry`, `coding_agent_backend`, `session_manager`, `daily_session_registry`

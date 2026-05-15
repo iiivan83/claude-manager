@@ -1,1586 +1,564 @@
-"""Тесты модуля session_watcher — мониторинг сессий Claude Code в реальном времени."""
+"""Tests for backend-aware session file monitoring."""
 
-import asyncio
-import logging
-from unittest.mock import AsyncMock, patch
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from claude_manager import session_watcher
+from claude_manager.coding_agent_backend import (
+    BackendName,
+    CodingAgentBackend,
+    SessionFileInfo,
+    SessionFileSnapshot,
+    SessionMessage,
+    StopStrategy,
+    TerminalStatus,
+    UnifiedEvent,
+)
+from claude_manager.daily_session_registry import DailySessionEntry
+from claude_manager.session_manager import ActiveSession
 from claude_manager.session_watcher import (
-    ERROR_RETRY_DELAY_SECONDS,
     _extract_assistant_messages,
     _extract_message_text,
-    _get_sessions_to_monitor,
     _is_empty_response,
-    get_seen_counts_snapshot,
 )
 
 
-# --- Вспомогательные инструменты ---
-
-# ID пользователя для тестов
 TEST_CHAT_ID = 12345
+PROJECT_DIR = "/fake/project"
 
 
-def _make_assistant_message(text: str, content_as_list: bool = False) -> dict:
-    """Создаёт запись сообщения Claude для тестирования."""
-    if content_as_list:
-        content = [{"type": "text", "text": text}]
-    else:
-        content = text
-    return {
-        "type": "assistant",
-        "message": {"role": "assistant", "content": content},
-    }
+class FakeBackend(CodingAgentBackend):
+    """Configurable backend adapter used by watcher unit tests."""
+
+    def __init__(self, name: BackendName) -> None:
+        self._name = name
+        self.files: list[SessionFileInfo] = []
+        self.snapshots: dict[str, SessionFileSnapshot] = {}
+        self.list_calls: list[str] = []
+        self.snapshot_calls: list[str] = []
+
+    @property
+    def name(self) -> BackendName:
+        return self._name
+
+    @property
+    def display_name(self) -> str:
+        return self._name.value
+
+    def compose_subprocess_command_args(
+        self,
+        session_id: str,
+        cwd: str,
+        prompt_text: str,
+        image_paths: list[str],
+    ) -> list[str]:
+        return []
+
+    def encode_user_message_for_cli_stdin(
+        self,
+        prompt_text: str,
+        image_paths: list[str],
+    ) -> bytes:
+        return b""
+
+    def parse_stdout_line_into_event(self, raw_line: str) -> UnifiedEvent | None:
+        return None
+
+    def is_turn_complete_event(self, event: UnifiedEvent) -> bool:
+        return False
+
+    def read_session_id_from_event(self, event: UnifiedEvent) -> str | None:
+        return None
+
+    def read_assistant_text_from_event(self, event: UnifiedEvent) -> str | None:
+        return None
+
+    def read_progress_text_from_event(self, event: UnifiedEvent) -> str | None:
+        return None
+
+    def locate_session_files_directory_for_project(self, project_dir: str) -> str:
+        return project_dir
+
+    async def list_session_files_for_project(
+        self,
+        project_dir: str,
+    ) -> list[SessionFileInfo]:
+        return await self.list_all_session_files_for_project(project_dir)
+
+    async def list_all_session_files_for_project(
+        self,
+        project_dir: str,
+    ) -> list[SessionFileInfo]:
+        self.list_calls.append(project_dir)
+        return list(self.files)
+
+    async def session_file_exists_for_project(
+        self,
+        session_id: str,
+        project_dir: str,
+    ) -> bool:
+        return any(info.session_id == session_id for info in self.files)
+
+    async def read_messages_from_session_file(
+        self,
+        file_path: str,
+    ) -> list[SessionMessage]:
+        return self.snapshots[file_path].messages
+
+    def text_markers_indicating_empty_response(self) -> frozenset[str]:
+        return frozenset({"No response requested."})
+
+    def event_types_meaning_cli_is_busy(self) -> frozenset[str]:
+        return frozenset()
+
+    def is_turn_terminal_session_record(self, record: dict[str, object]) -> bool:
+        return False
+
+    async def read_session_file_snapshot(
+        self,
+        file_path: str,
+    ) -> SessionFileSnapshot:
+        self.snapshot_calls.append(file_path)
+        return self.snapshots[file_path]
+
+    def is_error_event(self, event: UnifiedEvent) -> bool:
+        return False
+
+    def read_error_text_from_event(self, event: UnifiedEvent) -> str | None:
+        return None
+
+    def read_terminal_status_from_event(
+        self,
+        event: UnifiedEvent,
+    ) -> TerminalStatus | None:
+        return None
+
+    def get_stop_strategy(self) -> StopStrategy:
+        return StopStrategy(steps=())
 
 
-def _make_user_message(text: str) -> dict:
-    """Создаёт запись сообщения пользователя для тестирования."""
-    return {
-        "type": "user",
-        "message": {"role": "user", "content": text},
-    }
+def _file(session_id: str, file_path: str | None = None) -> SessionFileInfo:
+    return SessionFileInfo(
+        session_id=session_id,
+        file_path=file_path or f"/tmp/{session_id}.jsonl",
+        last_modified_at=1.0,
+        preview="preview",
+    )
 
 
-def _make_system_message() -> dict:
-    """Создаёт системную запись для тестирования."""
-    return {"type": "system", "timestamp": "2026-03-30T10:00:00Z"}
-
-
-def _make_progress_message() -> dict:
-    """Создаёт событие прогресса (выполнение инструмента) для тестирования."""
-    return {"type": "progress", "message": {"content": ""}}
+def _snapshot(
+    *texts: str,
+    raw_count: int | None = None,
+    is_turn_active: bool = False,
+) -> SessionFileSnapshot:
+    messages = [
+        SessionMessage(
+            role="assistant",
+            text=text,
+            timestamp=None,
+            is_empty_response=_is_empty_response(text),
+        )
+        for text in texts
+    ]
+    return SessionFileSnapshot(
+        messages=messages,
+        raw_record_count=raw_count if raw_count is not None else len(messages),
+        last_record=None,
+        is_turn_active=is_turn_active,
+    )
 
 
 @pytest.fixture(autouse=True)
-def _reset_watcher_state():
-    """Сбрасывает внутреннее состояние watcher перед каждым тестом."""
-    session_watcher._seen_message_counts = {}
-    session_watcher._paused_sessions = set()
-    session_watcher._global_paused = False
-    session_watcher._missing_file_sessions = set()
+def _reset_watcher_state() -> None:
+    session_watcher._watchers = {}
     session_watcher._callback = None
     session_watcher._get_current_session = None
     yield
-    session_watcher._seen_message_counts = {}
-    session_watcher._paused_sessions = set()
-    session_watcher._global_paused = False
-    session_watcher._missing_file_sessions = set()
+    session_watcher._watchers = {}
     session_watcher._callback = None
     session_watcher._get_current_session = None
 
 
-@pytest.fixture()
-def mock_callback() -> AsyncMock:
-    """Фейковый callback для отслеживания вызовов при обнаружении сообщений."""
-    return AsyncMock()
+class TestLegacyExtractionHelpers:
+    """Small compatibility checks for raw Claude-message helper functions."""
 
+    def test_extract_text_from_string_content(self) -> None:
+        message = {"type": "assistant", "message": {"content": "Привет"}}
 
-@pytest.fixture()
-def mock_get_current_session() -> AsyncMock:
-    """Фейковая функция получения текущей сессии пользователя."""
-    return AsyncMock(return_value=None)
+        assert _extract_message_text(message) == "Привет"
 
+    def test_extract_text_from_list_content(self) -> None:
+        message = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Первая"},
+                    {"type": "text", "text": "Вторая"},
+                ],
+            },
+        }
 
-# --- Юнит-тесты _is_empty_response ---
+        assert _extract_message_text(message) == "Первая Вторая"
 
+    def test_extract_assistant_messages_skips_seen_items(self) -> None:
+        messages = [
+            {"type": "user", "message": {"content": "Q1"}},
+            {"type": "assistant", "message": {"content": "A1"}},
+            {"type": "assistant", "message": {"content": "A2"}},
+        ]
 
-class TestIsEmptyResponse:
-    """Тесты проверки пустых и служебных ответов Claude."""
+        assert _extract_assistant_messages(messages, already_seen_count=2) == ["A2"]
 
-    def test_empty_string(self) -> None:
-        """Пустая строка считается пустым ответом."""
+    def test_empty_response_markers(self) -> None:
         assert _is_empty_response("") is True
-
-    def test_whitespace_only(self) -> None:
-        """Строка из пробелов считается пустым ответом."""
-        assert _is_empty_response("   \n\t  ") is True
-
-    def test_no_response_requested(self) -> None:
-        """Служебный ответ 'No response requested.' считается пустым."""
-        assert _is_empty_response("No response requested.") is True
-
-    def test_no_response_requested_with_whitespace(self) -> None:
-        """Служебный ответ с пробелами по краям тоже считается пустым."""
-        assert _is_empty_response("  No response requested.  ") is True
-
-    def test_normal_text(self) -> None:
-        """Нормальный текст не считается пустым."""
-        assert _is_empty_response("Файл main.py содержит точку входа") is False
-
-    def test_short_text(self) -> None:
-        """Короткий, но непустой текст не считается пустым."""
+        assert _is_empty_response(" No response requested. ") is True
         assert _is_empty_response("OK") is False
 
 
-# --- Юнит-тесты _extract_message_text ---
+class TestBackendAwareWatcherInstances:
+    def test_facade_routes_state_to_the_requested_backend(self) -> None:
+        claude_backend = FakeBackend(BackendName.CLAUDE)
+        codex_backend = FakeBackend(BackendName.CODEX)
 
+        def get_backend(name: BackendName) -> FakeBackend:
+            return {
+                BackendName.CLAUDE: claude_backend,
+                BackendName.CODEX: codex_backend,
+            }[name]
 
-class TestExtractMessageText:
-    """Тесты извлечения текста из сообщений Claude."""
+        with patch.object(session_watcher.coding_agent_backend, "get_backend", get_backend):
+            session_watcher.pause_session("same-session-id", BackendName.CLAUDE)
 
-    def test_string_content(self) -> None:
-        """Извлечение текста из сообщения со строковым content."""
-        message = _make_assistant_message("Привет, вот ответ")
-        result = _extract_message_text(message)
-        assert result == "Привет, вот ответ"
+            claude_watcher = session_watcher._get_watcher(BackendName.CLAUDE)
+            codex_watcher = session_watcher._get_watcher(BackendName.CODEX)
 
-    def test_list_content(self) -> None:
-        """Извлечение текста из сообщения с content в виде списка."""
-        message = {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "text", "text": "Часть 1"},
-                    {"type": "text", "text": "Часть 2"},
-                ],
-            },
-        }
-        result = _extract_message_text(message)
-        assert result == "Часть 1 Часть 2"
-
-    def test_list_content_with_non_text_blocks(self) -> None:
-        """Нетекстовые блоки в списке content игнорируются."""
-        message = {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "tool_use", "name": "bash"},
-                    {"type": "text", "text": "Результат"},
-                ],
-            },
-        }
-        result = _extract_message_text(message)
-        assert result == "Результат"
-
-    def test_user_message_returns_none(self) -> None:
-        """Сообщение пользователя (не assistant) возвращает None."""
-        message = _make_user_message("Посмотри файл")
-        result = _extract_message_text(message)
-        assert result is None
-
-    def test_no_content_returns_none(self) -> None:
-        """Сообщение без поля content возвращает None."""
-        message = {"type": "assistant", "message": {}}
-        result = _extract_message_text(message)
-        assert result is None
-
-    def test_empty_list_content_returns_none(self) -> None:
-        """Пустой список content возвращает None."""
-        message = {"type": "assistant", "message": {"content": []}}
-        result = _extract_message_text(message)
-        assert result is None
-
-
-# --- Юнит-тесты _extract_assistant_messages ---
-
-
-class TestExtractAssistantMessages:
-    """Тесты извлечения новых ответов Claude из списка сообщений."""
-
-    def test_extracts_new_assistant_messages(self) -> None:
-        """Извлекает текст новых сообщений Claude."""
-        all_messages = [
-            _make_system_message(),
-            _make_user_message("Вопрос 1"),
-            _make_assistant_message("Ответ 1"),
-            _make_user_message("Вопрос 2"),
-            _make_assistant_message("Ответ 2"),
-        ]
-        # Первые 3 строки уже обработаны
-        result = _extract_assistant_messages(all_messages, already_seen_count=3)
-        assert result == ["Ответ 2"]
-
-    def test_ignores_user_messages(self) -> None:
-        """Сообщения пользователя не включаются в результат."""
-        all_messages = [
-            _make_user_message("Вопрос"),
-            _make_assistant_message("Ответ"),
-            _make_user_message("Ещё вопрос"),
-        ]
-        result = _extract_assistant_messages(all_messages, already_seen_count=0)
-        assert result == ["Ответ"]
-
-    def test_no_new_messages(self) -> None:
-        """Если новых сообщений нет — пустой список."""
-        all_messages = [
-            _make_system_message(),
-            _make_user_message("Вопрос"),
-            _make_assistant_message("Ответ"),
-        ]
-        result = _extract_assistant_messages(all_messages, already_seen_count=3)
-        assert result == []
-
-    def test_multiple_new_assistant_messages(self) -> None:
-        """Несколько новых сообщений Claude извлекаются по порядку."""
-        all_messages = [
-            _make_system_message(),
-            _make_assistant_message("Первый"),
-            _make_assistant_message("Второй"),
-            _make_assistant_message("Третий"),
-        ]
-        result = _extract_assistant_messages(all_messages, already_seen_count=1)
-        assert result == ["Первый", "Второй", "Третий"]
-
-
-# --- Юнит-тесты _get_sessions_to_monitor ---
-
-
-class TestGetSessionsToMonitor:
-    """Тесты получения списка сессий для мониторинга."""
+        assert claude_watcher is not codex_watcher
+        assert claude_watcher.is_session_paused("same-session-id") is True
+        assert codex_watcher.is_session_paused("same-session-id") is False
 
     @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_combines_reader_and_registry(
-        self, mock_reader, mock_registry
-    ) -> None:
-        """Объединяет сессии из session_reader и daily_session_registry."""
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[
-                _FakeSessionInfo("A"),
-                _FakeSessionInfo("B"),
-            ]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(
-            return_value={1: "B", 2: "C"}
+    async def test_resume_and_update_session_id_are_backend_scoped(self) -> None:
+        claude_backend = FakeBackend(BackendName.CLAUDE)
+        codex_backend = FakeBackend(BackendName.CODEX)
+        codex_backend.files = [_file("real-id")]
+        codex_backend.snapshots["/tmp/real-id.jsonl"] = _snapshot(
+            "already delivered",
+            raw_count=3,
         )
 
-        result = await _get_sessions_to_monitor()
+        def get_backend(name: BackendName) -> FakeBackend:
+            return {
+                BackendName.CLAUDE: claude_backend,
+                BackendName.CODEX: codex_backend,
+            }[name]
 
-        assert "A" in result
-        assert "B" in result
-        assert "C" in result
-        # Без дубликатов: "B" встречается и там и там, но в результате один раз
-        assert len(result) == 3
+        with patch.object(session_watcher.coding_agent_backend, "get_backend", get_backend):
+            session_watcher.pause_session("_new_123", BackendName.CODEX)
+            session_watcher.update_session_id(
+                "_new_123",
+                "real-id",
+                BackendName.CODEX,
+            )
+            await session_watcher.resume_session("real-id", BackendName.CODEX)
 
+            claude_watcher = session_watcher._get_watcher(BackendName.CLAUDE)
+            codex_watcher = session_watcher._get_watcher(BackendName.CODEX)
+
+        assert "_new_123" not in codex_watcher._states
+        assert codex_watcher._states["real-id"].paused_at is None
+        assert codex_watcher._states["real-id"].last_delivered_idx == 0
+        assert "real-id" not in claude_watcher._states
+
+
+class TestPollingThroughBackendContract:
     @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_empty_reader_and_registry(
-        self, mock_reader, mock_registry
-    ) -> None:
-        """Если нет сессий нигде — пустой список."""
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-
-        result = await _get_sessions_to_monitor()
-
-        assert result == []
-
-
-class _FakeSessionInfo:
-    """Имитация SessionInfo для тестов (только session_id)."""
-
-    def __init__(self, session_id: str) -> None:
-        self.session_id = session_id
-
-
-# --- Юнит-тесты start ---
-
-
-class TestStart:
-    """Тесты функции start — запуск мониторинга."""
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_start_initializes_seen_counts(
+    async def test_poll_reads_snapshot_and_delivers_backend_to_callback(
         self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """При запуске watcher запоминает текущее количество сообщений."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        # Две сессии на диске: 5 и 3 сообщения
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[
-                _FakeSessionInfo("session-1"),
-                _FakeSessionInfo("session-2"),
-            ]
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CODEX)
+        backend.files = [_file("codex-session")]
+        backend.snapshots["/tmp/codex-session.jsonl"] = _snapshot(
+            "Codex answer",
+            raw_count=2,
         )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-
-        session_messages = {
-            "session-1": [_make_system_message()] * 5,
-            "session-2": [_make_system_message()] * 3,
-        }
-        mock_reader.get_session_messages = AsyncMock(
-            side_effect=lambda sid, _dir: session_messages.get(sid, [])
+        callback = AsyncMock()
+        get_current_session = AsyncMock(
+            return_value=ActiveSession("codex-session", BackendName.CODEX)
         )
 
-        # Запускаем start и отменяем после первого цикла
-        task = asyncio.create_task(
-            session_watcher.start(mock_callback, mock_get_current_session)
-        )
-        # Даём время на инициализацию
-        await asyncio.sleep(0.05)
-        task.cancel()
-        # start() ловит CancelledError внутри себя и завершается нормально
-        await task
-
-        assert session_watcher._seen_message_counts["session-1"] == 5
-        assert session_watcher._seen_message_counts["session-2"] == 3
-        # callback не вызван — старые сообщения не отправляются
-        mock_callback.assert_not_called()
-
-
-# --- Юнит-тесты обнаружения новых сообщений ---
-
-
-class TestDetectNewMessages:
-    """Тесты обнаружения новых сообщений и вызова callback."""
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_detects_new_assistant_message(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Watcher обнаруживает новое сообщение Claude и вызывает callback."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_get_current_session.return_value = "session-1"
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 3}
-
-        # В сессии стало 5 сообщений (было 3), новое — assistant
-        # Файл заканчивается на assistant → Claude ещё работает → is_final=False
-        messages = [
-            _make_system_message(),
-            _make_user_message("Вопрос"),
-            _make_assistant_message("Старый ответ"),
-            _make_user_message("Новый вопрос"),
-            _make_assistant_message("Файл main.py содержит точку входа"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        mock_callback.assert_called_once_with(
-            TEST_CHAT_ID,
-            "session-1",
-            1,
-            "Файл main.py содержит точку входа",
-            True,
-            False,
-        )
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_active_session_marks_messages_as_intermediate(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Если файл заканчивается на progress — Claude ещё работает, is_final=False."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_get_current_session.return_value = "session-1"
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 2}
-
-        # После текстового ответа есть progress-события → Claude работает
-        messages = [
-            _make_system_message(),
-            _make_user_message("Вопрос"),
-            _make_assistant_message("Промежуточный ответ"),
-            _make_progress_message(),
-            _make_progress_message(),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        mock_callback.assert_called_once()
-        call_args = mock_callback.call_args[0]
-        is_final_arg = call_args[5]
-        assert is_final_arg is False
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_completed_exchange_marks_last_as_final(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Если файл заканчивается на user — обмен завершён, последний текст is_final=True."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_get_current_session.return_value = "session-1"
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 2}
-
-        # Claude ответил, потом пользователь написал новое → обмен завершён
-        messages = [
-            _make_system_message(),
-            _make_user_message("Вопрос"),
-            _make_assistant_message("Финальный ответ"),
-            _make_user_message("Следующий вопрос"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        mock_callback.assert_called_once()
-        call_args = mock_callback.call_args[0]
-        is_final_arg = call_args[5]
-        assert is_final_arg is True
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_ignores_new_user_message(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Watcher не отправляет сообщения пользователя."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 2}
-
-        # Новое сообщение — от пользователя, не от Claude
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Старый ответ"),
-            _make_user_message("Посмотри файл main.py"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-
-        await session_watcher._poll_sessions()
-
-        mock_callback.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_callback_receives_correct_day_number(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Callback получает правильный дневной номер сессии."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        # Сессия зарегистрирована под номером 3
-        mock_registry.register_session = AsyncMock(return_value=3)
-
-        await session_watcher._poll_sessions()
-
-        call_args = mock_callback.call_args
-        day_number_arg = call_args[0][2]
-        assert day_number_arg == 3
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_callback_receives_is_current_session_true(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Callback получает is_current_session=True для текущей сессии."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-        # Текущая сессия — session-1
-        mock_get_current_session.return_value = "session-1"
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        call_args = mock_callback.call_args
-        is_current_arg = call_args[0][4]
-        assert is_current_arg is True
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_callback_receives_is_current_session_false(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Callback получает is_current_session=False для чужой сессии."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-        # Текущая сессия пользователя — session-2, а обновление в session-1
-        mock_get_current_session.return_value = "session-2"
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        call_args = mock_callback.call_args
-        is_current_arg = call_args[0][4]
-        assert is_current_arg is False
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_sends_only_to_session_owner(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Если у сессии есть владелец — callback вызван ровно 1 раз для него."""
-        owner_chat_id = 99999
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID, 77777, owner_chat_id}
-        mock_session_manager.get_chat_id_for_session.return_value = owner_chat_id
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ владельцу"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        # callback вызван ровно 1 раз — только для владельца
-        mock_callback.assert_called_once()
-        call_chat_id = mock_callback.call_args[0][0]
-        assert call_chat_id == owner_chat_id
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_fallback_to_all_users_when_no_owner(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Нет владельца — fallback на всех из ALLOWED_USER_IDS."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {111, 222}
-        # Владелец не найден — сессия создана вне бота
-        mock_session_manager.get_chat_id_for_session.return_value = None
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ всем"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        # callback вызван 2 раза — по одному для каждого ID из ALLOWED_USER_IDS
-        assert mock_callback.call_count == 2
-        called_chat_ids = {call[0][0] for call in mock_callback.call_args_list}
-        assert called_chat_ids == {111, 222}
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_e2e_user_excluded_from_fallback_broadcast(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """E2E_TEST_USER_ID не получает fallback-broadcast."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {111, 99999}
-        mock_config.E2E_TEST_USER_ID = 99999
-        # Владелец не найден — срабатывает fallback
-        mock_session_manager.get_chat_id_for_session.return_value = None
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ только реальному пользователю"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        # callback вызван ТОЛЬКО для 111, НЕ для E2E-пользователя 99999
-        assert mock_callback.call_count == 1
-        called_chat_ids = {call[0][0] for call in mock_callback.call_args_list}
-        assert called_chat_ids == {111}
-        assert 99999 not in called_chat_ids
-
-
-# --- Юнит-тесты pause/resume ---
-
-
-class TestPauseResume:
-    """Тесты приостановки и возобновления мониторинга сессий."""
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_pause_session_skips_monitoring(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Приостановленная сессия не проверяется."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        # Ставим на паузу
-        session_watcher.pause_session("session-1")
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Новый ответ"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-
-        await session_watcher._poll_sessions()
-
-        # callback не вызван — сессия на паузе
-        mock_callback.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_resume_session_updates_seen_count(
-        self,
-        mock_reader,
-        mock_config,
-    ) -> None:
-        """При снятии паузы watcher обновляет счётчик до актуального значения."""
-        mock_config.WORKING_DIR = "/fake/project"
-
-        session_watcher._seen_message_counts = {"session-1": 5}
-        session_watcher.pause_session("session-1")
-
-        # Обработчик отправил 2 новых сообщения, теперь их 7
-        messages = [_make_system_message()] * 7
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-
-        await session_watcher.resume_session("session-1")
-
-        assert session_watcher._seen_message_counts["session-1"] == 7
-        assert "session-1" not in session_watcher._paused_sessions
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_paused_session_other_sessions_monitored(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Пауза одной сессии не влияет на мониторинг других."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {
-            "session-1": 1,
-            "session-2": 1,
-        }
-
-        # session-1 на паузе
-        session_watcher.pause_session("session-1")
-
-        messages_with_new = [
-            _make_system_message(),
-            _make_assistant_message("Новый ответ"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[
-                _FakeSessionInfo("session-1"),
-                _FakeSessionInfo("session-2"),
-            ]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(
-            return_value=messages_with_new
-        )
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        # callback вызван только для session-2, не для session-1
-        assert mock_callback.call_count == 1
-        call_session_id = mock_callback.call_args[0][1]
-        assert call_session_id == "session-2"
-
-
-# --- Юнит-тесты update_session_id ---
-
-
-class TestUpdateSessionId:
-    """Тесты обновления session_id во внутренних словарях."""
-
-    def test_transfers_state(self) -> None:
-        """Обновление session_id переносит счётчик и статус паузы."""
-        session_watcher._seen_message_counts["_new_0001"] = 5
-        session_watcher.pause_session("_new_0001")
-
-        session_watcher.update_session_id("_new_0001", "real-session-id")
-
-        assert session_watcher._seen_message_counts["real-session-id"] == 5
-        assert "real-session-id" in session_watcher._paused_sessions
-        assert "_new_0001" not in session_watcher._seen_message_counts
-        assert "_new_0001" not in session_watcher._paused_sessions
-
-    def test_nonexistent_old_id(self) -> None:
-        """Обновление несуществующего session_id ничего не ломает."""
-        session_watcher.update_session_id("nonexistent", "new-id")
-
-        assert "nonexistent" not in session_watcher._seen_message_counts
-        assert "new-id" not in session_watcher._seen_message_counts
-
-    def test_transfers_only_seen_count(self) -> None:
-        """Если есть только счётчик (без паузы) — переносит только его."""
-        session_watcher._seen_message_counts["old-id"] = 10
-
-        session_watcher.update_session_id("old-id", "new-id")
-
-        assert session_watcher._seen_message_counts["new-id"] == 10
-        assert "old-id" not in session_watcher._seen_message_counts
-        assert "new-id" not in session_watcher._paused_sessions
-
-    def test_transfers_only_pause(self) -> None:
-        """Если есть только пауза (без счётчика) — переносит только её."""
-        session_watcher._paused_sessions.add("old-id")
-
-        session_watcher.update_session_id("old-id", "new-id")
-
-        assert "new-id" in session_watcher._paused_sessions
-        assert "old-id" not in session_watcher._paused_sessions
-
-
-# --- Юнит-тесты get_seen_counts_snapshot ---
-
-
-class TestGetSeenCountsSnapshot:
-    """Тесты функции get_seen_counts_snapshot — копия счётчиков для снапшота."""
-
-    def test_returns_copy_of_counts(self) -> None:
-        """Возвращает копию словаря _seen_message_counts."""
-        session_watcher._seen_message_counts = {
-            "session-1": 5,
-            "session-2": 10,
-        }
-
-        snapshot = get_seen_counts_snapshot()
-
-        assert snapshot == {"session-1": 5, "session-2": 10}
-
-    def test_returned_dict_is_independent(self) -> None:
-        """Изменение возвращённого словаря не влияет на оригинал."""
-        session_watcher._seen_message_counts = {"session-1": 5}
-
-        snapshot = get_seen_counts_snapshot()
-        snapshot["session-1"] = 999
-        snapshot["session-new"] = 1
-
-        # Оригинал не изменился
-        assert session_watcher._seen_message_counts == {"session-1": 5}
-
-    def test_empty_counts_returns_empty_dict(self) -> None:
-        """При пустых счётчиках возвращается пустой словарь."""
-        session_watcher._seen_message_counts = {}
-
-        snapshot = get_seen_counts_snapshot()
-
-        assert snapshot == {}
-
-
-# --- Граничные случаи ---
-
-
-class TestEdgeCases:
-    """Тесты граничных случаев и нестандартных ситуаций."""
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_no_sessions_on_disk(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """При отсутствии сессий watcher продолжает работать."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-
-        # Не должен упасть
-        await session_watcher._poll_sessions()
-
-        mock_callback.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_session_deleted_between_cycles(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Сессия удалена с диска — запись удаляется из _seen_message_counts."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 5}
-
-        # Во втором цикле session_reader не возвращает session-1
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-
-        await session_watcher._poll_sessions()
-
-        # Запись удалена из _seen_message_counts
-        assert "session-1" not in session_watcher._seen_message_counts
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_multiple_new_messages_in_one_cycle(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Несколько новых сообщений Claude за один цикл."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ 1"),
-            _make_assistant_message("Ответ 2"),
-            _make_assistant_message("Ответ 3"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        await session_watcher._poll_sessions()
-
-        # callback вызван 3 раза — по разу для каждого нового сообщения
-        assert mock_callback.call_count == 3
-
-        # Проверяем порядок — сообщения идут по порядку
-        texts = [call[0][3] for call in mock_callback.call_args_list]
-        assert texts == ["Ответ 1", "Ответ 2", "Ответ 3"]
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_empty_response_not_sent(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Пустой ответ Claude не отправляется пользователю."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message(""),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-
-        await session_watcher._poll_sessions()
-
-        mock_callback.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_no_response_requested_not_sent(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Служебный ответ 'No response requested.' не отправляется."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
-
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("No response requested."),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-
-        await session_watcher._poll_sessions()
-
-        mock_callback.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_resume_without_pause_no_error(
-        self,
-        mock_reader,
-        mock_config,
-    ) -> None:
-        """Вызов resume_session без pause не вызывает ошибку."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_reader.get_session_messages = AsyncMock(return_value=[])
-
-        # Не должен упасть
-        await session_watcher.resume_session("session-1")
-
-        assert "session-1" not in session_watcher._paused_sessions
-
-    def test_pause_nonexistent_session_no_error(self) -> None:
-        """Пауза несуществующей сессии не вызывает ошибку."""
-        session_watcher.pause_session("nonexistent-session")
-
-        assert "nonexistent-session" in session_watcher._paused_sessions
-
-
-# --- Тесты ошибок ---
-
-
-class TestErrorHandling:
-    """Тесты обработки ошибок и устойчивости мониторинга."""
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_callback_exception_does_not_stop_monitoring(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-    ) -> None:
-        """Ошибка в callback не останавливает мониторинг."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        # callback выбрасывает ошибку
-        failing_callback = AsyncMock(
-            side_effect=RuntimeError("Telegram API error")
-        )
-        mock_get_current_session = AsyncMock(return_value=None)
-
-        session_watcher._callback = failing_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {
-            "session-1": 1,
-            "session-2": 1,
-        }
-
-        messages_with_new = [
-            _make_system_message(),
-            _make_assistant_message("Новый ответ"),
-        ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[
-                _FakeSessionInfo("session-1"),
-                _FakeSessionInfo("session-2"),
-            ]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(
-            return_value=messages_with_new
-        )
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        # Не должен упасть, несмотря на ошибку callback
-        await session_watcher._poll_sessions()
-
-        # callback вызван для обеих сессий (ошибка не остановила обработку)
-        assert failing_callback.call_count == 2
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.session_manager")
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_session_reader_error_does_not_stop_monitoring(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_session_manager,
-        mock_callback,
-        mock_get_current_session,
-    ) -> None:
-        """Ошибка чтения файла не останавливает мониторинг."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-        mock_session_manager.get_chat_id_for_session.return_value = TEST_CHAT_ID
-
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {
-            "session-1": 1,
-            "session-2": 1,
-        }
-
-        def session_messages_side_effect(session_id, _dir):
-            if session_id == "session-1":
-                raise OSError("File read error")
-            return [
-                _make_system_message(),
-                _make_assistant_message("Новый ответ"),
-            ]
-
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[
-                _FakeSessionInfo("session-1"),
-                _FakeSessionInfo("session-2"),
-            ]
-        )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(
-            side_effect=session_messages_side_effect
-        )
-        mock_registry.register_session = AsyncMock(return_value=1)
-
-        # Не должен упасть — ошибка ловится на уровне _poll_sessions
-        # Но _check_session бросит ошибку для session-1
-        # Нужно убедиться, что это не ломает всё
-        await session_watcher._poll_sessions()
-
-        # callback вызван для session-2 (session-1 упала с ошибкой)
-        assert mock_callback.call_count == 1
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_cancelled_error_stops_gracefully(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-        caplog,
-    ) -> None:
-        """asyncio.CancelledError корректно завершает мониторинг."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-
-        task = asyncio.create_task(
-            session_watcher.start(mock_callback, mock_get_current_session)
-        )
-        await asyncio.sleep(0.05)
-        task.cancel()
-        # start() ловит CancelledError внутри себя и завершается нормально
-        await task
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_unexpected_error_retries_after_delay(
-        self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
-        caplog,
-    ) -> None:
-        """Непредвиденная ошибка — watcher логирует и продолжает."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
-
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=[])
-
-        poll_count = 0
-        original_poll = session_watcher._poll_sessions
-
-        async def poll_with_error():
-            nonlocal poll_count
-            poll_count += 1
-            if poll_count == 1:
-                raise RuntimeError("Unexpected error")
-            # После первого вызова — работает нормально
-            await original_poll()
+        watcher = session_watcher.SessionWatcher(backend)
 
         with (
-            patch.object(session_watcher, "_poll_sessions", side_effect=poll_with_error),
-            caplog.at_level(logging.ERROR, logger="claude_manager.session_watcher"),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=7),
+            ) as register_session,
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ) as find_owner,
         ):
-            task = asyncio.create_task(
-                session_watcher.start(mock_callback, mock_get_current_session)
-            )
-            # Даём время на ошибку и повторную попытку
-            await asyncio.sleep(0.1)
-            task.cancel()
-            await task
+            await watcher.poll_once(callback, get_current_session)
 
-        # Проверяем, что ошибка залогирована
-        assert any(
-            "Непредвиденная ошибка" in record.message
-            for record in caplog.records
+        assert backend.list_calls == [PROJECT_DIR]
+        assert backend.snapshot_calls == ["/tmp/codex-session.jsonl"]
+        register_session.assert_awaited_once_with(
+            "codex-session",
+            backend=BackendName.CODEX,
+        )
+        find_owner.assert_called_once_with("codex-session", BackendName.CODEX)
+        callback.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "codex-session",
+            BackendName.CODEX,
+            7,
+            "Codex answer",
+            True,
+            True,
         )
 
     @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_daily_registry_error_does_not_stop_monitoring(
+    async def test_get_sessions_to_monitor_filters_daily_registry_by_backend(
         self,
-        mock_reader,
-        mock_registry,
-        mock_config,
-        mock_callback,
-        mock_get_current_session,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Ошибка в daily_session_registry не останавливает мониторинг."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_config.ALLOWED_USER_IDS = {TEST_CHAT_ID}
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CODEX)
+        watcher = session_watcher.SessionWatcher(backend)
 
-        session_watcher._callback = mock_callback
-        session_watcher._get_current_session = mock_get_current_session
-        session_watcher._seen_message_counts = {"session-1": 1}
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(
+                return_value={
+                    1: DailySessionEntry("claude-session", BackendName.CLAUDE),
+                    2: DailySessionEntry("codex-session", BackendName.CODEX),
+                }
+            ),
+        ):
+            session_ids, _files = await watcher._get_sessions_to_monitor()
 
-        messages = [
-            _make_system_message(),
-            _make_assistant_message("Ответ"),
-        ]
+        assert session_ids == ["codex-session"]
 
-        mock_reader.get_recent_sessions = AsyncMock(
-            return_value=[_FakeSessionInfo("session-1")]
+    @pytest.mark.asyncio
+    async def test_poll_stops_delivery_when_project_changes_mid_scan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1"), _file("session-2")]
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot("First")
+        backend.snapshots["/tmp/session-2.jsonl"] = _snapshot("Second")
+        delivered: list[str] = []
+
+        async def callback(
+            _chat_id: int,
+            _session_id: str,
+            _backend: BackendName,
+            _day_number: int,
+            text: str,
+            _is_current_session: bool,
+            _is_final: bool,
+        ) -> None:
+            delivered.append(text)
+            monkeypatch.setattr(
+                session_watcher.config,
+                "WORKING_DIR",
+                "/fake/other-project",
+            )
+
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(side_effect=[1, 2]),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
+
+        assert delivered == ["First"]
+
+
+class TestBufferAndHold:
+    @pytest.mark.asyncio
+    async def test_active_turn_holds_last_assistant_message_until_terminal_snapshot(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CODEX)
+        backend.files = [_file("codex-session")]
+        backend.snapshots["/tmp/codex-session.jsonl"] = _snapshot(
+            "Final text",
+            raw_count=1,
+            is_turn_active=True,
         )
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
-        mock_reader.get_session_messages = AsyncMock(return_value=messages)
-        # register_session бросает ошибку
-        mock_registry.register_session = AsyncMock(
-            side_effect=OSError("Registry file error")
+        callback = AsyncMock()
+        get_current_session = AsyncMock(return_value=None)
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=3),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, get_current_session)
+            callback.assert_not_called()
+
+            backend.snapshots["/tmp/codex-session.jsonl"] = _snapshot(
+                "Final text",
+                raw_count=2,
+                is_turn_active=False,
+            )
+            await watcher.poll_once(callback, get_current_session)
+
+        callback.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "codex-session",
+            BackendName.CODEX,
+            3,
+            "Final text",
+            False,
+            True,
         )
 
-        # Не должен упасть
-        await session_watcher._poll_sessions()
+    @pytest.mark.asyncio
+    async def test_active_turn_delivers_non_last_messages_as_intermediate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CODEX)
+        backend.files = [_file("codex-session")]
+        backend.snapshots["/tmp/codex-session.jsonl"] = _snapshot(
+            "Chunk 1",
+            "Chunk 2",
+            raw_count=2,
+            is_turn_active=True,
+        )
+        callback = AsyncMock()
+        watcher = session_watcher.SessionWatcher(backend)
 
-        # callback не вызван — ошибка произошла до вызова callback
-        mock_callback.assert_not_called()
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=4),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
+
+        callback.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "codex-session",
+            BackendName.CODEX,
+            4,
+            "Chunk 1",
+            False,
+            False,
+        )
+        assert watcher._states["codex-session"].last_delivered_idx == 0
 
 
 class TestResetState:
-    """Тесты сброса состояния watcher при переключении проекта."""
-
-    async def test_reset_clears_seen_counts(self) -> None:
-        """После reset_state старые ключи заменяются на ключи нового проекта."""
-        session_watcher._seen_message_counts.clear()
-        session_watcher._seen_message_counts["old-sess-1"] = 5
-        session_watcher._seen_message_counts["old-sess-2"] = 10
-
-        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
-             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
-            await session_watcher.reset_state()
-
-        # Старые ключи очищены, новых сессий нет — словарь пуст
-        assert len(session_watcher._seen_message_counts) == 0
-
-    async def test_reset_clears_paused_sessions(self) -> None:
-        """После reset_state set _paused_sessions пуст."""
-        session_watcher._paused_sessions.clear()
-        session_watcher._paused_sessions.add("sess-paused-1")
-        session_watcher._paused_sessions.add("sess-paused-2")
-
-        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
-             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
-            await session_watcher.reset_state()
-
-        assert len(session_watcher._paused_sessions) == 0
-
-    async def test_reset_state_keeps_dict_identity(self) -> None:
-        """reset_state использует clear()+update(), а не пересоздание — ссылки остаются валидными."""
-        original_counts = session_watcher._seen_message_counts
-        original_paused = session_watcher._paused_sessions
-
-        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
-             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
-            await session_watcher.reset_state()
-
-        # Те же объекты в памяти — значит clear()+update(), а не новый dict/set
-        assert session_watcher._seen_message_counts is original_counts
-        assert session_watcher._paused_sessions is original_paused
-
-    async def test_reset_initializes_counts_for_new_project(self) -> None:
-        """reset_state заполняет счётчики для сессий нового проекта."""
-        session_watcher._seen_message_counts.clear()
-        session_watcher._seen_message_counts["old-sess"] = 99
-
-        # Новый проект содержит две сессии с 3 и 7 сообщениями
-        mock_messages_by_session = {
-            "new-sess-a": [{"type": "user"}] * 3,
-            "new-sess-b": [{"type": "user"}] * 7,
-        }
-
-        async def fake_get_messages(session_id, _working_dir):
-            return mock_messages_by_session.get(session_id, [])
+    @pytest.mark.asyncio
+    async def test_reset_state_marks_existing_messages_as_seen(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1")]
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "Old 1",
+            "Old 2",
+            raw_count=5,
+        )
+        watcher = session_watcher.SessionWatcher(backend)
+        watcher.pause_session("old-session")
 
         with patch.object(
-                session_watcher, "_get_sessions_to_monitor",
-                return_value=["new-sess-a", "new-sess-b"],
-             ), \
-             patch.object(
-                session_watcher.session_reader, "get_session_messages",
-                side_effect=fake_get_messages,
-             ):
-            await session_watcher.reset_state()
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.reset_state()
 
-        # Старые ключи удалены, новые проинициализированы
-        assert "old-sess" not in session_watcher._seen_message_counts
-        assert session_watcher._seen_message_counts["new-sess-a"] == 3
-        assert session_watcher._seen_message_counts["new-sess-b"] == 7
-
-
-
-
-
-# --- Тесты глобальной паузы pause_all/resume_all ---
-
-
-class TestPauseAllResumeAll:
-    """Тесты глобальной паузы watcher при переключении проекта."""
+        assert list(watcher._states) == ["session-1"]
+        assert watcher._states["session-1"].raw_count == 5
+        assert watcher._states["session-1"].last_delivered_idx == 1
+        assert watcher.is_session_paused("old-session") is False
 
     @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.daily_session_registry")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_poll_sessions_skips_when_globally_paused(
+    async def test_reset_state_marks_files_seen_even_if_missing_backoff_exists(
         self,
-        mock_reader,
-        mock_registry,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """При _global_paused=True функция _poll_sessions() делает ранний return."""
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
-        mock_registry.get_all_today_sessions = AsyncMock(return_value={})
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("stale-session")]
+        backend.snapshots["/tmp/stale-session.jsonl"] = _snapshot(
+            "Old historical message",
+            raw_count=4,
+        )
+        watcher = session_watcher.SessionWatcher(backend)
+        watcher._mark_missing_file("stale-session")
 
-        session_watcher.pause_all()
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.reset_state()
 
-        await session_watcher._poll_sessions()
-
-        # _get_sessions_to_monitor не вызван — _poll_sessions вышла сразу
-        mock_reader.get_recent_sessions.assert_not_called()
-
-    def test_per_session_pause_preserved_after_resume_all(self) -> None:
-        """resume_all() не сбрасывает per-session паузу (_paused_sessions)."""
-        session_watcher.pause_session("s1")
-        session_watcher.pause_all()
-
-        session_watcher.resume_all()
-
-        # Глобальная пауза снята, но per-session пауза для 's1' на месте
-        assert session_watcher._global_paused is False
-        assert "s1" in session_watcher._paused_sessions
-
-
-# --- Тесты _missing_file_sessions ---
-
-
-class TestMissingFileSessions:
-    """Тесты защиты от повторного WARNING для сессий с отсутствующим файлом."""
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_empty_messages_adds_to_missing_file_sessions(
-        self,
-        mock_reader,
-        mock_config,
-    ) -> None:
-        """Если get_session_messages возвращает пустой список — session_id запоминается."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_reader.get_session_messages = AsyncMock(return_value=[])
-
-        session_watcher._callback = AsyncMock()
-        session_watcher._get_current_session = AsyncMock(return_value=None)
-
-        await session_watcher._check_session("orphan-session")
-
-        assert "orphan-session" in session_watcher._missing_file_sessions
-
-    @pytest.mark.asyncio
-    @patch("claude_manager.session_watcher.config")
-    @patch("claude_manager.session_watcher.session_reader")
-    async def test_missing_file_session_no_repeated_check(
-        self,
-        mock_reader,
-        mock_config,
-    ) -> None:
-        """Session_id в _missing_file_sessions не вызывает повторный get_session_messages."""
-        mock_config.WORKING_DIR = "/fake/project"
-        mock_reader.get_session_messages = AsyncMock(return_value=[])
-
-        session_watcher._missing_file_sessions.add("known-missing")
-
-        await session_watcher._check_session("known-missing")
-
-        # get_session_messages НЕ вызван — ранний return
-        mock_reader.get_session_messages.assert_not_called()
-
-    async def test_reset_state_clears_missing_file_sessions(self) -> None:
-        """reset_state() очищает _missing_file_sessions."""
-        session_watcher._missing_file_sessions.add("orphan-1")
-        session_watcher._missing_file_sessions.add("orphan-2")
-
-        with patch.object(session_watcher, "_get_sessions_to_monitor", return_value=[]), \
-             patch.object(session_watcher.session_reader, "get_session_messages", return_value=[]):
-            await session_watcher.reset_state()
-
-        assert len(session_watcher._missing_file_sessions) == 0
+        assert list(watcher._states) == ["stale-session"]
+        assert watcher._states["stale-session"].raw_count == 4
+        assert watcher._states["stale-session"].last_delivered_idx == 0
+        assert "stale-session" not in watcher._missing_files

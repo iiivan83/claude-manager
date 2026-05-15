@@ -14,7 +14,7 @@
     "7": { "status": "completed", "fix_cycles": 0 },
     "8": { "status": "completed", "fix_cycles": 0 },
     "9": { "status": "completed", "fix_cycles": 0 },
-    "10": { "status": "pending", "fix_cycles": 0 }
+    "10": { "status": "completed", "fix_cycles": 0 }
   },
   "rollbacks_to_spec": 0,
   "rollback_feedback": [],

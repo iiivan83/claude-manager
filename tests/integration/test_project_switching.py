@@ -20,8 +20,15 @@ from claude_manager import (
     session_watcher,
     unread_buffer,
 )
+from claude_manager.coding_agent_backend import (
+    BackendName,
+    SessionFileInfo,
+    SessionFileSnapshot,
+    SessionUnreadState,
+)
 from claude_manager.daily_session_registry import REGISTRY_FILENAME
 from claude_manager.session_manager import BINDINGS_FILENAME
+from claude_manager.session_watcher import SessionWatcherState
 
 
 # --- Фикстуры ---
@@ -30,6 +37,52 @@ from claude_manager.session_manager import BINDINGS_FILENAME
 TEST_CHAT_ID = 123456789
 TEST_SESSION_A = "session-in-project-a"
 TEST_SESSION_B = "session-in-project-b"
+
+
+class FakeBackend:
+    """Backend with no visible session files for project switching tests."""
+
+    def __init__(self, name: BackendName) -> None:
+        self.name = name
+
+    async def list_all_session_files_for_project(
+        self,
+        _project_dir: str,
+    ) -> list[SessionFileInfo]:
+        return []
+
+    async def read_session_file_snapshot(
+        self,
+        _file_path: str,
+    ) -> SessionFileSnapshot:
+        return SessionFileSnapshot(
+            messages=[],
+            raw_record_count=0,
+            last_record=None,
+            is_turn_active=False,
+        )
+
+
+def _install_fake_watchers() -> None:
+    session_watcher._watchers = {
+        BackendName.CLAUDE: session_watcher.SessionWatcher(
+            FakeBackend(BackendName.CLAUDE)
+        ),
+        BackendName.CODEX: session_watcher.SessionWatcher(
+            FakeBackend(BackendName.CODEX)
+        ),
+    }
+
+
+def _watchers_globally_paused() -> bool:
+    return all(watcher._global_paused for watcher in session_watcher._watchers.values())
+
+
+def _watchers_globally_resumed() -> bool:
+    return all(
+        not watcher._global_paused
+        for watcher in session_watcher._watchers.values()
+    )
 
 
 @pytest.fixture()
@@ -62,10 +115,7 @@ def _reset_all_module_state() -> None:
     daily_session_registry._loaded_from_disk = False
     daily_session_registry._lock = asyncio.Lock()
 
-    session_watcher._seen_message_counts.clear()
-    session_watcher._paused_sessions.clear()
-    session_watcher._global_paused = False
-    session_watcher._missing_file_sessions = set()
+    _install_fake_watchers()
 
     unread_buffer._snapshots.clear()
 
@@ -158,10 +208,10 @@ class TestFullSwitchCycle:
             assert session_manager.get_bound_session(TEST_CHAT_ID) == TEST_SESSION_A
 
     @pytest.mark.asyncio()
-    async def test_switch_saves_watcher_snapshot(
+    async def test_switch_saves_backend_watcher_snapshots(
         self, project_layout: dict[str, Path]
     ) -> None:
-        """При переключении сохраняется снапшот watcher через unread_buffer."""
+        """При переключении сохраняются snapshot-ы обоих backend watcher-ов."""
         root = project_layout["root"]
         project_a = project_layout["project_a"]
         project_b = project_layout["project_b"]
@@ -173,8 +223,20 @@ class TestFullSwitchCycle:
              patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
 
             # Подготавливаем watcher: две сессии с обработанными сообщениями
-            session_watcher._seen_message_counts["sess-1"] = 5
-            session_watcher._seen_message_counts["sess-2"] = 3
+            claude_watcher = session_watcher._get_watcher(BackendName.CLAUDE)
+            claude_watcher._states["sess-1"] = SessionWatcherState(
+                raw_count=5,
+                last_delivered_idx=4,
+            )
+            claude_watcher._states["sess-2"] = SessionWatcherState(
+                raw_count=3,
+                last_delivered_idx=2,
+            )
+            codex_watcher = session_watcher._get_watcher(BackendName.CODEX)
+            codex_watcher._states["codex-sess-1"] = SessionWatcherState(
+                raw_count=7,
+                last_delivered_idx=6,
+            )
 
             await session_manager.load_bindings()
             await daily_session_registry.load_registry()
@@ -183,6 +245,41 @@ class TestFullSwitchCycle:
 
             assert result.success is True
             assert result.pending_messages_count == 0
+            assert unread_buffer.restore_snapshot(
+                "sess-1",
+                BackendName.CLAUDE,
+            ) == SessionUnreadState(raw_record_count=5, last_delivered_idx=4)
+            assert unread_buffer.restore_snapshot(
+                "codex-sess-1",
+                BackendName.CODEX,
+            ) == SessionUnreadState(raw_record_count=7, last_delivered_idx=6)
+
+    @pytest.mark.asyncio()
+    async def test_processes_continue_running_during_switch(
+        self,
+        project_layout: dict[str, Path],
+    ) -> None:
+        """Переключение проекта не останавливает запущенные CLI-процессы."""
+        root = project_layout["root"]
+        project_a = project_layout["project_a"]
+        project_b = project_layout["project_b"]
+        last_file = project_layout["last_file"]
+        process_key = ("running-session", BackendName.CLAUDE)
+        process_object = object()
+        process_manager._processes[process_key] = process_object
+
+        with patch.object(config, "PROJECTS_ROOT_DIR", str(root)), \
+             patch.object(config, "WORKING_DIR", str(project_a)), \
+             patch.object(config, "LAST_PROJECT_FILE", last_file), \
+             patch.object(daily_session_registry, "_remove_orphan_entries", return_value=0):
+
+            await session_manager.load_bindings()
+            await daily_session_registry.load_registry()
+
+            result = await project_manager.switch_project(str(project_b))
+
+            assert result.success is True
+            assert process_manager._processes[process_key] is process_object
 
     @pytest.mark.asyncio()
     async def test_switch_to_nonexistent_fails_gracefully(
@@ -248,7 +345,7 @@ class TestFullSwitchCycle:
         original_watcher_reset = session_watcher.reset_state
 
         async def tracking_watcher_reset() -> None:
-            global_paused_during_reset.append(session_watcher._global_paused)
+            global_paused_during_reset.append(_watchers_globally_paused())
             await original_watcher_reset()
 
         with patch.object(config, "PROJECTS_ROOT_DIR", str(root)), \
@@ -268,7 +365,7 @@ class TestFullSwitchCycle:
             # Во время reset_state watcher был на глобальной паузе
             assert global_paused_during_reset == [True]
             # После завершения переключения пауза снята
-            assert session_watcher._global_paused is False
+            assert _watchers_globally_resumed() is True
 
     @pytest.mark.asyncio()
     async def test_watcher_unpaused_after_rollback(
@@ -297,5 +394,4 @@ class TestFullSwitchCycle:
 
             assert result.success is False
             # Watcher разблокирован — _global_paused снят благодаря finally
-            assert session_watcher._global_paused is False
-
+            assert _watchers_globally_resumed() is True

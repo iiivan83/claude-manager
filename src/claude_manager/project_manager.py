@@ -21,18 +21,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from claude_manager import (
+    coding_agent_backend,
     config,
     daily_session_registry,
-    process_manager,
     session_manager,
     session_watcher,
     unread_buffer,
+)
+from claude_manager.coding_agent_backend import (
+    BackendName,
+    CodingAgentBackend,
+    SessionFileInfo,
+    SessionFileSnapshot,
+    SessionMessage,
+    SessionUnreadState,
 )
 
 logger = logging.getLogger(__name__)
 
 # Суффикс временного файла при атомарной записи последнего выбранного проекта
 _LAST_PROJECT_TEMP_SUFFIX = ".tmp"
+_NEIGHBOR_DIRECTION_NEXT = "next"
+_NEIGHBOR_DIRECTION_PREV = "prev"
 
 # Внутренняя блокировка — гарантирует, что два параллельных вызова switch_project
 # не перемешают состояние (например, один сбросит bindings, а другой уже начнёт загружать)
@@ -57,8 +67,18 @@ class SwitchResult:
     old_path: str
     new_path: str
     pending_messages_count: int
-    pending_messages: list
+    pending_messages: list["PendingDeliveryItem"]
     error_message: str
+
+
+@dataclass(frozen=True)
+class PendingDeliveryItem:
+    """Непрочитанное сообщение, которое bot.py доставит после возврата в проект."""
+
+    session_id: str
+    backend: BackendName
+    text: str
+    is_final: bool
 
 
 class ProjectSwitchError(Exception):
@@ -167,6 +187,49 @@ async def scan_available_projects() -> list[ProjectInfo]:
     return projects
 
 
+async def resolve_neighbor_project(direction: str) -> ProjectInfo | None:
+    """Возвращает следующий или предыдущий проект относительно текущего."""
+    projects = await scan_available_projects()
+    if len(projects) <= 1:
+        return None
+
+    current_index = _find_current_project_index(projects)
+    if current_index is None:
+        return _project_from_edge(projects, direction)
+
+    target_index = _neighbor_index(current_index, len(projects), direction)
+    return projects[target_index]
+
+
+def _find_current_project_index(projects: list[ProjectInfo]) -> int | None:
+    """Находит индекс текущего проекта в списке."""
+    for index, project in enumerate(projects):
+        if project.is_current:
+            return index
+    return None
+
+
+def _project_from_edge(
+    projects: list[ProjectInfo],
+    direction: str,
+) -> ProjectInfo:
+    """Возвращает край списка, если текущий проект не найден."""
+    if direction == _NEIGHBOR_DIRECTION_PREV:
+        return projects[-1]
+    return projects[0]
+
+
+def _neighbor_index(
+    current_index: int,
+    projects_count: int,
+    direction: str,
+) -> int:
+    """Вычисляет циклический индекс соседнего проекта."""
+    if direction == _NEIGHBOR_DIRECTION_PREV:
+        return (current_index - 1) % projects_count
+    return (current_index + 1) % projects_count
+
+
 def get_current_project_path() -> str:
     """Возвращает абсолютный путь к текущему активному проекту."""
     return config.WORKING_DIR
@@ -174,9 +237,55 @@ def get_current_project_path() -> str:
 
 async def _reset_all_state_modules() -> None:
     """Сбрасывает состояние всех state-модулей — для switch_project."""
-    await session_manager.reset_state()
-    await daily_session_registry.reset_state()
-    await session_watcher.reset_state()
+    reset_steps = [
+        ("session_manager", session_manager.reset_state),
+        ("daily_session_registry", daily_session_registry.reset_state),
+        ("session_watcher", session_watcher.reset_state),
+    ]
+    errors: list[str] = []
+
+    for module_name, reset_state in reset_steps:
+        try:
+            await reset_state()
+        except Exception as error:
+            logger.error(
+                "Не удалось сбросить %s при переключении проекта",
+                module_name,
+                exc_info=True,
+            )
+            errors.append(f"{module_name}: {error}")
+
+    if errors:
+        raise RuntimeError(
+            "Один или несколько state-модулей не сбросились: "
+            + "; ".join(errors)
+        )
+
+
+def _capture_backend_unread_snapshots(backend: BackendName) -> None:
+    """Сохраняет unread-cursor всех watcher-сессий одного backend-а."""
+    snapshot = session_watcher.get_seen_counts_snapshot(backend)
+    for session_id, unread_state in snapshot.items():
+        try:
+            unread_buffer.save_snapshot(
+                session_id,
+                backend,
+                raw_record_count=unread_state.raw_record_count,
+                last_delivered_idx=unread_state.last_delivered_idx,
+            )
+        except Exception:
+            logger.warning(
+                "Не удалось сохранить unread snapshot: %s (%s)",
+                session_id,
+                backend.value,
+                exc_info=True,
+            )
+
+
+async def _capture_unread_snapshots() -> None:
+    """Сохраняет unread-cursor watcher-а для всех backend-ов."""
+    for backend in BackendName:
+        _capture_backend_unread_snapshots(backend)
 
 
 async def _perform_switch(target_path: str) -> None:
@@ -185,33 +294,21 @@ async def _perform_switch(target_path: str) -> None:
     Процессы Claude НЕ останавливаются — они продолжают работать в фоне.
     При возврате в проект непрочитанные сообщения будут доставлены.
     """
-    # Сохраняем снапшот счётчиков watcher ДО смены проекта —
-    # чтобы при возврате знать, какие сообщения уже были обработаны
-    seen_snapshot = session_watcher.get_seen_counts_snapshot()
-    old_path = config.WORKING_DIR
-    unread_buffer.save_snapshot(old_path, seen_snapshot)
+    # Сохраняем cursor-ы watcher ДО смены проекта.
+    await _capture_unread_snapshots()
 
-    # Приостанавливаем watcher ДО смены WORKING_DIR —
-    # чтобы фоновый цикл опроса не увидел промежуточное состояние
+    # Приостанавливаем watcher ДО смены WORKING_DIR.
     session_watcher.pause_all()
-
-    try:
-        # Меняем WORKING_DIR ДО сброса state — модули при перезагрузке прочитают новый путь
-        config.WORKING_DIR = target_path
-
-        await _reset_all_state_modules()
-    finally:
-        # Возобновляем watcher ПОСЛЕ полного сброса — даже при ошибке
-        session_watcher.resume_all()
+    config.WORKING_DIR = target_path
+    await _reset_all_state_modules()
 
 
 async def _rollback_switch(old_path: str) -> None:
     """Пытается восстановить старое значение WORKING_DIR после неудачного переключения."""
     config.WORKING_DIR = old_path
-    # При откате уход из проекта не произошёл — удаляем снапшот
-    unread_buffer.clear_snapshot(old_path)
     try:
         await _reset_all_state_modules()
+        await _capture_unread_snapshots()
     except Exception:
         # Второй сбой во время отката — записываем в лог, но не поднимаем выше
         logger.error(
@@ -279,30 +376,128 @@ async def _try_switch_with_rollback(
 ) -> tuple[bool, SwitchResult | None]:
     """Выполняет переключение с откатом при ошибке. Возвращает (True, None) или (False, error_result)."""
     try:
-        await _perform_switch(target_path)
-    except Exception as error:
-        logger.error(
-            "Ошибка при переключении проекта на %s: %s",
-            target_path, error, exc_info=True,
+        try:
+            await _perform_switch(target_path)
+        except Exception as error:
+            logger.error(
+                "Ошибка при переключении проекта на %s: %s",
+                target_path, error, exc_info=True,
+            )
+            await _rollback_switch(old_path)
+            return False, _make_error_result(old_path, target_path, str(error))
+        return True, None
+    finally:
+        session_watcher.resume_all()
+
+
+def _has_new_messages(
+    old_state: SessionUnreadState,
+    snapshot: SessionFileSnapshot,
+) -> bool:
+    """Проверяет, появились ли новые parsed-сообщения после сохранённого cursor-а."""
+    return (
+        snapshot.raw_record_count > old_state.raw_record_count
+        or len(snapshot.messages) > old_state.last_delivered_idx + 1
+    )
+
+
+def _message_is_deliverable(message: SessionMessage) -> bool:
+    """Проверяет, нужно ли отдавать message пользователю как pending."""
+    if message.role != "assistant":
+        return False
+    if message.is_empty_response:
+        return False
+    return bool(message.text.strip())
+
+
+def _build_pending_items_from_delta(
+    session_id: str,
+    backend: BackendName,
+    delta: list[SessionMessage],
+    is_turn_active: bool,
+) -> list[PendingDeliveryItem]:
+    """Создаёт pending items из новых сообщений одной сессии."""
+    deliverable_messages = [
+        message for message in delta if _message_is_deliverable(message)
+    ]
+    return [
+        PendingDeliveryItem(
+            session_id=session_id,
+            backend=backend,
+            text=message.text,
+            is_final=not is_turn_active and index == len(deliverable_messages) - 1,
         )
-        await _rollback_switch(old_path)
-        error_result = _make_error_result(
-            old_path, target_path, f"Ошибка переключения: {error}",
-        )
-        return False, error_result
-    return True, None
+        for index, message in enumerate(deliverable_messages)
+    ]
+
+
+async def _collect_pending_for_session_file(
+    backend_adapter: CodingAgentBackend,
+    file_info: SessionFileInfo,
+) -> list[PendingDeliveryItem]:
+    """Собирает pending items для одного backend-owned файла сессии."""
+    backend = backend_adapter.name
+    old_state = unread_buffer.restore_snapshot(file_info.session_id, backend)
+    if old_state is None:
+        return []
+
+    snapshot = await backend_adapter.read_session_file_snapshot(file_info.file_path)
+    if not _has_new_messages(old_state, snapshot):
+        return []
+
+    delta = snapshot.messages[old_state.last_delivered_idx + 1:]
+    return _build_pending_items_from_delta(
+        file_info.session_id,
+        backend,
+        delta,
+        snapshot.is_turn_active,
+    )
+
+
+async def _collect_pending_for_backend(
+    backend_adapter: CodingAgentBackend,
+    project_path: str,
+) -> list[PendingDeliveryItem]:
+    """Собирает pending items для всех файлов одного backend-а."""
+    backend = backend_adapter.name
+    session_files = await backend_adapter.list_all_session_files_for_project(
+        project_path
+    )
+    pending_items: list[PendingDeliveryItem] = []
+    for file_info in session_files:
+        try:
+            pending_items.extend(
+                await _collect_pending_for_session_file(backend_adapter, file_info)
+            )
+        except Exception:
+            logger.warning(
+                "Не удалось собрать pending delivery: %s (%s)",
+                file_info.session_id,
+                backend.value,
+                exc_info=True,
+            )
+    return pending_items
 
 
 async def _collect_pending_messages(
     target_path: str,
-) -> tuple[int, list]:
+) -> tuple[int, list[PendingDeliveryItem]]:
     """Собирает непрочитанные сообщения для проекта, в который возвращаемся."""
-    if not unread_buffer.has_pending(target_path):
-        return 0, []
+    pending_items: list[PendingDeliveryItem] = []
+    for backend_adapter in coding_agent_backend.get_all_backends():
+        pending_items.extend(
+            await _collect_pending_for_backend(backend_adapter, target_path)
+        )
 
-    pending = await unread_buffer.get_pending_messages(target_path)
-    unread_buffer.clear_snapshot(target_path)
-    return len(pending), pending
+    unread_buffer.clear_expired()
+    return len(pending_items), pending_items
+
+
+async def collect_pending_messages_for_project(
+    target_path: str,
+) -> tuple[int, list[PendingDeliveryItem]]:
+    """Public wrapper collecting unread messages for an already active project."""
+    return await _collect_pending_messages(target_path)
 
 
 async def _finalize_successful_switch(

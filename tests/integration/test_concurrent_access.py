@@ -40,6 +40,7 @@ def _reset_module_state(tmp_path: Path) -> None:
 
     session_manager._bindings = {}
     session_manager._bindings_path = tmp_path / BINDINGS_FILENAME
+    session_manager._bindings_loaded_from_disk = True
     session_manager._lock = asyncio.Lock()
 
 
@@ -111,7 +112,9 @@ class TestConcurrentRegistration:
         today_entries = saved_data[FAKE_TODAY]
 
         # Все сессии записаны
-        saved_session_ids = set(today_entries.values())
+        saved_session_ids = {
+            entry["session_id"] for entry in today_entries.values()
+        }
         assert saved_session_ids == set(session_ids)
 
 

@@ -14,10 +14,13 @@ from claude_manager.file_sender import (
     check_binary_file,
     convert_entities,
     extract_file_markers,
+    extract_show_file_markers,
     is_text_file,
+    is_too_large_for_inline,
     read_file_content,
     render_file_for_telegram,
     strip_file_markers,
+    strip_show_file_markers,
 )
 
 
@@ -338,3 +341,85 @@ class TestCheckBinaryFile:
         result = check_binary_file("/path/huge.zip")
         assert result is not None
         assert "слишком большой" in result
+
+
+# --- Тесты extract_show_file_markers ---
+
+
+class TestExtractShowFileMarkers:
+    """Тесты извлечения путей файлов из маркеров [SHOW_FILE:path]."""
+
+    def test_single_marker(self) -> None:
+        """Один маркер в тексте — извлекается один путь."""
+        text = "text [SHOW_FILE:/path/to/file.md] more"
+        assert extract_show_file_markers(text) == ["/path/to/file.md"]
+
+    def test_multiple_markers(self) -> None:
+        """Несколько маркеров — все пути в порядке появления."""
+        text = "[SHOW_FILE:/a.md] text [SHOW_FILE:/b.py]"
+        assert extract_show_file_markers(text) == ["/a.md", "/b.py"]
+
+    def test_no_markers(self) -> None:
+        """Текст без маркеров — пустой список."""
+        assert extract_show_file_markers("обычный текст") == []
+
+    def test_does_not_match_send_file(self) -> None:
+        """[SEND_FILE] не путается с [SHOW_FILE]."""
+        text = "[SEND_FILE:/a.md] [SHOW_FILE:/b.md]"
+        assert extract_show_file_markers(text) == ["/b.md"]
+
+    def test_strips_whitespace(self) -> None:
+        """Лишние пробелы вокруг пути убираются."""
+        text = "[SHOW_FILE:  /path/file.md  ]"
+        assert extract_show_file_markers(text) == ["/path/file.md"]
+
+
+# --- Тесты strip_show_file_markers ---
+
+
+class TestStripShowFileMarkers:
+    """Тесты вырезки маркеров [SHOW_FILE:...] из текста."""
+
+    def test_removes_single_marker(self) -> None:
+        """Маркер вырезан, текст до и после на месте."""
+        text = "before [SHOW_FILE:/path/file.md] after"
+        result = strip_show_file_markers(text)
+        assert "[SHOW_FILE" not in result
+        assert "before" in result
+        assert "after" in result
+
+    def test_does_not_remove_send_file(self) -> None:
+        """[SEND_FILE] маркеры не вырезаются."""
+        text = "[SEND_FILE:/a.md] [SHOW_FILE:/b.md]"
+        result = strip_show_file_markers(text)
+        assert "[SEND_FILE:/a.md]" in result
+        assert "[SHOW_FILE" not in result
+
+    def test_collapses_empty_lines(self) -> None:
+        """После вырезки маркера лишние пустые строки схлопываются."""
+        text = "line1\n\n[SHOW_FILE:/path/file.md]\n\n\nline2"
+        result = strip_show_file_markers(text)
+        assert "\n\n\n" not in result
+
+
+# --- Тесты is_too_large_for_inline ---
+
+
+class TestIsTooLargeForInline:
+    """Тесты проверки размера файла для inline-отображения."""
+
+    def test_small_file(self, tmp_path: Path) -> None:
+        """Файл меньше лимита — False."""
+        test_file = tmp_path / "small.txt"
+        test_file.write_text("hello", encoding="utf-8")
+        assert is_too_large_for_inline(str(test_file)) is False
+
+    @patch("claude_manager.file_sender.os.path.getsize")
+    def test_large_file(self, mock_getsize: MagicMock) -> None:
+        """Файл больше 1 МБ — True."""
+        mock_getsize.return_value = MAX_TEXT_FILE_SIZE_BYTES + 1
+        assert is_too_large_for_inline("/path/huge.html") is True
+
+    def test_nonexistent_file(self) -> None:
+        """Несуществующий файл — False (ошибка обработается позже)."""
+        assert is_too_large_for_inline("/nonexistent/path") is False

@@ -1,449 +1,196 @@
-"""Тесты модуля unread_buffer — буфер непрочитанных сообщений при переключении проектов."""
+"""Тесты модуля unread_buffer — cursor-состояние непрочитанных сообщений."""
 
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, patch
+import inspect
 
 import pytest
 
 from claude_manager import unread_buffer
+from claude_manager.coding_agent_backend import BackendName, SessionUnreadState
 from claude_manager.unread_buffer import (
     PendingMessage,
-    _extract_message_text,
-    _is_empty_response,
-    _is_snapshot_expired,
+    SessionUnreadSnapshot,
+    _is_expired,
+    clear_expired,
     clear_snapshot,
-    cleanup_expired,
-    has_pending,
-    save_snapshot,
+    clear_snapshot_for_session_backend_pair,
     get_pending_messages,
+    has_pending,
+    restore_snapshot,
+    save_snapshot,
 )
 
 
-# --- Вспомогательные инструменты ---
-
-TEST_PROJECT = "/tmp/test-project"
-OTHER_PROJECT = "/tmp/other-project"
+SESSION_ID = "session-shared-id"
 
 
-def _make_assistant_message(text: str, content_as_list: bool = False) -> dict:
-    """Создаёт запись сообщения Claude для тестирования."""
-    if content_as_list:
-        content = [{"type": "text", "text": text}]
-    else:
-        content = text
-    return {
-        "type": "assistant",
-        "message": {"role": "assistant", "content": content},
-    }
-
-
-def _make_user_message(text: str) -> dict:
-    """Создаёт запись сообщения пользователя для тестирования."""
-    return {
-        "type": "user",
-        "message": {"role": "user", "content": text},
-    }
+def _saved_at(hours_ago: int) -> datetime:
+    """Возвращает время сохранения в прошлом."""
+    return datetime.now() - timedelta(hours=hours_ago)
 
 
 @pytest.fixture(autouse=True)
-def _reset_buffer_state():
-    """Сбрасывает внутреннее состояние буфера перед каждым тестом."""
+def _reset_buffer_state() -> None:
+    """Сбрасывает состояние буфера вокруг каждого теста."""
     unread_buffer._snapshots.clear()
     yield
     unread_buffer._snapshots.clear()
 
 
-# --- Юнит-тесты _is_empty_response ---
+class TestBackendAwareSnapshots:
+    """Тесты сохранения и восстановления backend-aware снапшотов."""
 
-
-class TestIsEmptyResponse:
-    """Тесты проверки пустых и служебных ответов Claude."""
-
-    def test_empty_string(self) -> None:
-        """Пустая строка считается пустым ответом."""
-        assert _is_empty_response("") is True
-
-    def test_whitespace_only(self) -> None:
-        """Строка из пробелов считается пустым ответом."""
-        assert _is_empty_response("   \n\t  ") is True
-
-    def test_no_response_requested(self) -> None:
-        """Служебный маркер 'No response requested.' считается пустым."""
-        assert _is_empty_response("No response requested.") is True
-
-    def test_no_response_with_whitespace(self) -> None:
-        """Служебный маркер с пробелами по краям тоже считается пустым."""
-        assert _is_empty_response("  No response requested.  ") is True
-
-    def test_normal_text_is_not_empty(self) -> None:
-        """Обычный текст не считается пустым ответом."""
-        assert _is_empty_response("Привет, мир!") is False
-
-    def test_none_is_empty(self) -> None:
-        """None считается пустым ответом (falsy-значение)."""
-        assert _is_empty_response(None) is True
-
-
-# --- Юнит-тесты _extract_message_text ---
-
-
-class TestExtractMessageText:
-    """Тесты извлечения текста из сообщений Claude."""
-
-    def test_string_content(self) -> None:
-        """Извлекает текст, когда content — строка."""
-        message = _make_assistant_message("Готово!")
-        assert _extract_message_text(message) == "Готово!"
-
-    def test_list_content(self) -> None:
-        """Извлекает и склеивает текст из списка блоков."""
-        message = {
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Часть 1"},
-                    {"type": "text", "text": "Часть 2"},
-                ],
-            },
-        }
-        assert _extract_message_text(message) == "Часть 1 Часть 2"
-
-    def test_returns_none_for_user_message(self) -> None:
-        """Пользовательские сообщения игнорируются — возвращает None."""
-        message = _make_user_message("Привет")
-        assert _extract_message_text(message) is None
-
-    def test_returns_none_for_no_content(self) -> None:
-        """Сообщение без поля content — возвращает None."""
-        message = {"type": "assistant", "message": {}}
-        assert _extract_message_text(message) is None
-
-    def test_returns_none_for_empty_list_content(self) -> None:
-        """Пустой список блоков — возвращает None."""
-        message = {"type": "assistant", "message": {"content": []}}
-        assert _extract_message_text(message) is None
-
-    def test_skips_non_text_blocks(self) -> None:
-        """Блоки с type != 'text' пропускаются."""
-        message = {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "tool_use", "name": "bash"},
-                    {"type": "text", "text": "Результат"},
-                ],
-            },
-        }
-        assert _extract_message_text(message) == "Результат"
-
-
-# --- Юнит-тесты _is_snapshot_expired ---
-
-
-class TestIsSnapshotExpired:
-    """Тесты проверки просроченности снапшота по TTL."""
-
-    @patch("claude_manager.unread_buffer.config")
-    def test_fresh_snapshot_not_expired(self, mock_config) -> None:
-        """Снапшот, созданный только что, не просрочен."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-        snapshot = unread_buffer.ProjectSnapshot(
-            seen_counts={}, switch_time=datetime.now(),
+    def test_save_and_restore_for_claude_session(self) -> None:
+        """Claude snapshot восстанавливается как SessionUnreadState."""
+        save_snapshot(
+            SESSION_ID,
+            BackendName.CLAUDE,
+            raw_record_count=42,
+            last_delivered_idx=5,
         )
-        assert _is_snapshot_expired(snapshot) is False
 
-    @patch("claude_manager.unread_buffer.config")
-    def test_old_snapshot_is_expired(self, mock_config) -> None:
-        """Снапшот старше TTL считается просроченным."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-        old_time = datetime.now() - timedelta(hours=4)
-        snapshot = unread_buffer.ProjectSnapshot(
-            seen_counts={}, switch_time=old_time,
+        assert restore_snapshot(SESSION_ID, BackendName.CLAUDE) == SessionUnreadState(
+            raw_record_count=42,
+            last_delivered_idx=5,
         )
-        assert _is_snapshot_expired(snapshot) is True
 
-    @patch("claude_manager.unread_buffer.config")
-    def test_exactly_at_ttl_boundary(self, mock_config) -> None:
-        """Снапшот ровно на границе TTL — ещё не просрочен (нестрого)."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-        # timedelta чуть меньше 3 часов — ещё валиден
-        boundary_time = datetime.now() - timedelta(hours=3) + timedelta(seconds=1)
-        snapshot = unread_buffer.ProjectSnapshot(
-            seen_counts={}, switch_time=boundary_time,
+    def test_save_and_restore_for_codex_session(self) -> None:
+        """Codex snapshot хранит те же cursor-поля."""
+        save_snapshot(
+            SESSION_ID,
+            BackendName.CODEX,
+            raw_record_count=17,
+            last_delivered_idx=3,
         )
-        assert _is_snapshot_expired(snapshot) is False
+
+        assert restore_snapshot(SESSION_ID, BackendName.CODEX) == SessionUnreadState(
+            raw_record_count=17,
+            last_delivered_idx=3,
+        )
+
+    def test_same_session_id_different_backend_independent(self) -> None:
+        """Одинаковый session_id под разными backend-ами хранит две записи."""
+        save_snapshot(SESSION_ID, BackendName.CLAUDE, 100, 4)
+        save_snapshot(SESSION_ID, BackendName.CODEX, 200, 8)
+
+        assert restore_snapshot(SESSION_ID, BackendName.CLAUDE) == SessionUnreadState(
+            raw_record_count=100,
+            last_delivered_idx=4,
+        )
+        assert restore_snapshot(SESSION_ID, BackendName.CODEX) == SessionUnreadState(
+            raw_record_count=200,
+            last_delivered_idx=8,
+        )
+
+    def test_save_overwrites_same_pair(self) -> None:
+        """Повторное сохранение той же пары перезаписывает cursor."""
+        save_snapshot(SESSION_ID, BackendName.CLAUDE, 10, 1)
+        save_snapshot(SESSION_ID, BackendName.CLAUDE, 11, 2)
+
+        assert restore_snapshot(SESSION_ID, BackendName.CLAUDE) == SessionUnreadState(
+            raw_record_count=11,
+            last_delivered_idx=2,
+        )
+
+    def test_restore_missing_pair_returns_none(self) -> None:
+        """Отсутствующая пара возвращает None."""
+        assert restore_snapshot("missing", BackendName.CLAUDE) is None
 
 
-# --- Тесты save_snapshot ---
+class TestExpiration:
+    """Тесты TTL-очистки."""
+
+    def test_restore_removes_expired_snapshot(self) -> None:
+        """Просроченный snapshot удаляется при restore."""
+        unread_buffer._snapshots[(SESSION_ID, BackendName.CLAUDE)] = (
+            SessionUnreadSnapshot(
+                state=SessionUnreadState(raw_record_count=3, last_delivered_idx=1),
+                saved_at=_saved_at(hours_ago=4),
+            )
+        )
+
+        assert restore_snapshot(SESSION_ID, BackendName.CLAUDE) is None
+        assert (SESSION_ID, BackendName.CLAUDE) not in unread_buffer._snapshots
+
+    def test_clear_expired_removes_only_old_snapshots(self) -> None:
+        """Массовая очистка удаляет старые записи и оставляет свежие."""
+        unread_buffer._snapshots[(SESSION_ID, BackendName.CLAUDE)] = (
+            SessionUnreadSnapshot(
+                state=SessionUnreadState(raw_record_count=3, last_delivered_idx=1),
+                saved_at=_saved_at(hours_ago=4),
+            )
+        )
+        unread_buffer._snapshots[(SESSION_ID, BackendName.CODEX)] = (
+            SessionUnreadSnapshot(
+                state=SessionUnreadState(raw_record_count=9, last_delivered_idx=2),
+                saved_at=_saved_at(hours_ago=1),
+            )
+        )
+
+        clear_expired()
+
+        assert (SESSION_ID, BackendName.CLAUDE) not in unread_buffer._snapshots
+        assert (SESSION_ID, BackendName.CODEX) in unread_buffer._snapshots
+
+    def test_ttl_boundary_is_not_expired(self) -> None:
+        """Ровно на границе TTL запись ещё валидна."""
+        snapshot = SessionUnreadSnapshot(
+            state=SessionUnreadState(raw_record_count=1, last_delivered_idx=0),
+            saved_at=datetime.now()
+            - timedelta(hours=unread_buffer.config.UNREAD_BUFFER_TTL_HOURS)
+            + timedelta(seconds=1),
+        )
+
+        assert _is_expired(snapshot) is False
 
 
-class TestSaveSnapshot:
-    """Тесты сохранения снапшота при уходе из проекта."""
+class TestExplicitClear:
+    """Тесты явной очистки пары."""
 
-    def test_saves_copy_of_seen_counts(self) -> None:
-        """Сохраняет копию словаря — изменение оригинала не влияет на снапшот."""
-        original = {"session-1": 5, "session-2": 10}
-        save_snapshot(TEST_PROJECT, original)
-
-        # Изменяем оригинал — снапшот не должен измениться
-        original["session-1"] = 999
-        original["session-3"] = 42
-
-        snapshot = unread_buffer._snapshots[TEST_PROJECT]
-        assert snapshot.seen_counts == {"session-1": 5, "session-2": 10}
-
-    def test_saves_switch_time(self) -> None:
-        """switch_time в снапшоте близок к datetime.now()."""
-        before = datetime.now()
-        save_snapshot(TEST_PROJECT, {"s1": 1})
-        after = datetime.now()
-
-        snapshot = unread_buffer._snapshots[TEST_PROJECT]
-        assert before <= snapshot.switch_time <= after
-
-    def test_overwrites_existing_snapshot(self) -> None:
-        """Повторный вызов save_snapshot перезаписывает предыдущий снапшот."""
-        save_snapshot(TEST_PROJECT, {"s1": 1})
-        save_snapshot(TEST_PROJECT, {"s2": 2})
-
-        snapshot = unread_buffer._snapshots[TEST_PROJECT]
-        assert snapshot.seen_counts == {"s2": 2}
-        assert "s1" not in snapshot.seen_counts
-
-
-# --- Тесты get_pending_messages ---
-
-
-class TestGetPendingMessages:
-    """Тесты сканирования JSONL и получения непрочитанных сообщений."""
-
-    @patch("claude_manager.unread_buffer.session_reader")
-    @patch("claude_manager.unread_buffer.config")
-    async def test_returns_new_assistant_messages(
-        self, mock_config, mock_reader,
+    def test_clear_snapshot_for_session_backend_pair_removes_only_matching_pair(
+        self,
     ) -> None:
-        """Сообщения после seen_count возвращаются как непрочитанные."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
+        """Очистка одной пары не удаляет запись другого backend-а."""
+        save_snapshot(SESSION_ID, BackendName.CLAUDE, 100, 4)
+        save_snapshot(SESSION_ID, BackendName.CODEX, 200, 8)
 
-        # В сессии было 2 сообщения, потом появилось ещё одно
-        mock_reader.get_session_messages = AsyncMock(return_value=[
-            _make_user_message("Привет"),
-            _make_assistant_message("Привет!"),
-            _make_assistant_message("Новый ответ"),
-        ])
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
+        clear_snapshot_for_session_backend_pair(SESSION_ID, BackendName.CLAUDE)
 
-        save_snapshot(TEST_PROJECT, {"sess-1": 2})
+        assert restore_snapshot(SESSION_ID, BackendName.CLAUDE) is None
+        assert restore_snapshot(SESSION_ID, BackendName.CODEX) == SessionUnreadState(
+            raw_record_count=200,
+            last_delivered_idx=8,
+        )
 
-        result = await get_pending_messages(TEST_PROJECT)
+    def test_clear_snapshot_for_missing_pair_is_noop(self) -> None:
+        """Очистка отсутствующей пары не вызывает ошибку."""
+        clear_snapshot_for_session_backend_pair("missing", BackendName.CODEX)
+        assert unread_buffer._snapshots == {}
 
-        assert len(result) == 1
-        assert result[0].session_id == "sess-1"
-        assert result[0].text == "Новый ответ"
 
-    @patch("claude_manager.unread_buffer.session_reader")
-    @patch("claude_manager.unread_buffer.config")
-    async def test_skips_user_messages(self, mock_config, mock_reader) -> None:
-        """Пользовательские сообщения не возвращаются как непрочитанные."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
+class TestModuleBoundaries:
+    """Тесты границ ответственности модуля."""
 
-        mock_reader.get_session_messages = AsyncMock(return_value=[
-            _make_user_message("Первый вопрос"),
-            _make_user_message("Второй вопрос"),  # новое — пользовательское
-        ])
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
+    def test_module_does_not_import_session_reader(self) -> None:
+        """unread_buffer не читает JSONL напрямую через session_reader."""
+        source = inspect.getsource(unread_buffer)
 
-        save_snapshot(TEST_PROJECT, {"sess-1": 1})
+        assert "session_reader" not in source
 
-        result = await get_pending_messages(TEST_PROJECT)
+    async def test_legacy_get_pending_messages_is_empty_compatibility_path(self) -> None:
+        """Старый project-path API больше не читает файлы и возвращает пустой список."""
+        result = await get_pending_messages("/tmp/project")
+
         assert result == []
 
-    @patch("claude_manager.unread_buffer.session_reader")
-    @patch("claude_manager.unread_buffer.config")
-    async def test_skips_empty_responses(self, mock_config, mock_reader) -> None:
-        """Служебный ответ 'No response requested.' пропускается."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
+    def test_pending_message_type_kept_for_project_manager_compatibility(self) -> None:
+        """PendingMessage остаётся доступным до миграции project_manager."""
+        assert PendingMessage(session_id=SESSION_ID, text="hello").text == "hello"
 
-        mock_reader.get_session_messages = AsyncMock(return_value=[
-            _make_user_message("Сделай что-нибудь"),
-            _make_assistant_message("No response requested."),
-        ])
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
+    def test_legacy_project_path_helpers_are_noops(self) -> None:
+        """Старые project-path helpers не создают backend snapshots."""
+        save_snapshot("/tmp/project", {"session": 3})
 
-        save_snapshot(TEST_PROJECT, {"sess-1": 1})
-
-        result = await get_pending_messages(TEST_PROJECT)
-        assert result == []
-
-    async def test_returns_empty_for_no_snapshot(self) -> None:
-        """Без снапшота — возвращает пустой список."""
-        result = await get_pending_messages(TEST_PROJECT)
-        assert result == []
-
-    @patch("claude_manager.unread_buffer.session_reader")
-    @patch("claude_manager.unread_buffer.config")
-    async def test_returns_empty_and_clears_expired_snapshot(
-        self, mock_config, mock_reader,
-    ) -> None:
-        """Просроченный TTL — возвращает пустой список и удаляет снапшот."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-
-        # Создаём снапшот, который уже просрочен
-        unread_buffer._snapshots[TEST_PROJECT] = unread_buffer.ProjectSnapshot(
-            seen_counts={"sess-1": 5},
-            switch_time=datetime.now() - timedelta(hours=4),
-        )
-
-        result = await get_pending_messages(TEST_PROJECT)
-
-        assert result == []
-        assert TEST_PROJECT not in unread_buffer._snapshots
-
-    @patch("claude_manager.unread_buffer.session_reader")
-    @patch("claude_manager.unread_buffer.config")
-    async def test_detects_new_sessions(self, mock_config, mock_reader) -> None:
-        """Сессии, которых не было в снапшоте, обрабатываются с seen_count=0."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-
-        # Известная сессия — без новых сообщений
-        # Новая сессия — с одним assistant-сообщением
-        async def mock_get_messages(session_id, project_path):
-            if session_id == "known-sess":
-                return [_make_user_message("Старый вопрос")]
-            if session_id == "new-sess":
-                return [
-                    _make_user_message("Вопрос"),
-                    _make_assistant_message("Ответ из новой сессии"),
-                ]
-            return []
-
-        mock_reader.get_session_messages = AsyncMock(side_effect=mock_get_messages)
-
-        # get_recent_sessions возвращает обе сессии
-        from claude_manager.session_reader import SessionInfo
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[
-            SessionInfo(session_id="known-sess", created_at="2026-01-01", preview=""),
-            SessionInfo(session_id="new-sess", created_at="2026-01-01", preview=""),
-        ])
-
-        save_snapshot(TEST_PROJECT, {"known-sess": 1})
-
-        result = await get_pending_messages(TEST_PROJECT)
-
-        assert len(result) == 1
-        assert result[0].session_id == "new-sess"
-        assert result[0].text == "Ответ из новой сессии"
-
-    @patch("claude_manager.unread_buffer.session_reader")
-    @patch("claude_manager.unread_buffer.config")
-    async def test_no_new_messages(self, mock_config, mock_reader) -> None:
-        """Если seen_count == len(messages), возвращает пустой список."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-
-        mock_reader.get_session_messages = AsyncMock(return_value=[
-            _make_user_message("Вопрос"),
-            _make_assistant_message("Ответ"),
-        ])
-        mock_reader.get_recent_sessions = AsyncMock(return_value=[])
-
-        # seen_count == 2, сообщений тоже 2 — ничего нового
-        save_snapshot(TEST_PROJECT, {"sess-1": 2})
-
-        result = await get_pending_messages(TEST_PROJECT)
-        assert result == []
-
-
-# --- Тесты clear_snapshot ---
-
-
-class TestClearSnapshot:
-    """Тесты удаления снапшота."""
-
-    def test_removes_existing_snapshot(self) -> None:
-        """Удаляет существующий снапшот."""
-        save_snapshot(TEST_PROJECT, {"s1": 1})
-        assert TEST_PROJECT in unread_buffer._snapshots
-
-        clear_snapshot(TEST_PROJECT)
-        assert TEST_PROJECT not in unread_buffer._snapshots
-
-    def test_noop_for_missing_snapshot(self) -> None:
-        """Удаление несуществующего снапшота не вызывает ошибку."""
-        clear_snapshot(TEST_PROJECT)  # не должен упасть
-        assert TEST_PROJECT not in unread_buffer._snapshots
-
-
-# --- Тесты has_pending ---
-
-
-class TestHasPending:
-    """Тесты проверки наличия снапшота."""
-
-    def test_true_when_snapshot_exists(self) -> None:
-        """True, если для проекта есть актуальный снапшот."""
-        save_snapshot(TEST_PROJECT, {"s1": 1})
-        assert has_pending(TEST_PROJECT) is True
-
-    def test_false_when_no_snapshot(self) -> None:
-        """False, если для проекта нет снапшота."""
-        assert has_pending(TEST_PROJECT) is False
-
-    @patch("claude_manager.unread_buffer.config")
-    def test_false_and_clears_when_expired(self, mock_config) -> None:
-        """False и удаляет снапшот, если он просрочен по TTL."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-
-        unread_buffer._snapshots[TEST_PROJECT] = unread_buffer.ProjectSnapshot(
-            seen_counts={"s1": 1},
-            switch_time=datetime.now() - timedelta(hours=4),
-        )
-
-        assert has_pending(TEST_PROJECT) is False
-        assert TEST_PROJECT not in unread_buffer._snapshots
-
-
-# --- Тесты cleanup_expired ---
-
-
-class TestCleanupExpired:
-    """Тесты массовой очистки просроченных снапшотов."""
-
-    @patch("claude_manager.unread_buffer.config")
-    def test_removes_expired_snapshots(self, mock_config) -> None:
-        """Удаляет все просроченные снапшоты."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-
-        # Два проекта: один просрочен, другой свежий
-        unread_buffer._snapshots[TEST_PROJECT] = unread_buffer.ProjectSnapshot(
-            seen_counts={"s1": 1},
-            switch_time=datetime.now() - timedelta(hours=4),
-        )
-        unread_buffer._snapshots[OTHER_PROJECT] = unread_buffer.ProjectSnapshot(
-            seen_counts={"s2": 2},
-            switch_time=datetime.now(),
-        )
-
-        cleanup_expired()
-
-        assert TEST_PROJECT not in unread_buffer._snapshots
-        assert OTHER_PROJECT in unread_buffer._snapshots
-
-    @patch("claude_manager.unread_buffer.config")
-    def test_keeps_fresh_snapshots(self, mock_config) -> None:
-        """Свежие снапшоты не затрагиваются при очистке."""
-        mock_config.UNREAD_BUFFER_TTL_HOURS = 3
-
-        unread_buffer._snapshots[TEST_PROJECT] = unread_buffer.ProjectSnapshot(
-            seen_counts={"s1": 5},
-            switch_time=datetime.now() - timedelta(hours=1),
-        )
-        unread_buffer._snapshots[OTHER_PROJECT] = unread_buffer.ProjectSnapshot(
-            seen_counts={"s2": 3},
-            switch_time=datetime.now() - timedelta(minutes=30),
-        )
-
-        cleanup_expired()
-
-        assert TEST_PROJECT in unread_buffer._snapshots
-        assert OTHER_PROJECT in unread_buffer._snapshots
+        assert has_pending("/tmp/project") is False
+        clear_snapshot("/tmp/project")
+        assert unread_buffer._snapshots == {}

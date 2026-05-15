@@ -7,7 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from claude_manager.claude_runner import ClaudeProcess, ClaudeProcessError, ClaudeStartError
+from claude_manager.coding_agent_backend import BackendName
+from claude_manager.claude_runner import (
+    BackendSubprocess,
+    BackendSubprocessStartError,
+    ClaudeProcess,
+    ClaudeProcessError,
+    ClaudeStartError,
+)
 from claude_manager.process_manager import (
     MAX_RETRIES,
     PROGRESS_THROTTLE_SECONDS,
@@ -42,10 +49,12 @@ def reset_module_state():
     pm_module._processes.clear()
     pm_module._busy_flags.clear()
     pm_module._stop_events.clear()
+    pm_module._session_id_aliases.clear()
     yield
     pm_module._processes.clear()
     pm_module._busy_flags.clear()
     pm_module._stop_events.clear()
+    pm_module._session_id_aliases.clear()
 
 
 def _make_mock_subprocess(pid: int = 42) -> MagicMock:
@@ -56,6 +65,7 @@ def _make_mock_subprocess(pid: int = 42) -> MagicMock:
     process.stdin = MagicMock()
     process.stdin.write = MagicMock()
     process.stdin.drain = AsyncMock()
+    process.stdin.is_closing = MagicMock(return_value=False)
     process.stdout = MagicMock()
     process.stdout.readline = AsyncMock(return_value=b"")
     process.stderr = MagicMock()
@@ -83,6 +93,23 @@ def _make_claude_process(
         mock_subprocess.stdout.readline = AsyncMock(side_effect=raw_lines)
 
     return ClaudeProcess(mock_subprocess)
+
+
+def _make_backend_subprocess(
+    pid: int = 42,
+    events: list[dict] | None = None,
+) -> BackendSubprocess:
+    """Создаёт BackendSubprocess с настраиваемыми JSONL-событиями stdout."""
+    mock_subprocess = _make_mock_subprocess(pid)
+
+    raw_lines = []
+    for event in events or []:
+        line = json.dumps(event, ensure_ascii=False) + "\n"
+        raw_lines.append(line.encode("utf-8"))
+    raw_lines.append(b"")
+    mock_subprocess.stdout.readline = AsyncMock(side_effect=raw_lines)
+
+    return BackendSubprocess(mock_subprocess)
 
 
 # --- Юнит-тесты: _generate_temp_session_id ---
@@ -243,6 +270,187 @@ def test_should_send_progress_after_interval():
 # --- Юнит-тесты: create_process ---
 
 
+class TestBackendAwareProcessState:
+    """Тесты backend-aware ключей состояния процессов."""
+
+    async def test_send_message_with_codex_backend_uses_backend_contract(self) -> None:
+        """Codex turn запускается через backend adapter и возвращает Codex-owned result."""
+        temp_session_id = "_new_codex"
+        real_session_id = "codex-thread-123"
+        events = [
+            {"type": "thread.started", "thread_id": real_session_id},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "Готово из Codex"},
+            },
+            {"type": "turn.completed"},
+        ]
+        backend_subprocess = _make_backend_subprocess(events=events)
+
+        with patch(
+            "claude_manager.process_manager.start_subprocess_for_backend",
+            new_callable=AsyncMock,
+            create=True,
+        ) as mock_start:
+            mock_start.return_value = backend_subprocess
+
+            result = await send_message(
+                temp_session_id,
+                "Сделай задачу",
+                backend=BackendName.CODEX,
+                cwd="/tmp/codex-project",
+            )
+
+        assert result == SendResult(
+            text="Готово из Codex",
+            session_id=real_session_id,
+            is_error=False,
+            retries_used=0,
+            backend=BackendName.CODEX,
+            error_text=None,
+        )
+        started_backend = mock_start.call_args.args[0]
+        assert started_backend.name == BackendName.CODEX
+        assert mock_start.call_args.args[1:] == (
+            temp_session_id,
+            "/tmp/codex-project",
+            "Сделай задачу",
+            [],
+        )
+        assert (real_session_id, BackendName.CODEX) in pm_module._processes
+        assert (temp_session_id, BackendName.CODEX) not in pm_module._processes
+
+    async def test_codex_failed_turn_retries_from_terminal_status(self) -> None:
+        """Codex turn.failed запускает retry даже когда assistant text пустой."""
+        session_id = "codex-session"
+        failed_process = _make_backend_subprocess(
+            events=[
+                {"type": "thread.started", "thread_id": session_id},
+                {"type": "turn.failed", "error": {"message": "Connection reset"}},
+            ],
+        )
+        successful_process = _make_backend_subprocess(
+            events=[
+                {"type": "thread.started", "thread_id": session_id},
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "После ретрая"},
+                },
+                {"type": "turn.completed"},
+            ],
+        )
+        retry_callback = AsyncMock()
+
+        with (
+            patch(
+                "claude_manager.process_manager.start_subprocess_for_backend",
+                new_callable=AsyncMock,
+                create=True,
+            ) as mock_start,
+            patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock),
+        ):
+            mock_start.side_effect = [failed_process, successful_process]
+
+            result = await send_message(
+                session_id,
+                "Повтори при ошибке",
+                backend=BackendName.CODEX,
+                cwd="/tmp/codex-project",
+                retry_callback=retry_callback,
+            )
+
+        assert result.text == "После ретрая"
+        assert result.backend == BackendName.CODEX
+        assert result.retries_used == 1
+        retry_callback.assert_awaited_once_with(
+            session_id,
+            1,
+            MAX_RETRIES,
+            "Connection reset",
+        )
+
+    async def test_send_message_rejects_missing_backend(self) -> None:
+        """backend должен передаваться явно, а не угадываться из глобального состояния."""
+        with pytest.raises(ProcessManagerError, match="backend обязателен"):
+            await send_message("session-id", "Привет", backend=None)
+
+    async def test_backend_start_error_cleans_control_state(self) -> None:
+        """Ошибка запуска backend subprocess не оставляет busy/stop записи."""
+        session_id = "codex-start-fails"
+
+        with patch(
+            "claude_manager.process_manager.start_subprocess_for_backend",
+            new_callable=AsyncMock,
+            create=True,
+        ) as mock_start:
+            mock_start.side_effect = BackendSubprocessStartError("CLI missing")
+
+            with pytest.raises(ProcessManagerError, match="Не удалось запустить CLI"):
+                await send_message(
+                    session_id,
+                    "Привет",
+                    backend=BackendName.CODEX,
+                    cwd="/tmp/codex-project",
+                )
+
+        assert (session_id, BackendName.CODEX) not in pm_module._busy_flags
+        assert (session_id, BackendName.CODEX) not in pm_module._stop_events
+
+    async def test_same_session_id_different_backend_isolated(self) -> None:
+        """Одинаковый session_id в Claude и Codex — это два разных процесса."""
+        shared_session_id = "shared-session-id"
+        claude_process = _make_claude_process(pid=101)
+        codex_process = _make_claude_process(pid=202)
+
+        pm_module._processes[(shared_session_id, BackendName.CLAUDE)] = claude_process
+        pm_module._processes[(shared_session_id, BackendName.CODEX)] = codex_process
+        pm_module._busy_flags[(shared_session_id, BackendName.CLAUDE)] = False
+        pm_module._busy_flags[(shared_session_id, BackendName.CODEX)] = False
+        pm_module._stop_events[(shared_session_id, BackendName.CLAUDE)] = asyncio.Event()
+        pm_module._stop_events[(shared_session_id, BackendName.CODEX)] = asyncio.Event()
+
+        result = await stop_process(shared_session_id, BackendName.CODEX)
+
+        assert result.was_running is True
+        assert has_process(shared_session_id, BackendName.CLAUDE) is True
+        assert has_process(shared_session_id, BackendName.CODEX) is False
+        assert (shared_session_id, BackendName.CLAUDE) in pm_module._processes
+        assert (shared_session_id, BackendName.CODEX) not in pm_module._processes
+
+    async def test_update_session_id_preserves_backend_key(self) -> None:
+        """temp→real remap переносит только ключ указанного backend-а."""
+        old_id = "_new_codex"
+        new_id = "real-codex"
+        codex_process = _make_claude_process()
+        claude_process = _make_claude_process()
+
+        pm_module._processes[(old_id, BackendName.CODEX)] = codex_process
+        pm_module._busy_flags[(old_id, BackendName.CODEX)] = True
+        pm_module._stop_events[(old_id, BackendName.CODEX)] = asyncio.Event()
+        pm_module._processes[(old_id, BackendName.CLAUDE)] = claude_process
+
+        await update_session_id(old_id, new_id, BackendName.CODEX)
+
+        assert pm_module._processes[(new_id, BackendName.CODEX)] is codex_process
+        assert pm_module._busy_flags[(new_id, BackendName.CODEX)] is True
+        assert (old_id, BackendName.CODEX) not in pm_module._processes
+        assert pm_module._processes[(old_id, BackendName.CLAUDE)] is claude_process
+
+    async def test_stop_process_uses_codex_stop_strategy(self) -> None:
+        """Codex stop starts with SIGINT from the backend strategy."""
+        session_id = "codex-session"
+        codex_process = _make_claude_process()
+        pm_module._processes[(session_id, BackendName.CODEX)] = codex_process
+        pm_module._busy_flags[(session_id, BackendName.CODEX)] = True
+        pm_module._stop_events[(session_id, BackendName.CODEX)] = asyncio.Event()
+
+        result = await stop_process(session_id, BackendName.CODEX)
+
+        assert result.was_running is True
+        codex_process.process.send_signal.assert_called()
+        assert codex_process.process.send_signal.call_args[0][0] == 2
+
+
 @patch("claude_manager.process_manager.start_process")
 async def test_create_process_new_session(mock_start):
     """Создание нового процесса без resume."""
@@ -253,7 +461,7 @@ async def test_create_process_new_session(mock_start):
 
     assert session_id.startswith("_new_")
     # start_process вызван с None (новая сессия)
-    mock_start.assert_awaited_once_with(None)
+    mock_start.assert_awaited_once_with(None, cwd=None)
     # Процесс сохранён в словарях
     assert pm_module._processes[session_id] is mock_process
     assert pm_module._busy_flags[session_id] is False
@@ -271,7 +479,7 @@ async def test_create_process_with_temp_id_starts_without_resume(mock_start):
 
     assert session_id == temp_id
     # start_process получает None — без --resume, хотя session_id задан
-    mock_start.assert_awaited_once_with(None)
+    mock_start.assert_awaited_once_with(None, cwd=None)
     assert pm_module._processes[temp_id] is mock_process
 
 
@@ -285,7 +493,7 @@ async def test_create_process_resume(mock_start):
     session_id = await create_process(session_id=existing_id)
 
     assert session_id == existing_id
-    mock_start.assert_awaited_once_with(existing_id)
+    mock_start.assert_awaited_once_with(existing_id, cwd=None)
     assert pm_module._processes[existing_id] is mock_process
 
 
@@ -497,6 +705,41 @@ async def test_update_session_id(mock_start):
     assert old_id not in pm_module._processes
     assert old_id not in pm_module._busy_flags
     assert old_id not in pm_module._stop_events
+    assert pm_module._session_id_aliases[old_id] == new_id
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_stop_process_resolves_old_temp_id_after_remap(mock_start):
+    """stop_process по старому temp-id останавливает реальный процесс после ремаппинга."""
+    mock_process = _make_claude_process()
+    mock_start.return_value = mock_process
+
+    temp_id = await create_process(session_id=None)
+    real_id = "84748107-a3de-4314-8c72-4c3b1b6e3605"
+
+    await update_session_id(temp_id, real_id)
+
+    result = await stop_process(temp_id)
+
+    assert result == StopResult(was_running=True, was_retrying=False)
+    assert real_id not in pm_module._processes
+    assert real_id not in pm_module._busy_flags
+    assert pm_module._stop_events[real_id].is_set()
+    assert has_process(temp_id) is False
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_is_busy_resolves_old_temp_id_after_remap(mock_start):
+    """is_busy по старому temp-id читает состояние реального session_id."""
+    mock_start.return_value = _make_claude_process()
+
+    temp_id = await create_process(session_id=None)
+    real_id = "84748107-a3de-4314-8c72-4c3b1b6e3605"
+
+    await update_session_id(temp_id, real_id)
+    pm_module._busy_flags[real_id] = True
+
+    assert is_busy(temp_id) is True
 
 
 # --- Граничные случаи ---
@@ -657,6 +900,39 @@ async def test_session_id_updated_from_event(mock_start):
     result = await send_message(temp_id, "Привет")
 
     assert result.session_id == real_uuid
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_cleanup_uses_real_session_id_after_remap_then_stop(mock_start):
+    """После temp→real remap и /stop cleanup удаляет stop_event реального ключа."""
+    real_uuid = "84748107-a3de-4314-8c72-4c3b1b6e3605"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": real_uuid},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": real_uuid,
+        },
+    ]
+    mock_process = _make_claude_process(events=events)
+    mock_start.return_value = mock_process
+
+    temp_id = await create_process(session_id=None)
+
+    async def stop_after_remap(old_id: str, new_id: str) -> None:
+        assert old_id == temp_id
+        assert new_id == real_uuid
+        await stop_process(new_id)
+
+    with pytest.raises(ProcessStoppedError):
+        await send_message(temp_id, "Привет", session_id_callback=stop_after_remap)
+
+    assert temp_id not in pm_module._busy_flags
+    assert temp_id not in pm_module._stop_events
+    assert real_uuid not in pm_module._busy_flags
+    assert real_uuid not in pm_module._stop_events
 
 
 @patch("claude_manager.process_manager.start_process")
@@ -828,9 +1104,10 @@ async def test_retry_callback_called(mock_start):
     # retry_callback вызван один раз (одна повторная попытка)
     retry_mock.assert_awaited_once()
     call_args = retry_mock.call_args[0]
-    assert call_args[0] == session_id  # session_id
+    assert call_args[0] == "abc-123"  # real session_id после temp→real ремаппинга
     assert call_args[1] == 1  # номер попытки
     assert call_args[2] == MAX_RETRIES  # максимум попыток
+    assert call_args[3] == "Error"  # error_reason из первой ошибки
 
 
 @patch("claude_manager.process_manager.start_process")
@@ -892,6 +1169,33 @@ async def test_broken_pipe_triggers_retry(mock_start):
 
     assert result.is_error is False
     assert result.retries_used == 1
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_restart_process_reuses_existing_stop_event(mock_start):
+    """Retry-перезапуск сохраняет тот же stop_event на весь turn."""
+    session_id = "test-session"
+    existing_stop_event = asyncio.Event()
+    pm_module._stop_events[session_id] = existing_stop_event
+    mock_start.return_value = _make_claude_process()
+
+    await pm_module._restart_process(session_id, "/test/cwd")
+
+    assert pm_module._stop_events[session_id] is existing_stop_event
+
+
+@patch("claude_manager.process_manager.start_process")
+async def test_restart_process_aborts_when_stop_already_requested(mock_start):
+    """Если /stop уже установлен, retry не запускает новый процесс."""
+    session_id = "test-session"
+    existing_stop_event = asyncio.Event()
+    existing_stop_event.set()
+    pm_module._stop_events[session_id] = existing_stop_event
+
+    with pytest.raises(ProcessStoppedError):
+        await pm_module._restart_process(session_id, "/test/cwd")
+
+    mock_start.assert_not_awaited()
 
 
 # --- Тесты: is_busy во время обработки запроса ---
@@ -1368,7 +1672,155 @@ async def test_send_message_passes_callback_to_execute_send(mock_start):
             session_id, "Привет", session_id_callback=callback_mock,
         )
 
-    # Проверяем, что session_id_callback передан в _execute_send
+    # Проверяем, что в _execute_send передана tracking-обёртка,
+    # которая вызывает исходный callback.
     call_kwargs = mock_execute.call_args
-    # Аргументы: session_id, text, claude_process, progress_callback, retry_callback, session_id_callback
-    assert call_kwargs[0][5] is callback_mock or call_kwargs[1].get("session_id_callback") is callback_mock
+    # Аргументы: session_id, text, claude_process, cwd, progress_callback, retry_callback, session_id_callback
+    passed_callback = (
+        call_kwargs[0][6]
+        if len(call_kwargs[0]) > 6
+        else call_kwargs[1].get("session_id_callback")
+    )
+    assert passed_callback is not callback_mock
+
+    await passed_callback("_new_x", "real-y")
+    callback_mock.assert_awaited_once_with("_new_x", "real-y")
+
+
+# --- Тесты: ремаппинг temp → real session_id ---
+
+
+async def test_progress_callback_receives_remapped_session_id():
+    """progress_callback получает обновлённый session_id после ремаппинга temp → real."""
+    temp_id = "_new_test_1234"
+    real_id = "real-uuid-123"
+    events = [
+        # Первое событие триггерит ремаппинг temp → real
+        {"type": "system", "subtype": "init", "session_id": real_id},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "Думаю..."}],
+            },
+            "session_id": real_id,
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": real_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+
+    # Создаём записи в словарях — update_session_id их ремапит
+    pm_module._processes[temp_id] = claude_process
+    pm_module._busy_flags[temp_id] = True
+    pm_module._stop_events[temp_id] = asyncio.Event()
+
+    progress_mock = AsyncMock()
+
+    result = await _process_events(
+        claude_process, temp_id,
+        progress_callback=progress_mock,
+        session_id_callback=AsyncMock(),
+    )
+
+    # progress_callback вызван с real_id, а НЕ с temp_id
+    progress_mock.assert_awaited_once()
+    actual_session_id = progress_mock.call_args[0][0]
+    assert actual_session_id == real_id, (
+        f"progress_callback получил {actual_session_id!r}, ожидался {real_id!r}"
+    )
+    assert result.session_id == real_id
+
+
+async def test_update_session_id_called_inside_process_events():
+    """update_session_id вызывается в _process_events при ремаппинге temp → real."""
+    temp_id = "_new_test_1234"
+    real_id = "real-uuid-123"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": real_id},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "OK",
+            "session_id": real_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+
+    # Записи в словарях нужны, чтобы update_session_id мог ремапить
+    pm_module._processes[temp_id] = claude_process
+    pm_module._busy_flags[temp_id] = True
+    pm_module._stop_events[temp_id] = asyncio.Event()
+
+    with patch.object(pm_module, "update_session_id", new_callable=AsyncMock) as mock_update:
+        await _process_events(
+            claude_process, temp_id,
+            progress_callback=None,
+            session_id_callback=AsyncMock(),
+        )
+
+    # update_session_id вызван с (temp_id, real_id)
+    mock_update.assert_awaited_once_with(temp_id, real_id)
+
+
+async def test_execute_send_passes_remapped_session_id_to_retry_loop():
+    """_execute_send передаёт обновлённый session_id в _retry_loop при is_error от Claude."""
+    temp_id = "_new_test_1234"
+    real_id = "real-uuid-123"
+
+    # _process_events: вызывает tracking callback (ремаппинг), возвращает ошибочный result.
+    # Это триггерит ветку `if result.is_error:` в _execute_send,
+    # которая должна передать в _retry_loop обновлённый current_session_id.
+    async def fake_process_events(
+        claude_process, session_id, progress_callback, session_id_callback,
+    ):
+        if session_id_callback is not None:
+            await session_id_callback(temp_id, real_id)
+        return SendResult(
+            text="Error: service unavailable",
+            session_id=real_id,
+            is_error=True,
+            retries_used=0,
+        )
+
+    mock_process = _make_claude_process()
+    # Мокаем send_message на ClaudeProcess, чтобы обойти проверки stdin
+    # (MagicMock().is_closing() возвращает truthy MagicMock, вызывая ClaudeProcessError).
+    # Нам важна логика _execute_send, а не отправка через stdin.
+    mock_process.send_message = AsyncMock()
+
+    pm_module._processes[temp_id] = mock_process
+    pm_module._busy_flags[temp_id] = False
+    pm_module._stop_events[temp_id] = asyncio.Event()
+
+    original_callback = AsyncMock()
+
+    with (
+        patch.object(pm_module, "_process_events", side_effect=fake_process_events),
+        patch.object(pm_module, "_retry_loop", new_callable=AsyncMock) as mock_retry,
+    ):
+        mock_retry.return_value = SendResult(
+            text="OK после ретрая", session_id=real_id,
+            is_error=False, retries_used=1,
+        )
+        from claude_manager.process_manager import _execute_send
+
+        await _execute_send(
+            temp_id, "Привет", mock_process, "/test/cwd",
+            progress_callback=None,
+            retry_callback=None,
+            session_id_callback=original_callback,
+        )
+
+    # _retry_loop вызван с real_id, а НЕ с temp_id
+    mock_retry.assert_awaited_once()
+    retry_session_id = mock_retry.call_args[0][0]
+    assert retry_session_id == real_id, (
+        f"_retry_loop получил {retry_session_id!r}, ожидался {real_id!r}"
+    )

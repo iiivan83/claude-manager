@@ -1,0 +1,22 @@
+{
+  "agent": "understanding",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T00:25:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Анализ входных данных из 01-intake.json и трёх исходных файлов (bot.py, session_watcher.py, session_manager.py)",
+    "files": [
+      "dev/docs/logs/bugfix/13.04_00.18-universal-bug-fixer-send-chat-action-crash/agent-outputs/01-intake.json"
+    ]
+  },
+  "created_files": [],
+  "result": {
+    "problem_statement": "Три обработчика пользовательских сообщений в bot.py (handle_message, handle_photo, handle_document) вызывают send_chat_action(ChatAction.TYPING) без try/except. Когда Telegram API возвращает ошибку (TimedOut, throttling), необработанное исключение прерывает весь обработчик — основная логика (_send_to_claude_and_respond) не вызывается, и пользователь не получает ответа. Глобальный error handler в python-telegram-bot не зарегистрирован, поэтому библиотека тихо глотает ошибку с предупреждением «No error handlers are registered». Команды (/new, /stop, /N) продолжают работать, потому что их хэндлеры не вызывают send_chat_action.",
+    "expected_behavior": "Ошибка декоративного вызова send_chat_action (индикатор «печатает...» в Telegram) не должна влиять на обработку сообщения. Даже если Telegram API вернёт TimedOut или throttling при показе индикатора, бот должен залогировать ошибку и продолжить выполнение — вызвать _send_to_claude_and_respond и доставить ответ пользователю.",
+    "actual_behavior": "При ошибке Telegram API на send_chat_action (подтверждено в error.log: 23:52:35, TimedOut на bot.py:887) обработчик handle_message падает целиком. _send_to_claude_and_respond не вызывается. Пользователь отправляет сообщение — бот молчит. Логи показывают только запись от telegram.ext.Application о необработанном исключении. Аналогичная проблема присутствует в handle_photo (строка 920) и handle_document (строка 958) — те же незащищённые вызовы send_chat_action. Побочный эффект: session_watcher каждые 2 секунды пытается прочитать JSONL-файлы трёх удалённых сессий из sessions.json, генерируя ~1 МБ мусора в error.log.",
+    "questions_asked": [],
+    "confidence": "high"
+  },
+  "next_agent": "root-cause-investigator"
+}

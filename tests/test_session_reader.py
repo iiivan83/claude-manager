@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from claude_manager.session_reader import (
+    MAX_SANITIZED_PATH_LENGTH,
     MAX_RECENT_SESSIONS,
     SessionInfo,
     build_sessions_path,
@@ -109,6 +110,17 @@ class TestEncodeProjectPath:
         result = _encode_project_path("/Users/ivan/Проект")
         assert result == "-Users-ivan-------"
 
+    def test_long_path_is_truncated_with_hash_suffix(self) -> None:
+        """Длинный sanitized path получает hash suffix как в Claude Code."""
+        project_dir = "/" + "a" * (MAX_SANITIZED_PATH_LENGTH + 20)
+
+        result = _encode_project_path(project_dir)
+
+        assert result.startswith("-" + "a" * (MAX_SANITIZED_PATH_LENGTH - 1))
+        assert len(result) > MAX_SANITIZED_PATH_LENGTH
+        assert result[MAX_SANITIZED_PATH_LENGTH] == "-"
+        assert result.endswith("7upm6p")
+
 
 # --- Юнит-тесты build_sessions_path ---
 
@@ -138,6 +150,20 @@ class TestBuildSessionsPath:
         # Явная защита от регрессии: в итоговом пути не должно быть подчёркиваний
         # из исходной части пути проекта
         assert "claude_manager" not in result
+
+    def test_long_path_uses_existing_directory_with_matching_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Для длинных путей build_sessions_path находит существующую папку по prefix."""
+        project_dir = "/" + "a" * (MAX_SANITIZED_PATH_LENGTH + 20)
+        sanitized_prefix = _encode_project_path(project_dir).rsplit("-", 1)[0]
+        projects_root = tmp_path / ".claude" / "projects"
+        existing = projects_root / f"{sanitized_prefix}-bunhash"
+        existing.mkdir(parents=True)
+
+        monkeypatch.setattr(os.path, "expanduser", lambda _path: str(tmp_path))
+
+        assert build_sessions_path(project_dir) == str(existing)
 
 
 # --- Юнит-тесты _clean_preview ---

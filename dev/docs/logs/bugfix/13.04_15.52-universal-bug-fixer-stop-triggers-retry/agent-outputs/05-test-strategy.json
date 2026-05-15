@@ -1,0 +1,204 @@
+{
+  "agent": "test-strategist",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T16:25:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Стратегия тестирования для бага: /stop вызывает retry вместо остановки",
+    "files": ["01-intake.json", "02-understanding.json", "03-root-cause.json", "04-classification.json"]
+  },
+  "created_files": [
+    "dev/docs/logs/bugfix/13.04_15.52-universal-bug-fixer-stop-triggers-retry/pipeline-workspace/tests/test_stop_triggers_retry_whitebox.py",
+    "dev/docs/logs/bugfix/13.04_15.52-universal-bug-fixer-stop-triggers-retry/pipeline-workspace/tests/blackbox/test_stop_triggers_retry_blackbox.py"
+  ],
+  "result": {
+    "environment_validated": {
+      "passed": true,
+      "validation_test": "python -m pytest tests/test_process_manager.py::test_generate_temp_session_id_unique -v",
+      "details": "1 passed in 0.02s — pytest работает, asyncio_mode=auto, импорт модулей без ошибок"
+    },
+    "project_test_framework": {
+      "tool": "pytest",
+      "discovered_at": "tests/ (юнит), tests/integration/ (интеграционные), tests/e2e/ (Telethon)"
+    },
+    "existing_patterns_found": [
+      "Фикстура autouse reset_module_state — очистка _processes, _busy_flags, _stop_events перед каждым тестом",
+      "Фабрика _make_claude_process() с настраиваемыми events для stdout",
+      "Патч start_process через @patch('claude_manager.process_manager.start_process')",
+      "Патч _wait_with_stop_check для обхода реального asyncio.sleep в retry-тестах",
+      "Классы TestStopAllProcesses, TestHandleStop с pytest.mark.asyncio()",
+      "asyncio_mode=auto — декоратор @pytest.mark.asyncio необязателен"
+    ],
+    "method_checklist": [
+      {
+        "category": "unit",
+        "chosen": true,
+        "reason": "Основной подход. Баг локализован в трёх функциях: stop_process(), _restart_process(), handle_stop(). Юнит-тесты проверяют поведение каждой в изоляции."
+      },
+      {
+        "category": "integration",
+        "chosen": true,
+        "reason": "Полный путь send_message -> retry_loop -> stop_process требует интеграционной проверки. Тесты в blackbox покрывают сквозные сценарии."
+      },
+      {
+        "category": "e2e",
+        "chosen": false,
+        "reason": "Требует живой Telegram + Claude CLI. Баг воспроизводится на уровне process_manager без внешних зависимостей. E2E тестирование — отдельная задача после фикса."
+      },
+      {
+        "category": "comparative",
+        "chosen": false,
+        "reason": "Нет метрик до/после для сравнения. Баг бинарный: либо retry прерывается, либо нет."
+      },
+      {
+        "category": "anchor_values",
+        "chosen": false,
+        "reason": "Нет числовых якорных значений. Баг — в управлении состоянием (словари, Event-объекты), не в вычислениях."
+      },
+      {
+        "category": "idempotency",
+        "chosen": true,
+        "reason": "Повторный /stop (DEV-3) — тест идемпотентности: повторная остановка должна работать так же, как первая. Реализован в blackbox TestScenarioDoubleStop."
+      },
+      {
+        "category": "contract",
+        "chosen": true,
+        "reason": "Инвариант: каждый процесс в _processes имеет соответствующие записи в _stop_events и _busy_flags. Реализован в whitebox test_invariant_processes_sync_with_control_structures."
+      },
+      {
+        "category": "snapshot",
+        "chosen": false,
+        "reason": "Нет данных для snapshot-сравнения. Баг не связан с рендерингом или текстовыми форматами."
+      },
+      {
+        "category": "regression",
+        "chosen": true,
+        "reason": "Все тесты — регрессионные по сути: они фиксируют правильное поведение, которое сломано в текущем коде. После фикса эти тесты предотвратят повторное появление бага."
+      },
+      {
+        "category": "stress_boundary",
+        "chosen": false,
+        "reason": "Баг воспроизводится при первом же /stop. Стресс-тесты (множественные stop подряд) избыточны — достаточно проверить один stop в retry loop."
+      },
+      {
+        "category": "trigger",
+        "chosen": false,
+        "reason": "Не скилл — баг в коде бота."
+      }
+    ],
+    "chosen_approaches": ["unit", "integration", "idempotency", "contract", "regression"],
+    "whitebox_tests": [
+      {
+        "file": "pipeline-workspace/tests/test_stop_triggers_retry_whitebox.py",
+        "class": "TestDev1StopEventSurvivesStopProcess",
+        "tests": [
+          {
+            "name": "test_check_stop_requested_raises_after_stop_process",
+            "deviation": "DEV-1",
+            "description": "_check_stop_requested() бросает ProcessStoppedError после stop_process()"
+          },
+          {
+            "name": "test_wait_with_stop_check_raises_after_stop_process",
+            "deviation": "DEV-1",
+            "description": "_wait_with_stop_check() прерывается после stop_process()"
+          },
+          {
+            "name": "test_retry_loop_check_sees_stop_flag",
+            "deviation": "DEV-1",
+            "description": "_check_stop_requested() видит флаг после stop_process() в контексте retry loop"
+          }
+        ]
+      },
+      {
+        "file": "pipeline-workspace/tests/test_stop_triggers_retry_whitebox.py",
+        "class": "TestDev2RestartProcessCreatesControlStructures",
+        "tests": [
+          {
+            "name": "test_restart_creates_stop_event",
+            "deviation": "DEV-2",
+            "description": "_restart_process() создаёт stop_event для перезапущенного процесса"
+          },
+          {
+            "name": "test_restart_creates_busy_flag",
+            "deviation": "DEV-2",
+            "description": "_restart_process() создаёт busy_flag для перезапущенного процесса"
+          },
+          {
+            "name": "test_restart_stop_event_works_for_subsequent_stop",
+            "deviation": "DEV-2",
+            "description": "stop_process() после _restart_process() корректно останавливает процесс"
+          },
+          {
+            "name": "test_invariant_processes_sync_with_control_structures",
+            "deviation": "DEV-2",
+            "description": "Инвариант: _processes, _busy_flags, _stop_events — одинаковые ключи"
+          }
+        ]
+      },
+      {
+        "file": "pipeline-workspace/tests/test_stop_triggers_retry_whitebox.py",
+        "class": "TestDev3HandleStopDuringRetry",
+        "tests": [
+          {
+            "name": "test_stop_process_called_when_busy_but_no_process",
+            "deviation": "DEV-3",
+            "description": "handle_stop вызывает stop_process() при busy=True и has_process=False"
+          },
+          {
+            "name": "test_stop_message_confirms_retry_interrupted",
+            "deviation": "DEV-3",
+            "description": "Пользователь видит подтверждение остановки, не 'нечего останавливать'"
+          }
+        ]
+      }
+    ],
+    "blackbox_tests": [
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_stop_triggers_retry_blackbox.py",
+        "class": "TestScenarioStopDuringRetry",
+        "tests": [
+          {
+            "name": "test_stop_during_retry_wait_raises_stopped",
+            "description": "Сценарий: сообщение -> ошибка -> retry -> /stop -> retry не продолжается"
+          },
+          {
+            "name": "test_stop_during_event_processing_raises_stopped",
+            "description": "Сценарий: /stop во время чтения событий прерывает обработку"
+          }
+        ]
+      },
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_stop_triggers_retry_blackbox.py",
+        "class": "TestScenarioDoubleStop",
+        "tests": [
+          {
+            "name": "test_second_stop_after_restart_finds_process",
+            "description": "Сценарий: restart -> повторный /stop -> процесс найден и остановлен"
+          },
+          {
+            "name": "test_stop_after_restart_sets_cancellation_flag",
+            "description": "Сценарий: restart -> /stop -> флаг отмены установлен"
+          }
+        ]
+      },
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_stop_triggers_retry_blackbox.py",
+        "class": "TestScenarioFullCycleStopDuringRetry",
+        "tests": [
+          {
+            "name": "test_full_cycle_no_zombie_processes",
+            "description": "Сценарий: полный цикл ошибка -> retry -> /stop -> нет зомби-записей"
+          },
+          {
+            "name": "test_retry_count_limited_by_stop",
+            "description": "Сценарий: /stop ограничивает ретраи до 1 вместо 10"
+          }
+        ]
+      }
+    ],
+    "total_whitebox": 9,
+    "total_blackbox": 6
+  },
+  "next_agent": "critical-verifier"
+}

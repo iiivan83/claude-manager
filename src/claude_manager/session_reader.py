@@ -13,6 +13,8 @@ import os
 import re
 from dataclasses import dataclass
 
+from claude_manager.session_request_preview import clean_session_request_preview
+
 logger = logging.getLogger(__name__)
 
 # Относительный путь от домашней директории к папке проектов Claude Code
@@ -36,16 +38,14 @@ COMMAND_XML_TAGS = {
     "local-command-caveat",
 }
 
-# Регулярное выражение для удаления XML-тегов из превью
-XML_TAG_PATTERN = re.compile(r"<[^>]+>")
-
-# Регулярное выражение для замены множественных пробелов на один
-WHITESPACE_PATTERN = re.compile(r"\s+")
-
 # Регулярное выражение для санитации пути проекта — заменяет всё,
 # что не буква и не цифра, на дефис. Повторяет sanitizePath() из
 # Claude Code CLI (см. claude-code-sourcecode/utils/sessionStoragePortable.ts:311).
 SANITIZE_PATH_PATTERN = re.compile(r"[^a-zA-Z0-9]")
+
+# Максимальная длина sanitized-компонента до hash suffix.
+# Источник: claude-code-sourcecode/utils/sessionStoragePortable.ts:293.
+MAX_SANITIZED_PATH_LENGTH = 200
 
 # Минимальная длина сообщения, чтобы считать его «настоящим»
 MIN_MESSAGE_LENGTH = 2
@@ -60,20 +60,69 @@ class SessionInfo:
     preview: str
 
 
-def _encode_project_path(project_dir: str) -> str:
-    """Кодирует путь проекта в формат имён папок Claude Code.
+def _to_base36(value: int) -> str:
+    """Кодирует положительное целое в base36 как JavaScript Number.toString(36)."""
+    if value == 0:
+        return "0"
 
-    Повторяет алгоритм sanitizePath() из Claude Code CLI: заменяет
-    все не-буквенно-цифровые символы на дефис.
-    """
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+    digits = []
+    while value:
+        value, remainder = divmod(value, 36)
+        digits.append(alphabet[remainder])
+    return "".join(reversed(digits))
+
+
+def _djb2_hash(text: str) -> int:
+    """Повторяет signed 32-bit djb2Hash из Claude Code source."""
+    hash_value = 0
+    utf16 = text.encode("utf-16-le")
+    for index in range(0, len(utf16), 2):
+        code_unit = int.from_bytes(utf16[index:index + 2], "little")
+        hash_value = ((hash_value << 5) - hash_value + code_unit) & 0xFFFFFFFF
+        if hash_value >= 0x80000000:
+            hash_value -= 0x100000000
+    return hash_value
+
+
+def _sanitize_project_path(project_dir: str) -> str:
+    """Заменяет не-буквенно-цифровые символы на дефис."""
     return SANITIZE_PATH_PATTERN.sub("-", project_dir)
+
+
+def _encode_project_path(project_dir: str) -> str:
+    """Кодирует путь проекта в формат имён папок Claude Code."""
+    sanitized = _sanitize_project_path(project_dir)
+    if len(sanitized) <= MAX_SANITIZED_PATH_LENGTH:
+        return sanitized
+
+    hash_suffix = _to_base36(abs(_djb2_hash(project_dir)))
+    return f"{sanitized[:MAX_SANITIZED_PATH_LENGTH]}-{hash_suffix}"
 
 
 def build_sessions_path(project_dir: str) -> str:
     """Строит абсолютный путь к папке сессий проекта."""
     home_dir = os.path.expanduser("~")
+    projects_root = os.path.join(home_dir, CLAUDE_PROJECTS_DIR)
     encoded_name = _encode_project_path(project_dir)
-    return os.path.join(home_dir, CLAUDE_PROJECTS_DIR, encoded_name)
+    exact_path = os.path.join(projects_root, encoded_name)
+
+    sanitized = _sanitize_project_path(project_dir)
+    if len(sanitized) <= MAX_SANITIZED_PATH_LENGTH or os.path.isdir(exact_path):
+        return exact_path
+
+    # Claude CLI под Bun использует Bun.hash, а SDK fallback — djb2Hash.
+    # Для длинных путей ищем существующую папку по стабильному prefix.
+    prefix = sanitized[:MAX_SANITIZED_PATH_LENGTH] + "-"
+    try:
+        for entry_name in os.listdir(projects_root):
+            candidate = os.path.join(projects_root, entry_name)
+            if entry_name.startswith(prefix) and os.path.isdir(candidate):
+                return candidate
+    except OSError:
+        return exact_path
+
+    return exact_path
 
 
 def _is_command_message(text: str) -> bool:
@@ -86,11 +135,7 @@ def _is_command_message(text: str) -> bool:
 
 def _clean_preview(raw_text: str) -> str:
     """Очищает текст превью от XML-тегов и обрезает до максимальной длины."""
-    without_tags = XML_TAG_PATTERN.sub("", raw_text)
-    collapsed = WHITESPACE_PATTERN.sub(" ", without_tags).strip()
-    if len(collapsed) > PREVIEW_MAX_LENGTH:
-        return collapsed[:PREVIEW_MAX_LENGTH] + "..."
-    return collapsed
+    return clean_session_request_preview(raw_text, PREVIEW_MAX_LENGTH)
 
 
 def _extract_text_from_content(content: str | list) -> str:

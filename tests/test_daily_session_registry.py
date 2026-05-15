@@ -4,22 +4,26 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from claude_manager import daily_session_registry
+from claude_manager.coding_agent_backend import BackendName
 from claude_manager.daily_session_registry import (
     DATE_FORMAT,
+    DailySessionEntry,
     REGISTRY_FILENAME,
     _get_today_key,
     _ensure_today_registry,
     _next_day_number,
     _remove_orphan_entries,
     _remove_phantom_entries,
+    get_backend_for_session,
     get_all_today_sessions,
     get_session_id_by_number,
     load_registry,
+    lookup_by_number,
     register_session,
     reset_state,
     update_session_id,
@@ -56,6 +60,38 @@ def registry_path(tmp_path: Path) -> Path:
 
 class TestRegisterSession:
     """Тесты регистрации сессий."""
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_register_session_with_backend_returns_entry(
+        self, _mock_today: object
+    ) -> None:
+        """Регистрация сохраняет session_id вместе с backend."""
+        result = await register_session("codex-session", BackendName.CODEX)
+
+        assert result == 1
+        assert await lookup_by_number(1) == DailySessionEntry(
+            session_id="codex-session",
+            backend=BackendName.CODEX,
+        )
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_same_session_id_different_backend_gets_distinct_number(
+        self, _mock_today: object
+    ) -> None:
+        """The same UUID under different backends is distinct ownership."""
+        claude_number = await register_session("shared-uuid", BackendName.CLAUDE)
+        codex_number = await register_session("shared-uuid", BackendName.CODEX)
+
+        assert claude_number == 1
+        assert codex_number == 2
+        assert await lookup_by_number(1) == DailySessionEntry(
+            "shared-uuid", BackendName.CLAUDE
+        )
+        assert await lookup_by_number(2) == DailySessionEntry(
+            "shared-uuid", BackendName.CODEX
+        )
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
@@ -110,7 +146,10 @@ class TestRegisterSession:
 
         saved_data = json.loads(registry_file.read_text("utf-8"))
         assert FAKE_TODAY in saved_data
-        assert saved_data[FAKE_TODAY]["1"] == "abc123"
+        assert saved_data[FAKE_TODAY]["1"] == {
+            "session_id": "abc123",
+            "backend": "claude",
+        }
 
 
 class TestGetSessionIdByNumber:
@@ -142,6 +181,20 @@ class TestGetSessionIdByNumber:
 
 class TestUpdateSessionId:
     """Тесты обновления ID сессии."""
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_update_session_id_preserves_backend(
+        self, _mock_today: object
+    ) -> None:
+        """Replacing a temp id keeps the backend that created the session."""
+        await register_session("_new_codex", BackendName.CODEX)
+
+        await update_session_id("_new_codex", "real-codex-id")
+
+        assert await lookup_by_number(1) == DailySessionEntry(
+            "real-codex-id", BackendName.CODEX
+        )
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
@@ -188,6 +241,22 @@ class TestGetAllTodaySessions:
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_get_all_today_sessions_returns_entries(
+        self, _mock_today: object
+    ) -> None:
+        """All sessions exposes backend-aware entries."""
+        await register_session("claude-session", BackendName.CLAUDE)
+        await register_session("codex-session", BackendName.CODEX)
+
+        result = await get_all_today_sessions()
+
+        assert result == {
+            1: DailySessionEntry("claude-session", BackendName.CLAUDE),
+            2: DailySessionEntry("codex-session", BackendName.CODEX),
+        }
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
     async def test_get_all_today_sessions_returns_copy(
         self, _mock_today: object
     ) -> None:
@@ -228,6 +297,44 @@ class TestGetAllTodaySessions:
 
 class TestLoadRegistry:
     """Тесты загрузки реестра из файла."""
+
+    @pytest.mark.asyncio()
+    async def test_load_migrates_old_format_to_claude_entries(
+        self, tmp_path: Path
+    ) -> None:
+        """Old string values load as Claude entries and save back as dicts."""
+        registry_file = tmp_path / REGISTRY_FILENAME
+        registry_file.write_text(
+            json.dumps({FAKE_TODAY: {"1": "old-session"}}),
+            "utf-8",
+        )
+
+        with patch.object(
+            daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
+        ), patch.object(
+            daily_session_registry, "_remove_orphan_entries", return_value=0
+        ), patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+            await load_registry()
+            assert await lookup_by_number(1) == DailySessionEntry(
+                "old-session", BackendName.CLAUDE
+            )
+        saved_data = json.loads(registry_file.read_text("utf-8"))
+        assert saved_data[FAKE_TODAY]["1"] == {
+            "session_id": "old-session",
+            "backend": "claude",
+        }
+
+    @pytest.mark.asyncio()
+    async def test_get_backend_for_session_searches_all_days(self) -> None:
+        """Reverse lookup finds the backend for a known session across days."""
+        daily_session_registry._registry = {
+            FAKE_YESTERDAY: {
+                "1": DailySessionEntry("old-codex", BackendName.CODEX)
+            }
+        }
+
+        assert await get_backend_for_session("old-codex") == BackendName.CODEX
+        assert await get_backend_for_session("missing") is None
 
     @pytest.mark.asyncio()
     async def test_load_missing_file_creates_empty_registry(
@@ -588,58 +695,85 @@ class TestRemovePhantomEntries:
 class TestRemoveOrphanEntries:
     """Тесты удаления записей-сирот без .jsonl файла на диске."""
 
-    def test_entry_with_existing_file_kept(self, tmp_path: Path) -> None:
-        """Запись с session_id, для которого есть .jsonl файл, остаётся в реестре."""
-        sessions_dir = tmp_path / "sessions"
-        sessions_dir.mkdir()
-        (sessions_dir / "valid-session-abc.jsonl").write_text("{}", "utf-8")
-
+    @pytest.mark.asyncio()
+    async def test_orphan_cleanup_uses_backend_session_exists(
+        self, tmp_path: Path
+    ) -> None:
+        """Orphan cleanup delegates file ownership checks to each backend."""
+        live_backend = AsyncMock()
+        live_backend.session_file_exists_for_project.return_value = True
+        orphan_backend = AsyncMock()
+        orphan_backend.session_file_exists_for_project.return_value = False
         daily_session_registry._registry = {
-            FAKE_TODAY: {"1": "valid-session-abc"}
+            FAKE_TODAY: {
+                "1": DailySessionEntry("live-claude", BackendName.CLAUDE),
+                "2": DailySessionEntry("orphan-codex", BackendName.CODEX),
+            }
+        }
+
+        def fake_get_backend(backend_name: BackendName):
+            return live_backend if backend_name == BackendName.CLAUDE else orphan_backend
+
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)), patch(
+            "claude_manager.daily_session_registry.get_backend",
+            side_effect=fake_get_backend,
+        ):
+            removed = await _remove_orphan_entries()
+
+        assert removed == 1
+        assert "1" in daily_session_registry._registry[FAKE_TODAY]
+        assert "2" not in daily_session_registry._registry[FAKE_TODAY]
+        live_backend.session_file_exists_for_project.assert_awaited_once_with(
+            "live-claude", str(tmp_path)
+        )
+        orphan_backend.session_file_exists_for_project.assert_awaited_once_with(
+            "orphan-codex", str(tmp_path)
+        )
+
+    @pytest.mark.asyncio()
+    async def test_entry_with_existing_file_kept(self, tmp_path: Path) -> None:
+        """Запись с session_id, для которого есть .jsonl файл, остаётся в реестре."""
+        backend = AsyncMock()
+        backend.session_file_exists_for_project.return_value = True
+        daily_session_registry._registry = {
+            FAKE_TODAY: {"1": DailySessionEntry("valid-session-abc", BackendName.CLAUDE)}
         }
 
         with patch(
-            "claude_manager.session_reader.build_sessions_path",
-            return_value=str(sessions_dir),
+            "claude_manager.daily_session_registry.get_backend",
+            return_value=backend,
         ):
-            removed = _remove_orphan_entries()
+            removed = await _remove_orphan_entries()
 
         assert removed == 0
         assert daily_session_registry._registry[FAKE_TODAY]["1"] == "valid-session-abc"
 
-    def test_entry_without_file_removed(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio()
+    async def test_entry_without_file_removed(self, tmp_path: Path) -> None:
         """Запись с session_id без .jsonl файла удаляется из реестра."""
-        sessions_dir = tmp_path / "sessions"
-        sessions_dir.mkdir()
-        # Файл НЕ создаём — запись-сирота
-
+        backend = AsyncMock()
+        backend.session_file_exists_for_project.return_value = False
         daily_session_registry._registry = {
-            FAKE_TODAY: {"1": "orphan-session-xyz"}
+            FAKE_TODAY: {"1": DailySessionEntry("orphan-session-xyz", BackendName.CLAUDE)}
         }
 
         with patch(
-            "claude_manager.session_reader.build_sessions_path",
-            return_value=str(sessions_dir),
+            "claude_manager.daily_session_registry.get_backend",
+            return_value=backend,
         ):
-            removed = _remove_orphan_entries()
+            removed = await _remove_orphan_entries()
 
         assert removed == 1
         assert "1" not in daily_session_registry._registry[FAKE_TODAY]
 
-    def test_new_prefix_entry_skipped(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio()
+    async def test_new_prefix_entry_skipped(self, tmp_path: Path) -> None:
         """Запись с _new_ пропускается — не удаляется, даже если файла нет."""
-        sessions_dir = tmp_path / "sessions"
-        sessions_dir.mkdir()
-
         daily_session_registry._registry = {
-            FAKE_TODAY: {"1": "_new_0001"}
+            FAKE_TODAY: {"1": DailySessionEntry("_new_0001", BackendName.CLAUDE)}
         }
 
-        with patch(
-            "claude_manager.session_reader.build_sessions_path",
-            return_value=str(sessions_dir),
-        ):
-            removed = _remove_orphan_entries()
+        removed = await _remove_orphan_entries()
 
         assert removed == 0
         assert daily_session_registry._registry[FAKE_TODAY]["1"] == "_new_0001"
@@ -663,11 +797,18 @@ class TestRemoveOrphanEntries:
         registry_file = tmp_path / REGISTRY_FILENAME
         registry_file.write_text(json.dumps(registry_data), "utf-8")
 
+        backend = AsyncMock()
+
+        async def session_exists(session_id: str, project_dir: str) -> bool:
+            return session_id == "valid-session"
+
+        backend.session_file_exists_for_project.side_effect = session_exists
+
         with patch.object(
             daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
         ), patch(
-            "claude_manager.session_reader.build_sessions_path",
-            return_value=str(sessions_dir),
+            "claude_manager.daily_session_registry.get_backend",
+            return_value=backend,
         ), patch(
             "claude_manager.config.WORKING_DIR", str(tmp_path)
         ):

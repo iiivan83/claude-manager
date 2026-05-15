@@ -1,0 +1,66 @@
+{
+  "agent": "test-runner",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T17:15:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Верификация исправлений",
+    "files": ["08-execution.json"]
+  },
+  "created_files": [
+    "tests/test_stop_triggers_retry_whitebox.py",
+    "tests/test_stop_triggers_retry_blackbox.py"
+  ],
+  "result": {
+    "iteration": 1,
+    "whitebox": {
+      "total": 9,
+      "passed": 9,
+      "failed": 0,
+      "details": [
+        { "test": "TestDev1StopEventSurvivesStopProcess::test_check_stop_requested_raises_after_stop_process", "status": "passed" },
+        { "test": "TestDev1StopEventSurvivesStopProcess::test_wait_with_stop_check_raises_after_stop_process", "status": "passed" },
+        { "test": "TestDev1StopEventSurvivesStopProcess::test_retry_loop_check_sees_stop_flag", "status": "passed" },
+        { "test": "TestDev2RestartProcessCreatesControlStructures::test_restart_creates_stop_event", "status": "passed" },
+        { "test": "TestDev2RestartProcessCreatesControlStructures::test_restart_creates_busy_flag", "status": "passed" },
+        { "test": "TestDev2RestartProcessCreatesControlStructures::test_restart_stop_event_works_for_subsequent_stop", "status": "passed" },
+        { "test": "TestDev2RestartProcessCreatesControlStructures::test_invariant_processes_sync_with_control_structures", "status": "passed" },
+        { "test": "TestDev3HandleStopDuringRetry::test_stop_process_called_when_busy_but_no_process", "status": "passed" },
+        { "test": "TestDev3HandleStopDuringRetry::test_stop_message_confirms_retry_interrupted", "status": "passed" }
+      ]
+    },
+    "blackbox": {
+      "total": 6,
+      "passed": 6,
+      "failed": 0,
+      "details": [
+        { "test": "TestScenarioStopDuringRetry::test_stop_during_retry_wait_raises_stopped", "status": "passed" },
+        { "test": "TestScenarioStopDuringRetry::test_stop_during_event_processing_raises_stopped", "status": "passed" },
+        { "test": "TestScenarioDoubleStop::test_second_stop_after_restart_finds_process", "status": "passed" },
+        { "test": "TestScenarioDoubleStop::test_stop_after_restart_sets_cancellation_flag", "status": "passed" },
+        { "test": "TestScenarioFullCycleStopDuringRetry::test_full_cycle_no_zombie_processes", "status": "passed" },
+        { "test": "TestScenarioFullCycleStopDuringRetry::test_retry_count_limited_by_stop", "status": "passed" }
+      ]
+    },
+    "existing_tests": {
+      "total": 135,
+      "passed": 135,
+      "failed": 0,
+      "files": ["tests/test_process_manager.py", "tests/test_bot.py"]
+    },
+    "all_passed": true,
+    "project_test_structure": "tests/ в корне проекта, unittest-файлы test_*.py зеркалят src/, integration/ и e2e/ подпапки",
+    "tests_relocated": [
+      {
+        "from": "dev/docs/logs/bugfix/13.04_15.52-universal-bug-fixer-stop-triggers-retry/pipeline-workspace/tests/test_stop_triggers_retry_whitebox.py",
+        "to": "tests/test_stop_triggers_retry_whitebox.py"
+      },
+      {
+        "from": "dev/docs/logs/bugfix/13.04_15.52-universal-bug-fixer-stop-triggers-retry/pipeline-workspace/tests/blackbox/test_stop_triggers_retry_blackbox.py",
+        "to": "tests/test_stop_triggers_retry_blackbox.py"
+      }
+    ]
+  },
+  "next_agent": "report-generator"
+}

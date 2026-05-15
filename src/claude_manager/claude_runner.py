@@ -11,6 +11,7 @@ import shutil
 from collections.abc import AsyncGenerator
 
 from claude_manager import config
+from claude_manager.coding_agent_backend import CodingAgentBackend
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,10 @@ TERMINATE_TIMEOUT_SECONDS = 5
 
 # Максимальное время ожидания одной строки из stdout Claude CLI (секунды).
 # Если CLI не выдаёт ни одной строки за это время — считаем, что он завис.
-# 5 минут — достаточно для инициализации тяжёлой сессии с --resume.
-READ_LINE_TIMEOUT_SECONDS = 300
+# 30 минут — покрывает тяжёлые задачи (рефакторинг крупных файлов, длинные
+# Bash-команды, extended thinking с --effort max). Во время работы инструментов
+# и фазы thinking stdout молчит — это штатное поведение, а не зависание.
+READ_LINE_TIMEOUT_SECONDS = 1800
 
 # Размер буфера StreamReader для stdout/stderr процесса Claude CLI (байты).
 # Дефолт asyncio — 64 KB на одну строку, но события stream-json могут
@@ -52,6 +55,14 @@ class ClaudeProcessError(Exception):
     """Ошибка взаимодействия с запущенным процессом Claude."""
 
 
+class BackendSubprocessStartError(Exception):
+    """Ошибка запуска subprocess для выбранного backend-а."""
+
+
+class BackendSubprocessError(Exception):
+    """Ошибка взаимодействия с backend subprocess."""
+
+
 def _build_command_args(session_id: str | None) -> list[str]:
     """Собирает аргументы командной строки для запуска Claude Code CLI."""
     args = [
@@ -61,6 +72,7 @@ def _build_command_args(session_id: str | None) -> list[str]:
         "--verbose",
         "--input-format", STREAM_JSON_INPUT_FORMAT,
         "--dangerously-skip-permissions",
+        "--effort", "max",
     ]
 
     if session_id is not None:
@@ -189,16 +201,19 @@ class ClaudeProcess:
         """Проверяет, что stdin процесса доступен."""
         if self.process.stdin is None:
             raise ClaudeProcessError("stdin процесса Claude недоступен")
+        if self.process.stdin.is_closing():
+            raise ClaudeProcessError("stdin процесса Claude закрывается")
 
     async def _write_to_stdin(self, data: str) -> None:
         """Записывает данные в stdin процесса."""
         try:
             self.process.stdin.write(data.encode("utf-8"))
             await self.process.stdin.drain()
-        except BrokenPipeError:
+        except ConnectionError as pipe_error:
             raise ClaudeProcessError(
-                "Не удалось записать в stdin: процесс Claude закрылся"
-            )
+                f"Не удалось записать в stdin: {type(pipe_error).__name__} — "
+                f"процесс Claude закрыл pipe"
+            ) from pipe_error
 
     def _update_session_id(self, event: dict) -> None:
         """Обновляет session_id из события, если ещё не установлен."""
@@ -210,9 +225,105 @@ class ClaudeProcess:
             self.session_id = extracted_id
 
 
-async def start_process(session_id: str | None = None) -> ClaudeProcess:
+class BackendSubprocess:
+    """Thin wrapper over a subprocess started for a coding-agent backend."""
+
+    def __init__(self, process: asyncio.subprocess.Process) -> None:
+        self.process = process
+
+    async def write_stdin(self, payload: bytes) -> None:
+        """Write optional stdin bytes and close stdin to deliver EOF."""
+        if self.process.stdin is None:
+            raise BackendSubprocessError("stdin backend subprocess недоступен")
+        if payload:
+            try:
+                self.process.stdin.write(payload)
+                await self.process.stdin.drain()
+            except ConnectionError as pipe_error:
+                raise BackendSubprocessError(
+                    f"Не удалось записать в stdin backend subprocess: "
+                    f"{type(pipe_error).__name__}"
+                ) from pipe_error
+        self.process.stdin.close()
+
+    async def read_stdout_line(self) -> bytes:
+        """Read one stdout line with the runner timeout."""
+        if self.process.stdout is None:
+            raise BackendSubprocessError("stdout backend subprocess недоступен")
+        try:
+            return await asyncio.wait_for(
+                self.process.stdout.readline(),
+                timeout=READ_LINE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as error:
+            raise BackendSubprocessError(
+                f"Backend subprocess не отвечает {READ_LINE_TIMEOUT_SECONDS} секунд"
+            ) from error
+
+    async def read_stderr_text(self) -> str:
+        """Read stderr text for diagnostics."""
+        if self.process.stderr is None:
+            return ""
+        raw_stderr = await self.process.stderr.read(500)
+        return raw_stderr.decode("utf-8", errors="replace").strip()
+
+    def is_running(self) -> bool:
+        """Return whether the subprocess is still running."""
+        return self.process.returncode is None
+
+    async def wait(self) -> int:
+        """Wait for subprocess completion and return its exit code."""
+        return await self.process.wait()
+
+
+async def start_subprocess_for_backend(
+    backend: CodingAgentBackend,
+    session_id: str,
+    cwd: str,
+    prompt_text: str,
+    image_paths: list[str],
+) -> BackendSubprocess:
+    """Start one backend subprocess using only the backend adapter contract."""
+    command_args = backend.compose_subprocess_command_args(
+        session_id,
+        cwd,
+        prompt_text,
+        image_paths,
+    )
+    stdin_payload = backend.encode_user_message_for_cli_stdin(prompt_text, image_paths)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command_args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=STREAM_BUFFER_LIMIT_BYTES,
+            cwd=cwd,
+        )
+    except FileNotFoundError as error:
+        raise BackendSubprocessStartError(
+            f"Не удалось запустить {backend.display_name}: CLI не найден"
+        ) from error
+    except OSError as error:
+        raise BackendSubprocessStartError(
+            f"Не удалось запустить {backend.display_name}: {error}"
+        ) from error
+
+    backend_subprocess = BackendSubprocess(process)
+    await backend_subprocess.write_stdin(stdin_payload)
+    logger.info(
+        "Backend subprocess запущен: backend=%s, PID=%d, cwd=%s",
+        backend.name.value,
+        process.pid,
+        cwd,
+    )
+    return backend_subprocess
+
+
+async def start_process(session_id: str | None = None, cwd: str | None = None) -> ClaudeProcess:
     """Запускает новый процесс Claude Code CLI."""
     command_args = _build_command_args(session_id)
+    effective_cwd = cwd if cwd is not None else config.WORKING_DIR
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -221,7 +332,7 @@ async def start_process(session_id: str | None = None) -> ClaudeProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=STREAM_BUFFER_LIMIT_BYTES,
-            cwd=config.WORKING_DIR,
+            cwd=effective_cwd,
         )
     except FileNotFoundError:
         error_message = (
@@ -240,7 +351,7 @@ async def start_process(session_id: str | None = None) -> ClaudeProcess:
         "Процесс Claude запущен: PID=%d%s, cwd=%s",
         process.pid,
         resume_info,
-        config.WORKING_DIR,
+        effective_cwd,
     )
 
     return ClaudeProcess(process)

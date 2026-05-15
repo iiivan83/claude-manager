@@ -1,0 +1,59 @@
+{
+  "agent": "classifier",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T16:12:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Классификация отклонений",
+    "files": ["02-understanding.json", "03-root-cause.json"]
+  },
+  "created_files": [],
+  "result": {
+    "classified_deviations": [
+      {
+        "deviation_id": "DEV-1",
+        "problem_type": "code_bug",
+        "scale": "isolated",
+        "severity": "blocking",
+        "reasoning": "Корневая причина всего бага. stop_process() вызывает stop_event.set(), но тут же удаляет объект Event из словаря _stop_events через pop(). После удаления _check_stop_requested() и _wait_with_stop_check() получают None вместо Event — флаг отмены невидим для retry loop. Это единственная точка отказа: именно из-за преждевременного удаления stop_event retry loop продолжает работу и создаёт новые процессы. Без исправления DEV-1 остальные фиксы бесполезны.",
+        "affected_area": "process_manager.py — stop_process(), _check_stop_requested(), _wait_with_stop_check()",
+        "skip": false,
+        "skip_reason": null
+      },
+      {
+        "deviation_id": "DEV-2",
+        "problem_type": "code_bug",
+        "scale": "isolated",
+        "severity": "blocking",
+        "reasoning": "Вторичный баг, но тоже blocking. Даже если DEV-1 будет исправлен, _restart_process() воссоздаёт запись в _processes без восстановления _stop_events и _busy_flags. Если по какой-то причине retry loop всё-таки дойдёт до _restart_process() (например, race condition между set() и проверкой), созданный процесс-зомби будет неуправляемым — повторный /stop не сможет установить флаг отмены, потому что stop_event для этого session_id не существует. Это нарушает инвариант: каждый процесс в _processes должен иметь соответствующие записи в _stop_events и _busy_flags.",
+        "affected_area": "process_manager.py — _restart_process()",
+        "skip": false,
+        "skip_reason": null
+      },
+      {
+        "deviation_id": "DEV-3",
+        "problem_type": "code_bug",
+        "scale": "isolated",
+        "severity": "important",
+        "reasoning": "Следствие DEV-1 на уровне транспортного слоя. handle_stop() в bot.py проверяет has_process() перед вызовом stop_process(). После первого /stop запись из _processes удалена — повторный /stop покажет пользователю 'нечего останавливать', хотя retry loop активен. Severity — important, а не blocking: после исправления DEV-1 retry loop будет корректно останавливаться с первого раза, и потребность в повторном /stop резко снизится. Но защитный слой (возможность повторной остановки) всё равно нужен — это правильная оборона в глубину.",
+        "affected_area": "bot.py — handle_stop()",
+        "skip": false,
+        "skip_reason": null
+      },
+      {
+        "deviation_id": "DEV-4",
+        "problem_type": "code_bug",
+        "scale": "isolated",
+        "severity": "minor",
+        "reasoning": "Edge case при смене session_id (temp -> real). Зависший busy-флаг может возникнуть только в узком окне: stop_process вызван для старого session_id ДО того, как update_session_id перенёс записи на новый. На практике это маловероятный сценарий — пользователь должен отправить /stop именно в момент смены session_id (первые миллисекунды обработки нового сообщения). Последствие — зависший busy-флаг, который заблокирует отправку следующего сообщения, но не вызовет бесконтрольное создание процессов. Пропускаем: основной баг (бесконечный retry после /stop) это отклонение не усугубляет, а фикс потребует сложной координации между stop_process и update_session_id.",
+        "affected_area": "process_manager.py — send_message.finally, взаимодействие с update_session_id()",
+        "skip": true,
+        "skip_reason": "Edge case с крайне низкой вероятностью воспроизведения. Не связан с основным багом (retry loop после /stop). Зависший busy-флаг — менее критичное последствие, чем бесконтрольное создание процессов. Фикс сложный и рискует внести новые race condition. Рекомендуется как отдельная задача после стабилизации основного исправления."
+      }
+    ],
+    "execution_order": ["DEV-1", "DEV-2", "DEV-3"],
+    "order_reasoning": "DEV-1 идёт первым — это корневая причина. Без него retry loop не видит сигнал остановки, и все остальные отклонения не имеют смысла. DEV-2 идёт вторым — он восстанавливает инвариант '_processes ↔ _stop_events ↔ _busy_flags всегда синхронизированы', что критично для надёжности повторного /stop даже после исправления DEV-1. DEV-3 идёт третьим — это защитный слой на уровне bot.py, который позволяет пользователю повторно остановить процесс, если первая остановка не сработала. Зависит от DEV-2: повторный stop_process() должен иметь рабочий stop_event, иначе он бесполезен. DEV-4 пропущен (skip: true) — edge case с низкой вероятностью, не связанный с основным багом."
+  },
+  "next_agent": "test-strategist"
+}

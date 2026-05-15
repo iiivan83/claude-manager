@@ -8,20 +8,28 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from claude_manager import daily_session_registry, session_manager
+from claude_manager.coding_agent_backend import BackendName
+from claude_manager.daily_session_registry import DailySessionEntry
 from claude_manager.session_manager import (
+    ActiveSession,
     BINDINGS_FILENAME,
     TEMP_SESSION_PREFIX,
     NewSessionResult,
     SwitchResult,
     _generate_temp_session_id,
     bind_session,
+    clear_active_session,
     create_new_session,
+    find_chat_by_session_id,
+    get_active_session,
+    get_active_session_id,
     get_all_bindings,
     get_bound_session,
     get_chat_id_for_session,
     is_monitoring_mode,
     load_bindings,
     reset_state,
+    set_active_session,
     switch_to_session,
     unbind_session,
     update_session_id,
@@ -45,11 +53,13 @@ def _reset_module_state(tmp_path: Path) -> None:
     """Сбрасывает внутреннее состояние модуля перед каждым тестом."""
     session_manager._bindings = {}
     session_manager._bindings_path = tmp_path / BINDINGS_FILENAME
+    session_manager._bindings_loaded_from_disk = True
     session_manager._lock = asyncio.Lock()
 
     # Сбрасываем состояние daily_session_registry (чтобы register_session работал)
     daily_session_registry._registry = {}
     daily_session_registry._registry_path = tmp_path / "daily_sessions.json"
+    daily_session_registry._loaded_from_disk = True
     daily_session_registry._lock = asyncio.Lock()
 
 
@@ -60,6 +70,150 @@ def bindings_path(tmp_path: Path) -> Path:
 
 
 # --- Юнит-тесты ---
+
+
+class TestBackendAwareActiveSession:
+    """Тесты backend-aware API активной сессии."""
+
+    @pytest.mark.asyncio()
+    async def test_set_active_session_with_codex_backend(self) -> None:
+        """Новая привязка хранит session_id вместе с backend."""
+        day_number = await set_active_session(
+            CHAT_ID_ALICE,
+            SESSION_FIRST,
+            BackendName.CODEX,
+        )
+
+        assert day_number == 1
+        assert get_active_session(CHAT_ID_ALICE) == ActiveSession(
+            SESSION_FIRST,
+            BackendName.CODEX,
+        )
+        assert get_active_session_id(CHAT_ID_ALICE) == SESSION_FIRST
+
+    @pytest.mark.asyncio()
+    async def test_set_active_session_saves_new_json_format(
+        self,
+        bindings_path: Path,
+    ) -> None:
+        """sessions.json хранит объект со session_id и backend."""
+        await set_active_session(CHAT_ID_ALICE, SESSION_FIRST, BackendName.CODEX)
+
+        saved_data = json.loads(bindings_path.read_text("utf-8"))
+        assert saved_data[str(CHAT_ID_ALICE)] == {
+            "session_id": SESSION_FIRST,
+            "backend": "codex",
+        }
+
+    @pytest.mark.asyncio()
+    async def test_set_active_session_registers_backend_in_daily_registry(
+        self,
+    ) -> None:
+        """Дневной реестр получает тот же backend, что активная сессия."""
+        with patch.object(
+            daily_session_registry,
+            "register_session",
+            new_callable=AsyncMock,
+            return_value=7,
+        ) as mock_register:
+            day_number = await set_active_session(
+                CHAT_ID_ALICE,
+                SESSION_FIRST,
+                BackendName.CODEX,
+            )
+
+        assert day_number == 7
+        mock_register.assert_awaited_once_with(SESSION_FIRST, BackendName.CODEX)
+
+    @pytest.mark.asyncio()
+    async def test_load_old_format_migrates_to_claude_active_session(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Старый формат chat_id -> session_id загружается как Claude-сессия."""
+        bindings_file = tmp_path / BINDINGS_FILENAME
+        bindings_file.write_text(
+            json.dumps({str(CHAT_ID_ALICE): SESSION_FIRST}),
+            "utf-8",
+        )
+
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+            await load_bindings()
+
+        assert get_active_session(CHAT_ID_ALICE) == ActiveSession(
+            SESSION_FIRST,
+            BackendName.CLAUDE,
+        )
+
+    @pytest.mark.asyncio()
+    async def test_find_chat_by_session_id_filters_by_backend(self) -> None:
+        """Обратный поиск сравнивает session_id и backend вместе."""
+        await set_active_session(CHAT_ID_ALICE, "shared-id", BackendName.CLAUDE)
+
+        assert find_chat_by_session_id("shared-id", BackendName.CODEX) is None
+        assert find_chat_by_session_id("shared-id", BackendName.CLAUDE) == CHAT_ID_ALICE
+
+    @pytest.mark.asyncio()
+    async def test_create_new_session_uses_explicit_backend(self) -> None:
+        """Новая сессия регистрируется с backend, переданным вызывающим кодом."""
+        result = await create_new_session(CHAT_ID_ALICE, BackendName.CODEX)
+
+        assert result.session_id.startswith(TEMP_SESSION_PREFIX)
+        assert result.backend == BackendName.CODEX
+        assert get_active_session(CHAT_ID_ALICE) == ActiveSession(
+            result.session_id,
+            BackendName.CODEX,
+        )
+        assert await daily_session_registry.lookup_by_number(1) == DailySessionEntry(
+            result.session_id,
+            BackendName.CODEX,
+        )
+
+    @pytest.mark.asyncio()
+    async def test_switch_to_session_uses_backend_from_daily_registry(
+        self,
+    ) -> None:
+        """Переключение /N берёт backend из дневного реестра."""
+        with patch.object(
+            daily_session_registry,
+            "lookup_by_number",
+            new_callable=AsyncMock,
+            return_value=DailySessionEntry(SESSION_SECOND, BackendName.CODEX),
+        ), patch(
+            "claude_manager.session_manager.session_reader.get_recent_sessions",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            result = await switch_to_session(CHAT_ID_ALICE, 2)
+
+        assert result.found is True
+        assert result.session_id == SESSION_SECOND
+        assert result.backend == BackendName.CODEX
+        assert get_active_session(CHAT_ID_ALICE) == ActiveSession(
+            SESSION_SECOND,
+            BackendName.CODEX,
+        )
+
+    @pytest.mark.asyncio()
+    async def test_update_session_id_preserves_backend(self) -> None:
+        """Замена временного ID на настоящий не меняет backend."""
+        await set_active_session(CHAT_ID_ALICE, SESSION_TEMP, BackendName.CODEX)
+
+        await update_session_id(CHAT_ID_ALICE, SESSION_TEMP, SESSION_REAL)
+
+        assert get_active_session(CHAT_ID_ALICE) == ActiveSession(
+            SESSION_REAL,
+            BackendName.CODEX,
+        )
+
+    @pytest.mark.asyncio()
+    async def test_clear_active_session_removes_backend_aware_binding(self) -> None:
+        """Новая отвязка удаляет ActiveSession и сохраняет пустой файл."""
+        await set_active_session(CHAT_ID_ALICE, SESSION_FIRST, BackendName.CODEX)
+
+        await clear_active_session(CHAT_ID_ALICE)
+
+        assert get_active_session(CHAT_ID_ALICE) is None
 
 
 class TestBindSession:
@@ -84,7 +238,10 @@ class TestBindSession:
 
         assert bindings_path.exists()
         saved_data = json.loads(bindings_path.read_text("utf-8"))
-        assert saved_data[str(CHAT_ID_ALICE)] == SESSION_FIRST
+        assert saved_data[str(CHAT_ID_ALICE)] == {
+            "session_id": SESSION_FIRST,
+            "backend": "claude",
+        }
 
     @pytest.mark.asyncio()
     async def test_bind_session_overwrites_previous(self) -> None:
@@ -330,8 +487,14 @@ class TestEdgeCases:
         await bind_session(CHAT_ID_BOB, SESSION_FIRST)
 
         bindings = get_all_bindings()
-        assert bindings[CHAT_ID_ALICE] == SESSION_FIRST
-        assert bindings[CHAT_ID_BOB] == SESSION_FIRST
+        assert bindings[CHAT_ID_ALICE] == ActiveSession(
+            SESSION_FIRST,
+            BackendName.CLAUDE,
+        )
+        assert bindings[CHAT_ID_BOB] == ActiveSession(
+            SESSION_FIRST,
+            BackendName.CLAUDE,
+        )
 
     @pytest.mark.asyncio()
     async def test_concurrent_bind_and_unbind(self) -> None:
@@ -402,6 +565,8 @@ class TestErrors:
             await load_bindings()
 
         assert get_all_bindings() == {}
+        await bind_session(CHAT_ID_ALICE, SESSION_FIRST)
+        assert (tmp_path / BINDINGS_FILENAME).exists()
 
     @pytest.mark.asyncio()
     async def test_load_corrupted_json_creates_empty_bindings(self, tmp_path: Path) -> None:
@@ -413,6 +578,36 @@ class TestErrors:
             await load_bindings()
 
         assert get_all_bindings() == {}
+        await bind_session(CHAT_ID_ALICE, SESSION_FIRST)
+        saved_data = json.loads(corrupted_file.read_text("utf-8"))
+        assert saved_data[str(CHAT_ID_ALICE)] == {
+            "session_id": SESSION_FIRST,
+            "backend": "claude",
+        }
+
+    @pytest.mark.asyncio()
+    async def test_failed_load_blocks_write_and_preserves_existing_file(
+        self, tmp_path: Path
+    ) -> None:
+        """После неудачной загрузки запись заблокирована и старый файл не затирается."""
+        bindings_file = tmp_path / BINDINGS_FILENAME
+        original_data = {str(CHAT_ID_ALICE): SESSION_FIRST}
+        bindings_file.write_text(json.dumps(original_data), "utf-8")
+
+        with (
+            patch("claude_manager.config.WORKING_DIR", str(tmp_path)),
+            patch.object(Path, "read_text", side_effect=OSError(11, "Resource deadlock avoided")),
+            patch("claude_manager.session_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await load_bindings()
+
+        assert get_all_bindings() == {}
+
+        with pytest.raises(RuntimeError, match="не загружены с диска"):
+            await bind_session(CHAT_ID_BOB, SESSION_SECOND)
+
+        saved_data = json.loads(bindings_file.read_text("utf-8"))
+        assert saved_data == original_data
 
     @pytest.mark.asyncio()
     async def test_save_to_readonly_directory_raises_oserror(self, tmp_path: Path) -> None:

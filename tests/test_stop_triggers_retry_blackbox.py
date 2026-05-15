@@ -35,6 +35,7 @@ def _make_mock_subprocess(pid: int = 42) -> MagicMock:
     process.stdin = MagicMock()
     process.stdin.write = MagicMock()
     process.stdin.drain = AsyncMock()
+    process.stdin.is_closing = MagicMock(return_value=False)
     process.stdout = MagicMock()
     process.stdout.readline = AsyncMock(return_value=b"")
     process.stderr = MagicMock()
@@ -117,7 +118,7 @@ class TestScenarioStopDuringRetry:
         Ожидаемый результат: send_message бросает ProcessStoppedError,
         retry loop не создаёт новых процессов.
         """
-        initial_process = _make_claude_process(events=_make_error_events())
+        test_session = "test-stop-during-wait"
 
         # Счётчик вызовов start_process — показывает, сколько процессов создано
         start_call_count = 0
@@ -125,7 +126,7 @@ class TestScenarioStopDuringRetry:
         async def counting_start(*args, **kwargs):
             nonlocal start_call_count
             start_call_count += 1
-            return _make_claude_process(events=_make_error_events())
+            return _make_claude_process(events=_make_error_events(session_id=test_session))
 
         # Имитация: во время ожидания ретрая пользователь нажал /stop
         async def user_presses_stop(sid: str, duration: float) -> None:
@@ -134,7 +135,7 @@ class TestScenarioStopDuringRetry:
 
         # start_process замокан на весь тест — и для create_process, и для retry
         with patch("claude_manager.process_manager.start_process", side_effect=counting_start):
-            session_id = await create_process()
+            session_id = await create_process(session_id=test_session)
 
             with patch.object(pm_module, "_wait_with_stop_check", side_effect=user_presses_stop):
                 with pytest.raises(ProcessStoppedError):
@@ -208,7 +209,7 @@ class TestScenarioDoubleStop:
 
         with patch("claude_manager.process_manager.start_process", mock_start):
             # Имитация: retry loop вызвал _restart_process
-            await pm_module._restart_process(session_id)
+            await pm_module._restart_process(session_id, "/test/cwd")
 
         # Повторный stop должен найти процесс
         result = await stop_process(session_id)
@@ -228,7 +229,7 @@ class TestScenarioDoubleStop:
         mock_start = AsyncMock(return_value=mock_process)
 
         with patch("claude_manager.process_manager.start_process", mock_start):
-            await pm_module._restart_process(session_id)
+            await pm_module._restart_process(session_id, "/test/cwd")
 
         await stop_process(session_id)
 
@@ -281,8 +282,9 @@ class TestScenarioFullCycleStopDuringRetry:
         С /stop — прерывается после первой попытки.
         """
         retry_count = 0
+        test_session = "test-stop-limits-retries"
 
-        async def counting_retry(sid, attempt, max_retries):
+        async def counting_retry(sid, attempt, max_retries, error_reason):
             nonlocal retry_count
             retry_count += 1
 
@@ -294,10 +296,12 @@ class TestScenarioFullCycleStopDuringRetry:
         with patch(
             "claude_manager.process_manager.start_process",
             new_callable=lambda: AsyncMock(
-                side_effect=lambda *a, **kw: _make_claude_process(events=_make_error_events()),
+                side_effect=lambda *a, **kw: _make_claude_process(
+                    events=_make_error_events(session_id=test_session),
+                ),
             ),
         ):
-            session_id = await create_process()
+            session_id = await create_process(session_id=test_session)
 
             with patch.object(pm_module, "_wait_with_stop_check", side_effect=stop_immediately):
                 with pytest.raises(ProcessStoppedError):

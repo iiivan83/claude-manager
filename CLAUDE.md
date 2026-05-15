@@ -10,8 +10,9 @@ Telegram-бот, который служит пультом управления
 - Отправка сообщений в Claude Code и получение ответов
 - Управление сессиями: создание, переключение, мониторинг
 - Наблюдение за сессиями в реальном времени (watcher)
+- Глобальный режим `/all`: мониторинг сообщений из всех проектов с переходом по командам вида `/3s12`
 - Отправка фотографий и файлов (Claude сам читает файл)
-- Доставка файлов из ответа Claude пользователю — через маркеры `[SEND_FILE:path]` в тексте ответа
+- Доставка файлов из ответа Claude пользователю — через маркеры `[SEND_FILE:path]` и `[SHOW_FILE:path]` в тексте ответа
 - Дневная нумерация сессий (#1, #2, #3...)
 - Переключение между проектами прямо из Telegram (команда `/projects` и `/pN`)
 
@@ -32,7 +33,14 @@ Telegram-бот, который служит пультом управления
 
 Скиллы живут в `.claude/skills/`. Каждый — папка с `SKILL.md` и (опционально) агентами, скриптами, справочными материалами. Правила для скиллов — в `.claude/skills/AGENTS.md`.
 
-Актуальный список скиллов с описаниями — в `dev/docs/skill-index.md`.
+Для Codex runtime используется generated full mirror model: управляемые Codex-копии
+лежат в `.agents/skills/**`, а адаптер терминов Claude-only — в
+`.agents/codex-skill-adapter.md`. Claude source remains source of truth: содержательные
+правки делаются в `.claude/skills/**` или `claude-sandbox/shared-skills/**`, после чего
+зеркала пересоздаются через sync tooling проекта `budgets`
+(`dev/scripts/codex-skill-mirrors/sync-codex-skill-mirrors.sh`) и проверяются через
+`validate-codex-skill-mirrors.sh`. Generated mirrors не поддерживаются руками.
+
 
 ## Технологии
 
@@ -50,23 +58,33 @@ Telegram-бот, который служит пультом управления
 ```
 claude_manager/
 ├── watch_and_restart.sh      # Наблюдатель: перезапускает бота при изменении .py файлов
+├── restart-claude-manager.sh # Рестарт бота: preflight + kickstart + post-flight (только из терминала)
+├── start-claude-manager.sh   # Обёртка для launchd (reference-копия, launchd использует ~/.local/bin/start-claude-manager.sh)
+├── .venv -> ~/.venvs/claude-manager/  # Симлинк на venv вне TCC-зоны Desktop
 ├── src/claude_manager/       # Весь продакшен-код
 │   ├── __init__.py           # Маркер пакета
 │   ├── __main__.py           # Запуск через python -m claude_manager
 │   ├── main.py               # Точка входа: настройка логов, блокировка, запуск polling
-│   ├── bot.py                # Транспортный слой: обработчики Telegram-команд и сообщений
+│   ├── bot.py                # Транспортный слой: обработчики Telegram-команд, настройка Application
+│   ├── telegram_sender.py    # Отправка сообщений в Telegram с retry, fallback на plain text
+│   ├── telegram_file_downloader.py  # Скачивание файлов из Telegram на диск с retry при таймаутах
+│   ├── media_group_handler.py      # Агрегация фото-альбомов (media_group_id → единый пакет для Claude)
+│   ├── file_delivery.py      # Обработка маркеров [SEND_FILE:path] и [SHOW_FILE:path] в ответах Claude
+│   ├── claude_interaction.py  # Оркестрация запросов к Claude: занятость, progress, watchdog, финальный ответ
 │   ├── config.py             # Загрузка и валидация настроек из .env
 │   ├── claude_runner.py      # Обёртка для запуска Claude Code CLI (subprocess + stream-json)
 │   ├── process_manager.py    # Жизненный цикл процессов Claude (ретраи, /stop, прогресс)
 │   ├── session_manager.py    # Привязка chat_id ↔ session_id, переключение сессий
 │   ├── session_reader.py     # Чтение JSONL-файлов сессий Claude Code с диска
 │   ├── session_watcher.py    # Мониторинг сессий в реальном времени (polling каждые 2 сек)
+│   ├── all_projects_monitor.py  # Глобальный мониторинг всех проектов для режима /all
 │   ├── message_splitter.py   # Markdown→HTML конвертация и разбивка на части до 4096 символов
 │   ├── file_sender.py        # Парсинг маркеров [SEND_FILE:path], определение типа файла, рендеринг через telegramify-markdown
 │   ├── daily_session_registry.py  # Дневная нумерация сессий (#1, #2, #3...)
 │   ├── project_manager.py    # Сканирование и переключение между проектами (команда /projects)
-│   └── unread_buffer.py      # Буфер непрочитанных сообщений при переключении проектов
-├── tests/                    # Тесты (590 тестов)
+│   ├── unread_buffer.py      # Буфер непрочитанных сообщений при переключении проектов
+│   └── silence_mode_registry.py  # Режим тишины: подавление промежуточных, доставка только финальных
+├── tests/                    # Тесты (921 тест)
 │   ├── test_*.py             # Юнит-тесты (по одному на каждый модуль src/)
 │   ├── conftest.py           # Общие фикстуры для тестов
 │   ├── integration/          # Интеграционные тесты (жизненный цикл сессий, конкуренция)
@@ -96,11 +114,11 @@ claude_manager/
 
 Код организован по слоям с чёткими границами ответственности:
 
-- **Транспортный слой** (bot.py) — приём сообщений из Telegram, отправка ответов. Знает о Telegram API, не знает как работает Claude.
-- **Слой бизнес-логики** (session_manager, daily_session_registry, project_manager) — управление сессиями, нумерация, переключение между проектами. Не знает ни про Telegram, ни про процессы.
+- **Транспортный слой** (bot.py, telegram_sender, telegram_file_downloader, media_group_handler, file_delivery, claude_interaction) — приём сообщений из Telegram, отправка ответов, скачивание файлов, агрегация альбомов, доставка файлов из ответа Claude, оркестрация запросов к Claude CLI. Модуль bot.py — точка входа слоя: обработчики команд, настройка Application, инициализация callback-зависимостей. Остальные модули слоя не импортируют bot.py — зависимости разрешаются через callback-функции, которые bot.py передаёт при старте (init_callbacks). Знает о Telegram API, не знает внутренности Claude.
+- **Слой бизнес-логики** (session_manager, daily_session_registry, project_manager, silence_mode_registry) — управление сессиями, нумерация, переключение между проектами, режим тишины. Не знает ни про Telegram, ни про процессы.
 - **Слой инфраструктуры** (process_manager, claude_runner) — запуск процессов, чтение stdout, протокол stream-json. Не знает про Telegram.
 - **Утилиты** (message_splitter, session_reader, file_sender) — вспомогательные функции без состояния.
-- **Мониторинг** (session_watcher) — фоновый цикл опроса файлов сессий, координация с обработчиком через pause/resume. Зависит от session_manager для определения владельца сессии (отправляет уведомления только ему, а не всем пользователям).
+- **Мониторинг** (session_watcher, all_projects_monitor) — `session_watcher` опрашивает сессии активного проекта и координируется с обработчиком через pause/resume; `all_projects_monitor` опрашивает все проекты в режиме `/all`, хранит отдельные cursor-счётчики и не помечает сообщения прочитанными для обычной pending-доставки.
 
 **Правило зависимостей:** верхний слой может вызывать нижний, но не наоборот. Инфраструктура не импортирует бизнес-логику.
 
@@ -110,19 +128,34 @@ claude_manager/
 
 ### Состояние в памяти
 
-Состояние хранится в словарях на уровне модулей: session_manager (привязки chat_id → session_id), daily_session_registry (дневные номера), process_manager (процессы, флаги занятости), session_watcher (счётчики обработанных сообщений). Персистентность — через JSON-файлы (sessions.json, daily_sessions.json). При потере состояния в памяти — автовосстановление из файлов при перезапуске. Конкурентный доступ к словарям состояния в `process_manager` защищён `asyncio.Lock` (`_busy_lock`) — Lock захватывается только на короткие критические секции (проверка и установка busy-флага, очистка, перенос ключей), чтобы не блокировать длительные операции.
+Состояние хранится в словарях на уровне модулей: session_manager (привязки chat_id → session_id), daily_session_registry (дневные номера), process_manager (процессы, флаги занятости), session_watcher (счётчики обработанных сообщений активного проекта), all_projects_monitor (чаты в global all, cursor-счётчики по проекту/сессии/backend и link registry для команд `/3s12`). Персистентность — через JSON-файлы (sessions.json, daily_sessions.json). При потере состояния в памяти — автовосстановление из файлов при перезапуске. Конкурентный доступ к словарям состояния в `process_manager` защищён `asyncio.Lock` (`_busy_lock`) — Lock захватывается только на короткие критические секции (проверка и установка busy-флага, очистка, перенос ключей), чтобы не блокировать длительные операции.
 
 ### Защита персистентных данных от затирания
 
-Модули с файловым хранилищем (daily_session_registry, session_manager) отслеживают флаг `_loaded_from_disk`. При запуске модуль пытается загрузить файл с диска (с повторными попытками при ошибке). Функция записи на диск проверяет этот флаг и отказывается записывать, если состояние не было загружено — чтобы пустые данные не перезаписали валидный файл. Если загрузка не удалась после всех попыток — бот сообщает пользователю в Telegram.
+Модуль `daily_session_registry` отслеживает флаг `_loaded_from_disk`. При запуске модуль пытается загрузить файл с диска (с повторными попытками при ошибке). Функция записи на диск проверяет этот флаг и отказывается записывать, если состояние не было загружено — чтобы пустые данные не перезаписали валидный файл. Модуль `session_manager` использует аналогичную защиту через флаг `_bindings_loaded_from_disk`: отсутствие файла и битый JSON считаются загруженным пустым состоянием, а исчерпанный retry при `OSError` оставляет флаг `False` и блокирует запись в `sessions.json`. Если загрузка не удалась после всех попыток — бот сообщает пользователю в Telegram.
 
 ### Атомарность переключения проекта
 
 Переключение проекта затрагивает глобальное состояние нескольких модулей (`config.WORKING_DIR`, `daily_session_registry._registry_path`, `session_manager`, `session_watcher`). Фоновые asyncio-задачи (watcher) не должны видеть промежуточное состояние — когда одни модули уже переключены, а другие ещё нет. Перед изменением `config.WORKING_DIR` watcher приостанавливается через `session_watcher.pause_all()`, после полного сброса всех state-модулей — возобновляется через `session_watcher.resume_all()`. Блок переключения обёрнут в try/finally, чтобы resume_all() вызывался даже при ошибке.
 
+### Изоляция обработчиков по контексту проекта
+
+Асинхронные обработчики в `bot.py` (`_send_to_claude_and_respond` и любые будущие long-running handlers) могут пережить переключение проекта. `config.WORKING_DIR`, `daily_session_registry`, `session_manager` и `session_watcher` сбрасываются при переключении, но запущенные async-задачи продолжают выполняться. Любой обработчик, который ожидает долгую операцию (ответ от Claude, скачивание файла), обязан захватить `config.WORKING_DIR` на старте и проверить его перед доставкой результата. Если проект сменился — доставка подавляется, ответ остаётся на диске и будет доставлен через `unread_buffer` при возврате пользователя в проект.
+
+### Привязка рабочей директории к запросу
+
+Рабочая директория (`config.WORKING_DIR`) для запуска процесса Claude CLI фиксируется один раз — в момент вызова `send_message`. Все последующие операции (ретраи, перезапуск процесса) используют захваченное значение, а не текущее состояние `config.WORKING_DIR`. Это расширение принципа изоляции обработчиков: не только callback-функции, но и инфраструктурный слой (`process_manager`, `claude_runner`) не должны зависеть от мутабельного глобального состояния во время жизненного цикла запроса.
+
 ### Однопользовательский инвариант
 
 Бот архитектурно однопользовательский. `ALLOWED_USER_IDS` допускает несколько Telegram ID, но только для одного человека с разных устройств (телефон, десктоп). Все модули хранят состояние в глобальных словарях без изоляции по `chat_id`: `config.WORKING_DIR` — один проект на весь процесс, `session_watcher` — рассылает уведомления владельцу сессии (с fallback на всех из белого списка), `project_manager.reset_state()` — сбрасывает состояние всех пользователей. Добавление ID другого человека (включая E2E тестовый аккаунт) в `ALLOWED_USER_IDS` сломает бота: дублирование сообщений, потеря привязок к сессиям, конфликты при переключении проектов.
+
+## Принципы эксплуатации
+
+- **Принцип verify-before-and-after для рестарта сервисов.** Любой рестарт через `launchctl kickstart -k` или аналог обязан включать pre-flight (проверка editable install, import, конфиг, зависимости) и post-flight. Для launchd-сервисов, запущенных через shell-обёртку, post-flight обязан проверять не только PID обёртки в `launchctl list`, но и дочерний процесс реального приложения. Для claude-manager это Python-процесс `claude_manager` под `~/.local/bin/start-claude-manager.sh`; stale `last exit code = -15` не считается провалом, если Python-бот уже запущен. Голый `kickstart` без проверок — запрещён. Для claude-manager использовать `restart-claude-manager.sh` (который уже включает preflight + kickstart + post-flight). Инцидент-источники: 20-04-2026, рестарт без pre-flight после пересоздания venv — бот работал 7 часов на инерции, kickstart обнажил сломанный editable install; 14-05-2026, post-flight ложно падал на stale `-15` и затем был усилен проверкой дочернего Python-процесса
+- **Принцип изоляции venv от TCC-защищённых директорий.** `~/Desktop` (и `~/Documents`, `~/Downloads`) — TCC-защищённые директории macOS. Файлы внутри них получают `com.apple.provenance` xattr, который наследуется в `.venv/lib/python3.13/site-packages/` и устанавливает `UF_HIDDEN` на `.pth`-файлы. Python 3.13 `site.py:177-180` молча пропускает скрытые `.pth` → `ModuleNotFoundError`. APFS восстанавливает `UF_HIDDEN` даже после `chflags nohidden` и `xattr -rc` — единственное надёжное решение: создавать venv вне TCC-зоны. Текущее расположение: `~/.venvs/claude-manager/` с симлинком `.venv` → `~/.venvs/claude-manager/` в проекте. При пересоздании venv: `python3.13 -m venv ~/.venvs/claude-manager/ && source .venv/bin/activate && pip install -e ".[dev]"`. Диагностика: `source .venv/bin/activate && python -c "import os,stat; s=os.stat('.venv/lib/python3.13/site-packages/__editable__.claude_manager-0.1.0.pth'); print(hex(s.st_flags), bool(s.st_flags & stat.UF_HIDDEN))"` — должно быть `0x0 False`. Инцидент-источник: 03-05-2026, ADR: `dev/docs/adr/03.05_10.58-...-venv-launchd-migration-out-of-desktop.md`
+- **Принцип изоляции скрипта запуска от TCC-зоны.** launchd не может запускать bash-скрипты из `~/Desktop` — macOS блокирует доступ (`Operation not permitted`). Скрипт запуска живёт в `~/.local/bin/start-claude-manager.sh` (копия из проекта с обновлёнными путями). Оригинал `start-claude-manager.sh` в проекте сохранён для iCloud-синхронизации и справки. launchd plist указывает на `~/.local/bin/start-claude-manager.sh` с `WorkingDirectory=/Users/ivan`. При изменениях в логике запуска — обновлять ОБА файла. Инцидент-источник: 03-05-2026
+- **Принцип запрета самоперезапуска из собственного дерева процессов.** Бот (или любой launchd-сервис) не может перезапустить себя из своего же subprocess-дерева. `restart-claude-manager.sh`, вызванный через Claude Code Bash tool, убивает собственное дерево процессов (бот → Claude CLI → bash → kickstart → убивает бот → убивает Claude CLI → убивает bash), exit 137, бесконечный retry. Безопасные альтернативы: команда `/restart` в боте (detached `asyncio.create_subprocess_exec` с `start_new_session=True`) или вызов скрипта из внешнего терминала/агента. Инцидент-источник: 22-04-2026
 
 ## Принципы разработки скиллов и пайплайнов
 
@@ -164,6 +197,14 @@ claude_manager/
 - **E2E тесты** (`tests/e2e/`) — через Telethon, реальные сообщения в Telegram
 - asyncio_mode = "auto" (не нужен декоратор `@pytest.mark.asyncio` на каждом тесте)
 
+## Принцип обязательного editable install
+
+Editable install (`pip install -e .`) — обязательная часть рабочего venv. Venv живёт в `~/.venvs/claude-manager/` (симлинк `.venv` в проекте). После пересоздания venv: `python3.13 -m venv ~/.venvs/claude-manager/ && source .venv/bin/activate && pip install -e ".[dev]"` и проверить: `python -c "import claude_manager"`. **ВАЖНО:** создавать venv именно в `~/.venvs/`, а не в проекте — иначе APFS навесит `com.apple.provenance` → `UF_HIDDEN` → `ModuleNotFoundError` (см. «Принцип изоляции venv от TCC-защищённых директорий»). Без этого `python -m claude_manager` упадёт с `No module named claude_manager` — но **может не упасть сразу**, если живой процесс держит модуль в памяти. Мина сработает при первом рестарте. Venv без проверенного editable install считается сломанным.
+
+## Принцип retry-обёртки для launchd-сервисов
+
+Python-сервисы под launchd запускаются через shell-обёртку (`~/.local/bin/start-claude-manager.sh`) с retry-логикой, а не напрямую. Причина: Python 3.13 может крэшиться при инициализации из-за `InterruptedError` в `getpath.py` (PEP 475 ещё не активен на стадии `core initialized`). Без обёртки единственный retry — `ThrottleInterval` от launchd, что при transient errors превращает одиночный сбой в часы простоя. Обёртка делает до 3 retry с интервалом 10 секунд и уведомляет пользователя через Telegram при исчерпании попыток.
+
 ## Команды разработки
 
 ```bash
@@ -189,6 +230,10 @@ python -m claude_manager
 launchctl load ~/Library/LaunchAgents/com.ivan.claude-manager.plist
 launchctl unload ~/Library/LaunchAgents/com.ivan.claude-manager.plist  # остановить
 
+# Рестарт бота (preflight + kickstart + post-flight)
+# ТОЛЬКО из терминала или внешнего агента. НЕ вызывать из подпроцесса бота — exit 137
+./restart-claude-manager.sh
+
 # Логи автозапуска
 cat ~/Library/Logs/claude-manager.log
 
@@ -200,15 +245,21 @@ python tests/e2e/check_connection.py test
 
 - **Протокол stream-json:** полная документация формата сообщений — в `dev/docs/claude-cli-stream-json-protocol.md`. Формат пользовательского сообщения: `{"type": "user", "message": {"role": "user", "content": "текст"}}`. НЕЛЬЗЯ использовать `user_message` — Claude CLI молча зависнет без ошибки
 - **Контракты с внешними системами проверяются эмпирически, а не по догадке.** Когда код зависит от точного поведения внешнего инструмента или API (например, как Claude Code CLI формирует имя папки сессий, как Telegram Bot API экранирует HTML, как ОС обрабатывает файловые блокировки), это поведение должно быть либо получено из исходников внешнего инструмента (с указанием файла и строки в комментарии), либо проверено реальным вызовом и наблюдением результата. Предположения «скорее всего работает так» и «это очевидно» — неприемлемы для контрактов с внешними системами. Одна ошибка в догадке становится миной, которая срабатывает через месяцы. Исходники Claude Code CLI лежат в `~/Desktop/claude-sandbox/claude-code-sourcecode/`.
+- **Контракт имени папки сессий Claude CLI.** `session_reader._encode_project_path()` повторяет `sanitizePath`: все символы кроме латинских букв и цифр заменяются на дефис; если sanitized-строка длиннее 200 символов, добавляется hash suffix. Для длинных путей `build_sessions_path()` сначала проверяет точное имя, затем ищет существующую папку по 200-символьному prefix, потому что реальный Claude CLI под Bun может использовать `Bun.hash`, а SDK fallback — `djb2Hash`. Контрактный тест обязан запускать реальный Claude binary (`CLAUDE_REAL_BIN` или `/Users/ivan/.npm-global/bin/claude`), а не локальный compatibility wrapper `claude`.
 - Telegram ограничивает сообщения до 4096 символов — длинные ответы разбиваются с починкой HTML-тегов
 - Watcher и handle_message координируются через механизм паузы (pause_session/resume_session в session_watcher), чтобы не дублировать ответы
+- **Глобальный режим `/all`.** `all_projects_monitor` сканирует все проекты из `PROJECTS_ROOT_DIR` и все CLI-бэкенды, показывает сообщения с префиксом `/<project_number>s<session_number> <project_name>`, блокирует текст/фото/документы/`/new` до входа в конкретный проект и сессию. Доставка в `/all` сохраняет snapshot в `unread_buffer`, но двигает только cursor самого `all_projects_monitor`: при входе в исходный проект сообщение повторно доставляется обычным pending-путём. Если выход из `/all` через `/pN` или `/3s12` падает, бот снова включает `all_projects_monitor` и не вызывает `session_watcher.resume_all()` поверх глобального режима.
 - Session_id может измениться в любом событии от Claude — нужно обновлять ключи во всех словарях
 - **Единство идентификатора сессии (temp → real).** При создании новой сессии бот присваивает временный ID `_new_XXXX`, а Claude CLI создаёт файл с реальным UUID. Между появлением этого файла на диске и обновлением привязок в памяти бота есть опасный зазор: `session_watcher` сканирует файлы каждые 2 секунды, находит UUID, не знает что он связан с `_new_XXXX` (на паузе), и регистрирует дубликат. Принцип: замена `session_id` (temp → real) должна происходить мгновенно, при первом обнаружении нового ID в потоке событий от Claude, а не по завершении обработки сообщения. Все модули, которые зависят от `session_id` — `session_manager`, `session_watcher`, `daily_session_registry` — уведомляются в одном атомарном шаге. Реализация — `session_id_callback` в `process_manager.send_message()`: при получении первого события с реальным `session_id` callback обновляет все привязки до того, как watcher успеет проснуться и увидеть новый файл
+- **Принцип прямой адресации callback'ов.** Callback-функции (progress, retry, watchdog), которые должны отправить сообщение пользователю, НЕ ищут `chat_id` по `session_id` через привязки — `session_id` может измениться в любой момент (temp → real), и поиск по старому ID вернёт пустой результат. Вместо этого callback'и определяются как замыкания внутри `_send_to_claude_and_respond` и захватывают `chat_id` напрямую. Единственный источник правды для адресата — `chat_id`, захваченный в момент вызова
+- **Принцип stale session_id.** После вызова `session_id_callback` все использования оригинального `session_id`-параметра считаются stale. Функции, которые читают поток событий (`_process_events`) или выполняют ретраи (`_retry_loop`), обязаны использовать обновлённый session_id (`final_session_id`) для всех операций: проверка `/stop`, отправка progress, перезапуск процесса. Внутренние словари process_manager (`_processes`, `_busy_flags`, `_stop_events`) ремаппятся через `update_session_id()` прямо в `_process_events` — до вызова `session_id_callback`, чтобы `/stop` из Telegram мог найти stop_event по новому ключу. На время активного `send_message()` старые temp-id сохраняются в `_session_id_aliases`, поэтому `stop_process()`, `is_busy()` и `has_process()` разрешают stale temp-id в реальный UUID; алиасы удаляются в финальном cleanup
 - Глобальная файловая блокировка `~/.claude-manager.lock` через fcntl.flock() — защита от запуска двух копий бота (единый путь для LaunchAgent, watch_and_restart.sh и ручного запуска)
 - При подключении к сессии через `/N` бот создаёт ОТДЕЛЬНЫЙ процесс с `--resume`, а не подключается к терминальному. Терминальная сессия не видит сообщения от бота — они работают через общий файл на диске
 - **Переключение проектов** (команда `/projects`, `/pN`) — приостанавливает watcher через `session_watcher.pause_all()`, меняет глобальную переменную `config.WORKING_DIR`, сбрасывает внутреннее состояние модулей через `session_manager.reset_state()`, `daily_session_registry.reset_state()`, `session_watcher.reset_state()`, возобновляет watcher через `session_watcher.resume_all()` (в finally-блоке). Перед переключением сохраняет снапшот счётчиков watcher через `unread_buffer.save_snapshot()` (чтобы при возврате знать, какие сообщения уже были обработаны). При загрузке реестра (`daily_sessions.json`) из нового проекта автоматически удаляются записи-сироты (session_id без .jsonl файла на диске). **Процессы Claude НЕ останавливаются** — они продолжают работать в фоне. При возврате в проект бот доставляет непрочитанные сообщения (накопленные за время отсутствия, TTL 3 часа). Последний выбранный проект сохраняется в `~/.claude-manager-current-project` и восстанавливается при следующем старте. Путь корневой папки для поиска проектов задаётся переменной окружения `PROJECTS_ROOT_DIR` (по умолчанию `/Users/ivan/Desktop/claude-sandbox`)
-- **Маркеры `[SEND_FILE:path]`:** когда Claude хочет отправить файл пользователю, он вставляет в ответ маркер `[SEND_FILE:/absolute/path]`. Модуль `file_sender` (утилита без состояния) парсит маркеры, определяет тип файла (текстовый или бинарный) и готовит данные для отправки. Текстовые файлы рендерятся через `telegramify-markdown` и отправляются как сообщения с entities (нативное форматирование Telegram), бинарные — через `send_document`. Маркеры обрабатываются только в финальных ответах (`is_final=True`) — промежуточные обновления (thinking) их не трогают. Функция `_process_file_markers` в `bot.py` вызывается перед `message_splitter.prepare_message` и возвращает очищенный текст без маркеров
+- **Маркеры доставки файлов:** два маркера различают намерение пользователя. `[SEND_FILE:/absolute/path]` — всегда отправляет файл как document-вложение через `send_document`, независимо от типа файла (текстовый или бинарный). Используется когда пользователь просит «пришли файл», «скинь», «отправь файлом». `[SHOW_FILE:/absolute/path]` — показывает содержимое текстового файла в чате через `telegramify-markdown` с entities (нативное форматирование Telegram); бинарные файлы и текстовые файлы больше 1 МБ автоматически отправляются как document-вложение с пояснением. Используется когда пользователь просит «покажи содержимое», «что в файле». Модуль `file_sender` (утилита без состояния) парсит оба типа маркеров. Маркеры обрабатываются только в финальных ответах (`is_final=True`) — промежуточные обновления (thinking) их не трогают. Функции `process_file_markers` и `process_show_file_markers` в модуле `file_delivery` вызываются перед `message_splitter.prepare_message` и возвращают очищенный текст без маркеров
 - **E2E тестирование и изоляция:** E2E тесты через Telethon используют отдельный Telegram-аккаунт. Этот аккаунт НЕ добавляется в `ALLOWED_USER_IDS` основного бота — это создаёт многопользовательский сценарий, который архитектура не поддерживает. Для E2E тестирования используется отдельная переменная `E2E_TEST_USER_ID` в `.env`. Бот принимает сообщения от этого ID через отдельную проверку в `_check_access` (функция авторизации в `bot.py`), но watcher (фоновый наблюдатель за сессиями) не шлёт ему broadcast-уведомления — только прямые ответы на его сообщения как владельцу сессии
+- **Silence mode (режим тишины).** Текстовые команды `Silence on` / `Silence off` (регистронезависимые) управляют глобальным режимом подавления промежуточных сообщений. Когда silence mode включён — бот доставляет только финальные ответы Claude (`is_final=True`), подавляя промежуточные обновления (thinking, progress) как в `send_response`, так и в `send_watcher_message`. Команды перехватываются в `handle_message` ПОСЛЕ `_check_access` и ДО `is_monitoring_mode` — работают в любом состоянии. Состояние персистентно через модуль `silence_mode_registry` (файл `~/.claude-manager-silence-mode`, паттерн `_loaded_from_disk` + атомарная запись). Режим глобальный — не сбрасывается при переключении проектов. Загрузка состояния в `post_init`
+- **Транзиентная ошибка EDEADLK (errno 11) на macOS.** macOS может вернуть `EDEADLK` (errno 11, «Resource deadlock avoided») на обычный `read()` при высокой конкуренции процессов за файлы в одной папке (множество процессов Claude Code с `cwd` на одну директорию вызывают конкуренцию внутренних VFS-блокировок APFS). Ошибка транзиентная — через секунды файл снова читается нормально. Все модули, читающие файлы состояния при переключении проектов (`session_manager.load_bindings()`, `daily_session_registry._read_registry_file()`), должны быть устойчивы к транзиентным `OSError` — использовать retry с fallback на пустое состояние
 
 ## Стандарты разработки скиллов и пайплайнов
 

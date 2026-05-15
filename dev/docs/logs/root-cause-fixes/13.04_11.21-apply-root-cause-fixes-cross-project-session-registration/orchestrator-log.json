@@ -1,0 +1,14 @@
+{
+  "pipeline": "apply-root-cause-fixes",
+  "created_at": "2026-04-13T11:21:00+03:00",
+  "report_file": "/Users/ivan/Desktop/claude-sandbox/claude_manager/dev/docs/logs/root-cause-reports/13-04_10-44_cross-project-session-registration.md",
+  "steps": [
+    {
+      "phase": "phase-0",
+      "start_time": "2026-04-13T11:21:00+03:00",
+      "end_time": "2026-04-13T11:21:30+03:00",
+      "success": true,
+      "comment": "Отчёт прочитан. Извлечено 7 рекомендаций: 4x[CODE], 1x[ARCHITECTURE], 1x[DOC], 1x[SKILL]"
+    }
+  ]
+}

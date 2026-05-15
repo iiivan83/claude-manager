@@ -1,0 +1,32 @@
+{
+  "agent": "implementation-risk-spec-reviewer",
+  "status": "success",
+  "result_file": "agent-outputs/implementation-risk-spec-reviewer.result.md",
+  "findings_file": "agent-outputs/implementation-risk-spec-reviewer.findings.json",
+  "ready_to_move_to_realised": [
+    "dev/docs/specs/coding_agent_backend_spec.md",
+    "dev/docs/specs/claude_code_backend_spec.md",
+    "dev/docs/specs/codex_backend_spec.md",
+    "dev/docs/specs/current_backend_registry_spec.md",
+    "dev/docs/specs/daily_session_registry_spec.md",
+    "dev/docs/specs/session_manager_spec.md",
+    "dev/docs/specs/unread_buffer_spec.md",
+    "dev/docs/specs/process_manager_spec.md",
+    "dev/docs/specs/session_watcher_spec.md",
+    "dev/docs/specs/telegram_agent_backend_integration_spec.md",
+    "dev/docs/specs/agent_backend_selection_user_journey_spec.md"
+  ],
+  "unfinished_specs_to_review": [
+    "dev/docs/specs/project_manager_spec.md"
+  ],
+  "decisions": [
+    "spec-creator skill was not present in .claude or .agents, so the review used the requested general quality criteria.",
+    "Eleven active backend-aware specs are implemented in code and covered by the available tests.",
+    "project_manager_spec.md is the only reviewed unfinished spec.",
+    "The unfinished project_manager scope is limited to Telegram /next and /prev command wiring plus one stale pending-delivery call example.",
+    "BRD, implementation order, and dependency graph were used as context, not classified as unfinished module specs."
+  ],
+  "next_step_input": {
+    "summary": "Move the ready specs to realised; either wire /next and /prev in bot.py with tests or split those commands into a future spec before moving project_manager_spec.md."
+  }
+}

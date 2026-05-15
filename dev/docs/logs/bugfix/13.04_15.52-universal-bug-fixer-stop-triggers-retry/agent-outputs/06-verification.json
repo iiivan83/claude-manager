@@ -1,0 +1,116 @@
+{
+  "agent": "critical-verifier",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T16:35:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Верификация решений",
+    "files": ["01-intake.json", "02-understanding.json", "03-root-cause.json", "04-classification.json", "05-test-strategy.json"]
+  },
+  "created_files": [],
+  "result": {
+    "overall_verdict": "approved",
+    "deviation_verdicts": [
+      {
+        "deviation_id": "DEV-1",
+        "verdict": "approved",
+        "previously_approved": false,
+        "changed_since_last_approval": null,
+        "assessment": {
+          "root_cause": {
+            "correct": true,
+            "comment": "Подтверждено по исходному коду. Строка 525 (process_manager.py): _stop_events.pop(session_id, None) удаляет Event из словаря сразу после set() на строке 520. Обе функции-потребители — _check_stop_requested (строка 160: _stop_events.get(session_id)) и _wait_with_stop_check (строка 339: _stop_events.get(session_id)) — получают None после удаления и не бросают ProcessStoppedError. Цепочка подтверждена: _retry_loop (строка 308) вызывает _check_stop_requested, затем _wait_with_stop_check (строка 317) — обе проверки проваливаются, _execute_single_retry (строка 262) вызывает _restart_process, цикл продолжается."
+          },
+          "classification": {
+            "correct": true,
+            "comment": "code_bug, isolated, blocking — верно. Это единственная корневая точка отказа: удаление stop_event обрывает канал связи между stop_process и retry loop. Без этого фикса остальные бесполезны."
+          },
+          "test_strategy": {
+            "adequate": true,
+            "comment": "3 whitebox теста покрывают все три точки, где stop_event проверяется: _check_stop_requested, _wait_with_stop_check, и контекст retry loop. Blackbox тесты (TestScenarioStopDuringRetry) проверяют сквозной сценарий. Покрытие достаточное."
+          },
+          "unnecessary_work": null,
+          "missing_coverage": null
+        },
+        "adjustments": []
+      },
+      {
+        "deviation_id": "DEV-2",
+        "verdict": "approved",
+        "previously_approved": false,
+        "changed_since_last_approval": null,
+        "assessment": {
+          "root_cause": {
+            "correct": true,
+            "comment": "Подтверждено по исходному коду. _restart_process (строки 348-368): записывает только _processes[session_id] (строка 362 под _busy_lock), но не создаёт записи в _stop_events и _busy_flags. Для сравнения — create_process (строки 397-400) инициализирует все три словаря атомарно: _processes, _busy_flags, _stop_events. Нарушение инварианта очевидно: после _restart_process процесс есть в _processes, но отсутствует в двух других словарях."
+          },
+          "classification": {
+            "correct": true,
+            "comment": "code_bug, isolated, blocking — верно. Даже после исправления DEV-1 (stop_event остаётся в словаре), _restart_process создаёт процесс без stop_event. Повторный /stop для перезапущенного процесса не найдёт Event и не сможет установить флаг отмены. Severity blocking оправдана — без фикса нарушается инвариант управляемости процессов."
+          },
+          "test_strategy": {
+            "adequate": true,
+            "comment": "4 whitebox теста: проверка создания stop_event, busy_flag, работоспособность stop_process после restart, и инвариант синхронизации трёх словарей. Blackbox тесты (TestScenarioDoubleStop) покрывают сквозной сценарий повторного /stop. Тест инварианта (test_invariant_processes_sync_with_control_structures) — правильный контрактный тест."
+          },
+          "unnecessary_work": null,
+          "missing_coverage": null
+        },
+        "adjustments": []
+      },
+      {
+        "deviation_id": "DEV-3",
+        "verdict": "approved",
+        "previously_approved": false,
+        "changed_since_last_approval": null,
+        "assessment": {
+          "root_cause": {
+            "correct": true,
+            "comment": "Подтверждено по исходному коду. bot.py строки 709-715: handle_stop проверяет has_process(session_id) перед вызовом stop_process. has_process (process_manager.py строки 566-571) проверяет _processes.get(session_id) и is_running(). После первого /stop запись удалена из _processes (строка 523), has_process возвращает False, пользователь видит 'нечего останавливать'. Между тем retry loop активен — он работает в _retry_loop корутине, которая не зависит от наличия записи в _processes (проверяет _stop_events)."
+          },
+          "classification": {
+            "correct": true,
+            "comment": "code_bug, isolated, important — верно. Severity important, а не blocking: после исправления DEV-1 и DEV-2 retry loop будет корректно останавливаться с первого /stop, потребность в повторном /stop резко снижается. Но защитный слой (defense in depth) правильный — handle_stop должен работать независимо от внутреннего состояния retry loop."
+          },
+          "test_strategy": {
+            "adequate": true,
+            "comment": "2 whitebox теста: вызов stop_process при busy=True и has_process=False, и проверка текста подтверждения. Достаточно для important-severity. Blackbox покрытие через TestScenarioDoubleStop."
+          },
+          "unnecessary_work": null,
+          "missing_coverage": null
+        },
+        "adjustments": []
+      },
+      {
+        "deviation_id": "DEV-4",
+        "verdict": "skip",
+        "previously_approved": false,
+        "changed_since_last_approval": null,
+        "assessment": {
+          "root_cause": {
+            "correct": true,
+            "comment": "Анализ корректный. Edge case при пересечении stop_process и update_session_id действительно существует, но вероятность воспроизведения крайне низкая — требует /stop именно в момент смены temp->real session_id."
+          },
+          "classification": {
+            "correct": true,
+            "comment": "minor, skip — согласен. Не связан с основным багом, последствие (зависший busy-флаг) менее критично, чем бесконтрольный retry. Фикс рискует усложнить координацию между stop_process и update_session_id."
+          },
+          "test_strategy": {
+            "adequate": true,
+            "comment": "Тесты не написаны — это ожидаемо для skip. Корректное решение."
+          },
+          "unnecessary_work": null,
+          "missing_coverage": null
+        },
+        "adjustments": []
+      }
+    ],
+    "execution_order_approved": true,
+    "execution_order_comment": "Порядок DEV-1 -> DEV-2 -> DEV-3 корректен. DEV-1 (корневая причина) должен быть первым — без него stop_event невидим для retry loop. DEV-2 (инвариант словарей) идёт вторым — восстанавливает контролируемость перезапущенных процессов, что необходимо для работоспособности DEV-3. DEV-3 (handle_stop в bot.py) зависит от DEV-2: повторный /stop вызовет stop_process, но без рабочего stop_event от DEV-2 это бесполезно. Зависимости линейны, конфликтов нет.",
+    "missing_deviations": null,
+    "conflicts_between_fixes": null,
+    "return_to_stage": null,
+    "stop_reason": null
+  },
+  "next_agent": "fix-strategist"
+}

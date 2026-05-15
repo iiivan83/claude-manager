@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from claude_manager.claude_runner import (
+    BackendSubprocess,
+    BackendSubprocessStartError,
     STREAM_BUFFER_LIMIT_BYTES,
     ClaudeProcess,
     ClaudeProcessError,
@@ -14,8 +16,10 @@ from claude_manager.claude_runner import (
     _build_command_args,
     _extract_session_id_from_event,
     _parse_event,
+    start_subprocess_for_backend,
     start_process,
 )
+from claude_manager.coding_agent_backend import BackendName
 
 
 # --- Фикстуры ---
@@ -30,6 +34,7 @@ def mock_subprocess():
     process.stdin = MagicMock()
     process.stdin.write = MagicMock()
     process.stdin.drain = AsyncMock()
+    process.stdin.is_closing = MagicMock(return_value=False)
     process.stdout = MagicMock()
     process.stdout.readline = AsyncMock(return_value=b"")
     process.stderr = MagicMock()
@@ -71,6 +76,117 @@ def test_build_command_args_resume_session():
     # --resume и session_id идут последними
     resume_index = args.index("--resume")
     assert args[resume_index + 1] == session_id
+
+
+# --- Юнит-тесты: backend-aware subprocess wrapper ---
+
+
+class FakeBackend:
+    """Small backend double for runner tests."""
+
+    name = BackendName.CODEX
+    display_name = "⚡ Codex"
+
+    def __init__(self, stdin_payload: bytes = b"payload") -> None:
+        self.stdin_payload = stdin_payload
+        self.compose_calls = []
+        self.encode_calls = []
+
+    def compose_subprocess_command_args(
+        self,
+        session_id: str,
+        cwd: str,
+        prompt_text: str,
+        image_paths: list[str],
+    ) -> list[str]:
+        """Record command composition and return test argv."""
+        self.compose_calls.append((session_id, cwd, prompt_text, image_paths))
+        return ["/bin/fake-cli", "exec", prompt_text]
+
+    def encode_user_message_for_cli_stdin(
+        self,
+        prompt_text: str,
+        image_paths: list[str],
+    ) -> bytes:
+        """Record stdin encoding and return configured payload."""
+        self.encode_calls.append((prompt_text, image_paths))
+        return self.stdin_payload
+
+
+@patch("claude_manager.claude_runner.asyncio.create_subprocess_exec")
+async def test_start_subprocess_for_backend_uses_backend_contract(
+    mock_exec, mock_subprocess,
+) -> None:
+    """Backend-aware runner delegates argv and stdin encoding to the backend."""
+    mock_exec.return_value = mock_subprocess
+    backend = FakeBackend(stdin_payload=b"hello stdin")
+
+    result = await start_subprocess_for_backend(
+        backend,
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        ["/tmp/image.png"],
+    )
+
+    assert isinstance(result, BackendSubprocess)
+    assert result.process is mock_subprocess
+    assert backend.compose_calls == [
+        ("_new_abc123def456", "/tmp/project", "hello", ["/tmp/image.png"])
+    ]
+    assert backend.encode_calls == [("hello", ["/tmp/image.png"])]
+    mock_exec.assert_awaited_once_with(
+        "/bin/fake-cli",
+        "exec",
+        "hello",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=STREAM_BUFFER_LIMIT_BYTES,
+        cwd="/tmp/project",
+    )
+    mock_subprocess.stdin.write.assert_called_once_with(b"hello stdin")
+    mock_subprocess.stdin.drain.assert_awaited_once()
+    mock_subprocess.stdin.close.assert_called_once()
+
+
+@patch("claude_manager.claude_runner.asyncio.create_subprocess_exec")
+async def test_start_subprocess_for_backend_closes_empty_stdin(
+    mock_exec, mock_subprocess,
+) -> None:
+    """Empty backend stdin is not written, but stdin is closed to deliver EOF."""
+    mock_exec.return_value = mock_subprocess
+    backend = FakeBackend(stdin_payload=b"")
+
+    await start_subprocess_for_backend(
+        backend,
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        [],
+    )
+
+    mock_subprocess.stdin.write.assert_not_called()
+    mock_subprocess.stdin.drain.assert_not_awaited()
+    mock_subprocess.stdin.close.assert_called_once()
+
+
+@patch("claude_manager.claude_runner.asyncio.create_subprocess_exec")
+async def test_start_subprocess_for_backend_start_error_mentions_backend(
+    mock_exec,
+) -> None:
+    """Backend subprocess start errors include the backend display name."""
+    mock_exec.side_effect = FileNotFoundError("missing binary")
+    backend = FakeBackend()
+
+    with pytest.raises(BackendSubprocessStartError, match="Codex"):
+        await start_subprocess_for_backend(
+            backend,
+            "_new_abc123def456",
+            "/tmp/project",
+            "hello",
+            [],
+        )
 
 
 # --- Юнит-тесты: _parse_event ---

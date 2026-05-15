@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from claude_manager.claude_runner import ClaudeProcess, ClaudeProcessError
+from claude_manager.coding_agent_backend import BackendName
 from claude_manager.process_manager import (
     ProcessStoppedError,
     SendResult,
@@ -37,6 +38,7 @@ def _make_mock_subprocess(pid: int = 42) -> MagicMock:
     process.stdin = MagicMock()
     process.stdin.write = MagicMock()
     process.stdin.drain = AsyncMock()
+    process.stdin.is_closing = MagicMock(return_value=False)
     process.stdout = MagicMock()
     process.stdout.readline = AsyncMock(return_value=b"")
     process.stderr = MagicMock()
@@ -175,7 +177,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_start = AsyncMock(return_value=mock_process)
 
         with patch("claude_manager.process_manager.start_process", mock_start):
-            await pm_module._restart_process(session_id)
+            await pm_module._restart_process(session_id, "/test/cwd")
 
         assert session_id in pm_module._stop_events, (
             "_restart_process() должен создать stop_event для перезапущенного процесса"
@@ -194,7 +196,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_start = AsyncMock(return_value=mock_process)
 
         with patch("claude_manager.process_manager.start_process", mock_start):
-            await pm_module._restart_process(session_id)
+            await pm_module._restart_process(session_id, "/test/cwd")
 
         assert session_id in pm_module._busy_flags, (
             "_restart_process() должен создать busy_flag для перезапущенного процесса"
@@ -214,7 +216,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_start = AsyncMock(return_value=mock_process)
 
         with patch("claude_manager.process_manager.start_process", mock_start):
-            await pm_module._restart_process(session_id)
+            await pm_module._restart_process(session_id, "/test/cwd")
 
         # Повторный stop_process должен работать
         result = await stop_process(session_id)
@@ -234,7 +236,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_start = AsyncMock(return_value=mock_process)
 
         with patch("claude_manager.process_manager.start_process", mock_start):
-            await pm_module._restart_process(session_id)
+            await pm_module._restart_process(session_id, "/test/cwd")
 
         # Все три словаря содержат одинаковые ключи
         process_keys = set(pm_module._processes.keys())
@@ -285,10 +287,13 @@ class TestDev3HandleStopDuringRetry:
 
         mock_context = MagicMock()
 
+        mock_app = MagicMock()
+        mock_app.bot = MagicMock()
         with (
+            patch.object(bot, "_application", mock_app),
             patch.object(session_manager, "get_bound_session", return_value=session_id),
             patch.object(bot, "_check_access", return_value=True),
-            patch.object(bot, "_send_telegram_message", new_callable=AsyncMock) as mock_send,
+            patch("claude_manager.bot.telegram_sender.send_telegram_message", new_callable=AsyncMock) as mock_send,
             patch.object(process_manager, "stop_process", new_callable=AsyncMock) as mock_stop,
             patch.object(process_manager, "is_busy", return_value=True),
             patch.object(process_manager, "has_process", return_value=False),
@@ -297,7 +302,7 @@ class TestDev3HandleStopDuringRetry:
             await bot.handle_stop(mock_update, mock_context)
 
             # stop_process должен быть вызван, несмотря на has_process()=False
-            mock_stop.assert_called_once_with(session_id)
+            mock_stop.assert_called_once_with(session_id, BackendName.CLAUDE)
 
     async def test_stop_message_confirms_retry_interrupted(self) -> None:
         """Пользователь видит подтверждение остановки при прерывании retry.
@@ -316,10 +321,13 @@ class TestDev3HandleStopDuringRetry:
 
         mock_context = MagicMock()
 
+        mock_app = MagicMock()
+        mock_app.bot = MagicMock()
         with (
+            patch.object(bot, "_application", mock_app),
             patch.object(session_manager, "get_bound_session", return_value=session_id),
             patch.object(bot, "_check_access", return_value=True),
-            patch.object(bot, "_send_telegram_message", new_callable=AsyncMock) as mock_send,
+            patch("claude_manager.bot.telegram_sender.send_telegram_message", new_callable=AsyncMock) as mock_send,
             patch.object(process_manager, "stop_process", new_callable=AsyncMock) as mock_stop,
             patch.object(process_manager, "is_busy", return_value=True),
             patch.object(process_manager, "has_process", return_value=False),
@@ -328,7 +336,8 @@ class TestDev3HandleStopDuringRetry:
             await bot.handle_stop(mock_update, mock_context)
 
             # Должно быть сообщение об остановке, не "нечего останавливать"
-            sent_text = mock_send.call_args[0][1]
+            # Args: (bot, chat_id, text, ...) — text is at index 2
+            sent_text = mock_send.call_args[0][2]
             assert "не работает" not in sent_text.lower(), (
                 "Пользователь не должен видеть 'нечего останавливать' при активном retry"
             )

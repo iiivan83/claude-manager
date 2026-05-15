@@ -28,6 +28,14 @@ DEFAULT_PROJECTS_ROOT = "/Users/ivan/Desktop/claude-sandbox"
 # Используется для восстановления выбранного проекта после перезапуска бота.
 LAST_PROJECT_FILE: Path = Path.home() / ".claude-manager-current-project"
 
+# Файл персистентности silence mode — хранит состояние (вкл/выкл) между перезапусками.
+# Лежит в домашней папке пользователя — глобальный, не привязан к проекту.
+SILENCE_MODE_FILE: Path = Path.home() / ".claude-manager-silence-mode"
+
+# Файл персистентности текущего CLI-бэкенда для новых сессий.
+# Лежит в домашней папке пользователя — глобальный, не привязан к проекту.
+CURRENT_BACKEND_FILE: Path = Path.home() / ".claude-manager-current-backend"
+
 # Максимальное время хранения снапшота непрочитанных сообщений (часы).
 # Сообщения старше этого возраста не доставляются при возврате в проект.
 UNREAD_BUFFER_TTL_HOURS: int = 3

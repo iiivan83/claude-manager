@@ -34,9 +34,18 @@
     {
       "phase": "phase-4",
       "start_time": "2026-04-12T22:46:00+03:00",
-      "end_time": null,
-      "success": null,
-      "comment": "Commit and archival."
+      "end_time": "2026-04-12T22:48:00+03:00",
+      "success": true,
+      "comment": "Commit e877dcb. Report archived to realized/. 8 files, 830 insertions."
+    },
+    {
+      "phase": "completed",
+      "end_time": "2026-04-12T22:48:00+03:00",
+      "total_recommendations": 8,
+      "accepted": 7,
+      "rejected": 1,
+      "applied_successfully": 7,
+      "errors": 0
     }
   ]
 }

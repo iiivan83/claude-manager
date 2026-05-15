@@ -1,0 +1,195 @@
+{
+  "agent": "test-strategist",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T01:15:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Стратегия тестирования для трёх отклонений: send_chat_action crash (DEV-1), отсутствие error handler (DEV-2), log spam (DEV-3)",
+    "files": ["01-intake.json", "02-understanding.json", "03-root-cause.json", "04-classification.json"]
+  },
+  "created_files": [
+    "dev/docs/logs/bugfix/13.04_00.18-universal-bug-fixer-send-chat-action-crash/pipeline-workspace/tests/test_whitebox_send_chat_action.py",
+    "dev/docs/logs/bugfix/13.04_00.18-universal-bug-fixer-send-chat-action-crash/pipeline-workspace/tests/blackbox/test_blackbox_send_chat_action.py"
+  ],
+  "result": {
+    "environment_validated": {
+      "passed": true,
+      "validation_test": "python -m pytest tests/test_config.py -x -q --tb=short",
+      "details": "39 passed in 0.03s — тестовое окружение работает, pytest с asyncio_mode=auto"
+    },
+    "project_test_framework": {
+      "tool": "pytest",
+      "discovered_at": "tests/ (590+ тестов: test_*.py юнит, integration/ интеграционные, e2e/ через Telethon)"
+    },
+    "existing_patterns_found": [
+      "autouse-фикстура _setup_config — подмена config.ALLOWED_USER_IDS и WORKING_DIR",
+      "autouse-фикстура _setup_application — фейковый Application с AsyncMock-методами (send_message, send_chat_action, get_file)",
+      "_make_update() — генератор фейковых Update с chat_id, user_id, text, caption, photo, document",
+      "_make_context() — генератор фейковых context с context.bot.send_chat_action = AsyncMock",
+      "patch.object(session_manager, ...) — моки бизнес-логики через patch.object",
+      "patch('claude_manager.bot._send_to_claude_and_respond', ...) — мок основной функции отправки",
+      "patch('claude_manager.bot._download_and_save_file', ...) — мок скачивания файлов",
+      "Классовая группировка: TestCheckAccess, TestHandlePhoto, TestHandleDocument, TestSetupBot",
+      "autouse-фикстура _reset_watcher_state — сброс _seen_message_counts и _paused_sessions"
+    ],
+    "method_checklist": [
+      {
+        "method": "unit",
+        "chosen": true,
+        "reason": "Основной метод. DEV-1 — юнит-тест каждого обработчика с мок-исключениями. DEV-2 — юнит-тест setup_bot на вызов add_error_handler. DEV-3 — юнит-тест session_reader log level и _get_sessions_to_monitor фильтрации."
+      },
+      {
+        "method": "integration",
+        "chosen": false,
+        "reason": "DEV-1 и DEV-2 — изолированные баги в одном модуле (bot.py), интеграция с другими модулями не затронута. DEV-3 — связка session_watcher + session_reader, но достаточно юнит-тестов с моками."
+      },
+      {
+        "method": "e2e",
+        "chosen": false,
+        "reason": "E2E требует Telethon и живой Telegram — непропорционально для локальных фиксов. Существующие E2E покроют регрессию при следующем прогоне."
+      },
+      {
+        "method": "comparative",
+        "chosen": false,
+        "reason": "Нет числовых метрик до/после — баг бинарный (работает/падает)."
+      },
+      {
+        "method": "anchor_values",
+        "chosen": false,
+        "reason": "Нет конкретных значений для якорения — тесты проверяют поведение (вызвали/не вызвали), а не значения."
+      },
+      {
+        "method": "idempotency",
+        "chosen": false,
+        "reason": "Обработчики stateless — повторный вызов с тем же исключением даёт тот же результат."
+      },
+      {
+        "method": "contract",
+        "chosen": false,
+        "reason": "Контракты с Telegram API (формат исключений) проверены эмпирически через error.log, моки точно повторяют реальные типы исключений."
+      },
+      {
+        "method": "snapshot",
+        "chosen": false,
+        "reason": "Нет выходных данных для снимка — тесты проверяют вызов/не-вызов функций."
+      },
+      {
+        "method": "regression",
+        "chosen": true,
+        "reason": "Тесты нормального потока (send_chat_action проходит, мониторинг блокирует) — регрессия на случай поломки фиксом."
+      },
+      {
+        "method": "stress_boundary",
+        "chosen": false,
+        "reason": "Баг воспроизводится с первого исключения, нагрузочные тесты не нужны."
+      },
+      {
+        "method": "trigger",
+        "chosen": false,
+        "reason": "Не скилл — обычный баг в коде бота."
+      }
+    ],
+    "chosen_approaches": ["unit", "regression"],
+    "whitebox_tests": [
+      {
+        "file": "pipeline-workspace/tests/test_whitebox_send_chat_action.py",
+        "class": "TestDev1HandleMessageCrash",
+        "tests": [
+          "test_handle_message_crashes_on_timed_out",
+          "test_handle_message_crashes_on_network_error",
+          "test_handle_message_crashes_on_retry_after"
+        ],
+        "deviation": "DEV-1"
+      },
+      {
+        "file": "pipeline-workspace/tests/test_whitebox_send_chat_action.py",
+        "class": "TestDev1HandlePhotoCrash",
+        "tests": [
+          "test_handle_photo_crashes_on_timed_out",
+          "test_handle_photo_crashes_on_network_error"
+        ],
+        "deviation": "DEV-1"
+      },
+      {
+        "file": "pipeline-workspace/tests/test_whitebox_send_chat_action.py",
+        "class": "TestDev1HandleDocumentCrash",
+        "tests": [
+          "test_handle_document_crashes_on_timed_out",
+          "test_handle_document_crashes_on_retry_after"
+        ],
+        "deviation": "DEV-1"
+      },
+      {
+        "file": "pipeline-workspace/tests/test_whitebox_send_chat_action.py",
+        "class": "TestDev1SuccessfulSendChatAction",
+        "tests": ["test_handle_message_works_when_chat_action_succeeds"],
+        "deviation": "DEV-1 (регрессия)"
+      },
+      {
+        "file": "pipeline-workspace/tests/test_whitebox_send_chat_action.py",
+        "class": "TestDev2NoErrorHandler",
+        "tests": [
+          "test_setup_bot_has_no_error_handler",
+          "test_error_handler_receives_callable"
+        ],
+        "deviation": "DEV-2"
+      },
+      {
+        "file": "pipeline-workspace/tests/test_whitebox_send_chat_action.py",
+        "class": "TestDev3WatcherLogSpam",
+        "tests": [
+          "test_get_sessions_includes_nonexistent_session_files",
+          "test_session_reader_logs_warning_for_missing_file",
+          "test_check_session_calls_reader_for_deleted_session"
+        ],
+        "deviation": "DEV-3"
+      }
+    ],
+    "blackbox_tests": [
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_blackbox_send_chat_action.py",
+        "class": "TestDev1MessageDeliveryResilience",
+        "tests": [
+          "test_text_message_delivered_despite_api_timeout",
+          "test_photo_delivered_despite_api_timeout",
+          "test_document_delivered_despite_api_timeout",
+          "test_no_exception_propagated_on_throttle",
+          "test_multiple_error_types_all_handled"
+        ],
+        "deviation": "DEV-1"
+      },
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_blackbox_send_chat_action.py",
+        "class": "TestDev1NormalFlow",
+        "tests": [
+          "test_chat_action_still_called_on_success",
+          "test_monitoring_mode_still_blocks_messages"
+        ],
+        "deviation": "DEV-1 (регрессия)"
+      },
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_blackbox_send_chat_action.py",
+        "class": "TestDev2GlobalErrorHandler",
+        "tests": [
+          "test_error_handler_registered",
+          "test_error_handler_is_async_callable"
+        ],
+        "deviation": "DEV-2"
+      },
+      {
+        "file": "pipeline-workspace/tests/blackbox/test_blackbox_send_chat_action.py",
+        "class": "TestDev3LogSpamPrevention",
+        "tests": [
+          "test_missing_session_file_no_warning",
+          "test_missing_session_file_returns_empty_list",
+          "test_watcher_filters_nonexistent_sessions"
+        ],
+        "deviation": "DEV-3"
+      }
+    ],
+    "total_whitebox": 13,
+    "total_blackbox": 12
+  },
+  "next_agent": "critical-verifier"
+}

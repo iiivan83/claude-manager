@@ -1,0 +1,54 @@
+{
+  "pipeline": "root-cause-analysis",
+  "problem_summary": "При переключении на проекты бюджет и анализ отзывов бот прислал много старых сообщений",
+  "start_time": "2026-05-09T16:54:33",
+  "status": "completed",
+  "last_completed_stage": "phase_7_report_creation",
+  "steps": [
+    {
+      "step_number": 0,
+      "stage": "phase_0_project_recon",
+      "status": "completed",
+      "start_time": "2026-05-09T16:54:33",
+      "end_time": "2026-05-09T16:57:00",
+      "duration_seconds": 147,
+      "comment": "Прочитаны глобальные и проектные инструкции, AGENTS.md, CLAUDE.md, adapter contract, root-cause skill and docs index."
+    },
+    {
+      "step_number": 1,
+      "stage": "phase_1_symptom_and_evidence",
+      "status": "completed",
+      "start_time": "2026-05-09T16:57:00",
+      "end_time": "2026-05-09T16:59:00",
+      "duration_seconds": 120,
+      "comment": "Скриншот показал watcher header /98; логи подтвердили pending=0 при переходе в budgets и массовую регистрацию watcher-сессий."
+    },
+    {
+      "step_number": 2,
+      "stage": "phase_2_code_path_analysis",
+      "status": "completed",
+      "start_time": "2026-05-09T16:59:00",
+      "end_time": "2026-05-09T17:02:00",
+      "duration_seconds": 180,
+      "comment": "Проверены session_watcher, project_manager, unread_buffer, bot delivery path, daily_session_registry and Claude JSONL reader."
+    },
+    {
+      "step_number": 3,
+      "stage": "phase_3_root_cause_verification",
+      "status": "completed",
+      "start_time": "2026-05-09T17:02:00",
+      "end_time": "2026-05-09T17:03:00",
+      "duration_seconds": 60,
+      "comment": "Найдена связка причин: reset использовал missing-file backoff старого проекта, затем in-flight poll продолжил доставку после смены проекта."
+    },
+    {
+      "step_number": 9,
+      "stage": "phase_7_report_creation",
+      "status": "completed",
+      "start_time": "2026-05-09T17:03:00",
+      "end_time": "2026-05-09T17:03:30",
+      "duration_seconds": 30,
+      "comment": "Создан root-cause report dev/docs/logs/root-cause-reports/09-05_17-03_project-switch-message-flood.md."
+    }
+  ]
+}

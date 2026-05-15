@@ -1,0 +1,145 @@
+{
+  "findings": [
+    {
+      "id": "finding-001",
+      "severity": "high",
+      "title": "BRD and implementation queue still describe a pre-/agent state",
+      "situation_simple": "The code and dependency graph already contain the CLI backend selection journey, but the BRD still describes the bot as Claude-only and the implementation queue still says to fix /agent CJM numbering and run the feature pipeline.",
+      "implementation_risk": "A later implementer or reviewer can treat /agent as undocumented or not implemented, rerun already completed work, or reject realised specs because the acceptance source does not mention the user journey.",
+      "evidence": [
+        "dev/docs/brd/brd-user-journeys.md:7 — the BRD says the bot manages Claude Code from a phone; search in this BRD found no /agent, CJM-16, Codex, or backend journey.",
+        "dev/docs/brd/brd-user-journeys.md:603 — the user state map has only the old three states and no backend selection transition.",
+        "dev/docs/specs/module-dependency-graph.md:31 — the dependency graph lists CJM-16 as CLI backend switching.",
+        "dev/docs/specs/module-dependency-graph.md:149 — traceability maps CJM-16 to bot, current_backend_registry, coding_agent_backend, session_manager, and daily_session_registry.",
+        "dev/docs/specs/codex_support_spec_implementation_order.md:330 — the queue still says the next step is to fix /agent CJM numbering in the BRD and then run feature-pipeline.",
+        "src/claude_manager/bot.py:529 — /agent command handler is implemented.",
+        "tests/e2e/test_agent_backend_selection.py:46 — E2E tests cover /agent menu, Codex /new, existing Claude session ownership, and Codex /stop routing."
+      ],
+      "options": [
+        {
+          "label": "Update BRD and queue",
+          "effect": "Add CJM-16 and mark the implementation queue as completed/stale so active specs can be classified from code and tests without ambiguity."
+        },
+        {
+          "label": "Mark BRD as historical",
+          "effect": "Keep the old BRD unchanged, but explicitly exclude it from the Codex backend acceptance baseline in the queue and review artifacts."
+        }
+      ],
+      "recommended_option": "Update BRD and queue",
+      "recommendation_reason": "The prompt requires consistency with BRD, and the backend selection journey is user-facing; the BRD should be the traceable source for that behaviour.",
+      "change_size": "large",
+      "target_files": [
+        "dev/docs/brd/brd-user-journeys.md",
+        "dev/docs/specs/codex_support_spec_implementation_order.md"
+      ]
+    },
+    {
+      "id": "finding-002",
+      "severity": "high",
+      "title": "process_manager spec allows backend fallback that code forbids",
+      "situation_simple": "The process manager spec says send_message may receive backend=None and then guess the backend from active processes or current_backend_registry. The implemented code rejects backend=None for backend-aware turns.",
+      "implementation_risk": "If someone implements the spec literally, a turn for an existing session can accidentally use the global current backend instead of the session owner. That breaks the core architecture rule that existing sessions stay with the CLI that created them.",
+      "evidence": [
+        "dev/docs/specs/process_manager_spec.md:16 — the module description says the backend is chosen by bot.py and captured at request start, not read globally later.",
+        "dev/docs/specs/process_manager_spec.md:25 — the delta section says backend=None falls back to an existing process key or current_backend_registry.",
+        "dev/docs/specs/process_manager_spec.md:36 — the scenario repeats that send_message captures a backend if one is not passed.",
+        "dev/docs/specs/process_manager_spec.md:571 — dependencies say current_backend_registry is used as fallback inside process_manager.",
+        "src/claude_manager/process_manager.py:780 — _validate_effective_backend rejects backend=None.",
+        "src/claude_manager/process_manager.py:806 — omitted backend goes only through the legacy Claude compatibility path.",
+        "tests/test_process_manager.py:372 — the test explicitly verifies that backend must be passed and not guessed from global state."
+      ],
+      "options": [
+        {
+          "label": "Align spec to code",
+          "effect": "Document explicit backend as required for backend-aware turns; keep omitted backend only as a legacy Claude compatibility path."
+        },
+        {
+          "label": "Change code to fallback",
+          "effect": "Introduce the spec's fallback behaviour and update tests, accepting a larger risk around session ownership and global state."
+        }
+      ],
+      "recommended_option": "Align spec to code",
+      "recommendation_reason": "The implemented contract is safer and matches the dependency graph rule that current backend affects only new sessions.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/process_manager_spec.md"
+      ]
+    },
+    {
+      "id": "finding-003",
+      "severity": "medium",
+      "title": "Runner readiness criterion conflicts with retained compatibility API",
+      "situation_simple": "The Telegram integration spec says claude_runner.py must not contain Claude-specific protocol parsing after migration, but the code intentionally keeps the old ClaudeProcess/start_process path while the new backend-aware path uses start_subprocess_for_backend.",
+      "implementation_risk": "A reviewer can block a working implementation because legacy parsing remains in the file, or a future cleanup can delete compatibility code still covered by tests and used by legacy paths.",
+      "evidence": [
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md:393 — the spec allows keeping ClaudeProcess temporarily as technical debt.",
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md:460 — the test plan asks for a runner test that no longer parses stdout JSON.",
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md:478 — readiness says claude_runner.py contains no Claude-specific protocol parsing after migration.",
+        "src/claude_manager/claude_runner.py:66 — legacy Claude command construction remains.",
+        "src/claude_manager/claude_runner.py:84 — legacy stdout JSON parsing remains.",
+        "src/claude_manager/claude_runner.py:279 — the backend-aware runner starts subprocesses through the backend adapter contract.",
+        "src/claude_manager/claude_runner.py:323 — legacy start_process remains.",
+        "tests/test_claude_runner.py:117 — tests cover the new backend-aware runner path.",
+        "tests/test_claude_runner.py:253 — tests still cover legacy start_process."
+      ],
+      "options": [
+        {
+          "label": "Narrow the criterion",
+          "effect": "Require only the new Telegram/backend-aware flow to avoid Claude-specific parsing, while explicitly allowing legacy ClaudeProcess/start_process as compatibility debt."
+        },
+        {
+          "label": "Remove legacy runner API",
+          "effect": "Delete ClaudeProcess/start_process parsing and update all legacy tests and callers in a larger cleanup."
+        }
+      ],
+      "recommended_option": "Narrow the criterion",
+      "recommendation_reason": "The code already satisfies the architectural boundary for the new path, and existing tests show the legacy API is still intentionally present.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md"
+      ]
+    },
+    {
+      "id": "finding-004",
+      "severity": "medium",
+      "title": "Several storage specs say old APIs are removed, but code keeps compatibility wrappers",
+      "situation_simple": "The daily session registry, session manager, and unread buffer specs describe removal of old Claude-only API names. The implementation keeps wrappers or no-op compatibility paths and tests still assert those paths.",
+      "implementation_risk": "Moving these specs as-is would misdocument the public module API. A future cleanup based on the specs can remove wrappers that old tests and integration paths still use.",
+      "evidence": [
+        "dev/docs/specs/daily_session_registry_spec.md:30 — the spec says get_session_id_by_number is removed without a wrapper.",
+        "src/claude_manager/daily_session_registry.py:240 — get_session_id_by_number remains as a compatibility wrapper.",
+        "tests/test_daily_session_registry.py:155 — tests still cover get_session_id_by_number.",
+        "dev/docs/specs/session_manager_spec.md:25 — the spec says old function names are updated to backend-aware names.",
+        "dev/docs/specs/session_manager_spec.md:29 — the spec says old names are removed without deprecated wrappers.",
+        "src/claude_manager/session_manager.py:208 — bind_session remains as a compatibility wrapper.",
+        "src/claude_manager/session_manager.py:225 — unbind_session remains as a compatibility wrapper.",
+        "src/claude_manager/session_manager.py:245 — get_bound_session remains as a compatibility wrapper.",
+        "src/claude_manager/session_manager.py:264 — get_chat_id_for_session remains as a compatibility wrapper.",
+        "tests/test_session_manager.py:420 — tests still use bind_session/get_bound_session roundtrip.",
+        "dev/docs/specs/unread_buffer_spec.md:396 — the spec says the old project_path API is fully replaced.",
+        "src/claude_manager/unread_buffer.py:134 — get_pending_messages remains as a compatibility no-op.",
+        "src/claude_manager/unread_buffer.py:140 — clear_snapshot remains as a compatibility no-op.",
+        "src/claude_manager/unread_buffer.py:145 — has_pending remains as a compatibility no-op.",
+        "tests/test_unread_buffer.py:180 — tests verify the legacy pending-message API is an empty compatibility path."
+      ],
+      "options": [
+        {
+          "label": "Document compatibility wrappers",
+          "effect": "Keep the implemented wrappers and update the specs so realised docs match the actual supported API surface."
+        },
+        {
+          "label": "Remove wrappers and tests",
+          "effect": "Make code match the current specs, but require a broader cleanup of legacy callers and integration tests."
+        }
+      ],
+      "recommended_option": "Document compatibility wrappers",
+      "recommendation_reason": "The wrappers are deliberate low-risk compatibility paths; documenting them is smaller and avoids breaking existing tests.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/daily_session_registry_spec.md",
+        "dev/docs/specs/session_manager_spec.md",
+        "dev/docs/specs/unread_buffer_spec.md"
+      ]
+    }
+  ]
+}

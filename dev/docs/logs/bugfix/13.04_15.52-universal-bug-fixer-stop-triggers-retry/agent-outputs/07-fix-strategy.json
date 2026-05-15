@@ -1,0 +1,88 @@
+{
+  "agent": "fix-strategist",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T16:40:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Стратегия исправления",
+    "files": ["orchestrator-log.json", "06-verification.json"]
+  },
+  "created_files": [],
+  "result": {
+    "deviation_strategies": [
+      {
+        "deviation_id": "DEV-1",
+        "strategy": "direct_fix",
+        "reasoning": "Маленький code_bug, isolated. Нужно удалить одну строку (525: _stop_events.pop) из stop_process(). stop_event должен оставаться в словаре после set(), чтобы _check_stop_requested и _wait_with_stop_check могли обнаружить флаг отмены. Очистка stop_event произойдёт естественно: при следующем create_process() Event перезаписывается новым (строка 400), при завершении retry loop finally-блок в send_message может удалить запись.",
+        "estimated_scope": {
+          "files_to_change": ["src/claude_manager/process_manager.py"],
+          "estimated_lines": 3,
+          "touches_adjacent_code": false
+        },
+        "spec_needed": false,
+        "execution_plan": [
+          {
+            "step": 1,
+            "action": "Удалить строку 525 (_stop_events.pop(session_id, None)) из stop_process(). stop_event остаётся в словаре — retry loop увидит set()-флаг через _check_stop_requested и _wait_with_stop_check",
+            "file": "src/claude_manager/process_manager.py"
+          },
+          {
+            "step": 2,
+            "action": "Обновить комментарий на строке 522, убрав упоминание _stop_events из списка очищаемых словарей",
+            "file": "src/claude_manager/process_manager.py"
+          }
+        ]
+      },
+      {
+        "deviation_id": "DEV-2",
+        "strategy": "direct_fix",
+        "reasoning": "Маленький code_bug, isolated. В _restart_process() (строка 361-362) записывается только _processes[session_id] под _busy_lock, но _stop_events и _busy_flags не создаются. Нужно добавить 2 строки по аналогии с create_process() (строки 399-400): _busy_flags[session_id] = False и _stop_events[session_id] = asyncio.Event(). Без этого перезапущенный процесс неуправляем — повторный /stop не найдёт Event.",
+        "estimated_scope": {
+          "files_to_change": ["src/claude_manager/process_manager.py"],
+          "estimated_lines": 4,
+          "touches_adjacent_code": false
+        },
+        "spec_needed": false,
+        "execution_plan": [
+          {
+            "step": 1,
+            "action": "Добавить в критическую секцию _restart_process() (строка 361-362, внутри async with _busy_lock) две строки: _busy_flags[session_id] = False и _stop_events[session_id] = asyncio.Event() — по аналогии с create_process() строки 399-400",
+            "file": "src/claude_manager/process_manager.py"
+          },
+          {
+            "step": 2,
+            "action": "Добавить комментарий над блоком, поясняющий инвариант: все три словаря (_processes, _busy_flags, _stop_events) обновляются атомарно",
+            "file": "src/claude_manager/process_manager.py"
+          }
+        ]
+      },
+      {
+        "deviation_id": "DEV-3",
+        "strategy": "direct_fix",
+        "reasoning": "Маленький code_bug, isolated. handle_stop() в bot.py (строки 709-715) проверяет только has_process() — после первого /stop запись удалена из _processes, has_process возвращает False, пользователь видит 'нечего останавливать'. Нужно добавить проверку is_busy() как альтернативное условие: если процесса нет, но сессия busy (retry loop активен), всё равно вызывать stop_process(). Это defense-in-depth — после исправления DEV-1 и DEV-2 первый /stop будет работать, но повторный /stop тоже должен быть рабочим.",
+        "estimated_scope": {
+          "files_to_change": ["src/claude_manager/bot.py"],
+          "estimated_lines": 5,
+          "touches_adjacent_code": false
+        },
+        "spec_needed": false,
+        "execution_plan": [
+          {
+            "step": 1,
+            "action": "Изменить условие на строках 709-715: вместо 'if not has_process()' использовать 'if not has_process() and not is_busy()'. Если has_process() False, но is_busy() True — вызывать stop_process() для отмены retry loop",
+            "file": "src/claude_manager/bot.py"
+          },
+          {
+            "step": 2,
+            "action": "Добавить комментарий, поясняющий логику: процесс может отсутствовать в _processes, но retry loop ещё активен (busy=True) — /stop должен работать и в этом случае",
+            "file": "src/claude_manager/bot.py"
+          }
+        ]
+      }
+    ],
+    "order_override": null,
+    "order_override_reasoning": null
+  },
+  "next_agent": "executor"
+}

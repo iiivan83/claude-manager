@@ -15,11 +15,10 @@ Claude Manager — локальный Telegram-бот, пульт управле
 - **«Слоёная архитектура»** — как разделены транспорт (`bot.py` — обработчики Telegram-команд), бизнес-логика (`session_manager.py` — привязка chat_id к session_id, `daily_session_registry.py` — дневная нумерация сессий), инфраструктура (`process_manager.py` — жизненный цикл процессов Claude, `claude_runner.py` — обёртка над CLI) и утилиты (`message_splitter.py` — разбивка сообщений до 4096 символов, `session_reader.py` — чтение JSONL-файлов сессий)
 - **«Асинхронность»** — весь код на `async/await`, блокирующие операции через `asyncio.to_thread()` (запуск функции в отдельном потоке), никакого `time.sleep()` — только `asyncio.sleep()`
 - **«Контракты с внешними системами проверяются эмпирически, а не по догадке»** — поведение Claude CLI, Telegram API и ОС берётся из исходников (в комментарии указывается файл и строка) или реальных прогонов, а не из предположений. Исходники Claude Code CLI — в `~/Desktop/claude-sandbox/claude-code-sourcecode/`
-- **«CLI-архитектура пайплайнов»** — стандартный блок вызова `claude -p` со всеми флагами, бюджеты только через переменные из `~/.claude/cli-budgets.env` (файл с тремя категориями: `BUDGET_LIGHT`, `BUDGET_NORMAL`, `BUDGET_HEAVY`), никаких числовых литералов в коде скиллов
+- **«CLI-архитектура пайплайнов»** — межскилловые вызовы идут через изолированный CLI-подпроцесс текущего runtime, бюджеты только через переменные из `~/.claude/cli-budgets.env` (файл с тремя категориями: `BUDGET_LIGHT`, `BUDGET_NORMAL`, `BUDGET_HEAVY`), никаких числовых литералов в коде скиллов
 
 Проектные документы и их расположение:
 
-- **Список скиллов проекта с описаниями** — `dev/docs/skill-index.md`
 - **Сессионные отчёты** — `dev/docs/session-reports/DD-MM/`
 - **Спецификации** — `dev/docs/specs/` (после реализации переносить в `dev/docs/specs/realised/`)
 - **Логи пайплайнов** — `dev/docs/logs/` (root-cause отчёты — в `dev/docs/logs/root-cause-reports/`, артефакты E2E-тестирования — в `dev/docs/logs/testing/`)

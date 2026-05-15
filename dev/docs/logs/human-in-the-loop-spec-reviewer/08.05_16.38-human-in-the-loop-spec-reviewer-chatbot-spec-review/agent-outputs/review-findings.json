@@ -1,0 +1,214 @@
+{
+  "findings": [
+    {
+      "id": "finding-001",
+      "severity": "high",
+      "title": "project_manager_spec promises /next and /prev without Telegram wiring",
+      "situation_simple": "project_manager_spec.md describes /next and /prev as user-facing Telegram commands, but bot.py does not expose them in the command menu, does not register handlers for them, and tests cover only the lower-level project_manager API.",
+      "implementation_risk": "If project_manager_spec.md is moved to realised now, the realised documentation will promise commands that the user cannot call. The current tests would not catch the gap because they verify resolve_neighbor_project(), not Telegram command wiring.",
+      "evidence": [
+        "dev/docs/specs/project_manager_spec.md:92 - /next must be wired through CommandHandler(\"next\", ...).",
+        "dev/docs/specs/project_manager_spec.md:97 - /prev must be wired through CommandHandler(\"prev\", ...).",
+        "src/claude_manager/project_manager.py:190 - resolve_neighbor_project() exists only as a module API.",
+        "src/claude_manager/bot.py:68 - BOT_COMMANDS lists /projects and /pN scenarios, but not /next or /prev.",
+        "src/claude_manager/bot.py:1029 - handler registration does not add CommandHandler(\"next\", ...) or CommandHandler(\"prev\", ...).",
+        "tests/test_project_manager.py:813 - tests cover resolve_neighbor_project(\"next\"), not the Telegram command."
+      ],
+      "options": [
+        {
+          "label": "implement commands",
+          "effect": "Add /next and /prev to the Telegram command menu, register handlers in bot.py, and add bot-level tests; then project_manager_spec.md can be moved to realised."
+        },
+        {
+          "label": "split commands into a future spec",
+          "effect": "Move only the implemented core project_manager behaviour to realised and track /next and /prev as separate future user-facing scope."
+        }
+      ],
+      "recommended_option": "implement commands",
+      "recommendation_reason": "The lower-level neighbour-selection API already exists, so closing the user-facing command gap is smaller and less ambiguous than keeping the whole module spec active.",
+      "change_size": "small",
+      "target_files": [
+        "src/claude_manager/bot.py",
+        "tests/test_bot.py",
+        "dev/docs/specs/project_manager_spec.md"
+      ]
+    },
+    {
+      "id": "finding-002",
+      "severity": "high",
+      "title": "process_manager_spec allows a backend fallback that code forbids",
+      "situation_simple": "process_manager_spec.md says send_message() may receive backend=None and then infer the backend from active processes or current_backend_registry. The implemented backend-aware code rejects backend=None.",
+      "implementation_risk": "If the spec is used literally, an existing session can accidentally use the current global backend instead of the backend that owns that session. That violates the core ownership rule: existing sessions must stay with the CLI that created them.",
+      "evidence": [
+        "dev/docs/specs/process_manager_spec.md:16 - the module description says bot.py chooses and captures the backend at request start.",
+        "dev/docs/specs/process_manager_spec.md:25 - the delta section says backend=None falls back to an existing process key or current_backend_registry.",
+        "dev/docs/specs/process_manager_spec.md:36 - the CJM-02 scenario repeats that send_message captures backend if one is not passed.",
+        "dev/docs/specs/process_manager_spec.md:572 - dependencies say current_backend_registry is used as fallback inside process_manager.",
+        "src/claude_manager/process_manager.py:780 - _validate_effective_backend() rejects backend=None.",
+        "src/claude_manager/process_manager.py:806 - omitted backend goes only through the legacy Claude compatibility path.",
+        "tests/test_process_manager.py:372 - the test explicitly verifies that backend must be passed and not guessed from global state."
+      ],
+      "options": [
+        {
+          "label": "align spec to code",
+          "effect": "Document explicit backend as required for backend-aware turns and keep omitted backend only as the legacy Claude compatibility path."
+        },
+        {
+          "label": "change code to fallback",
+          "effect": "Implement the spec's fallback behaviour and update tests, accepting a larger risk around session ownership and global mutable state."
+        }
+      ],
+      "recommended_option": "align spec to code",
+      "recommendation_reason": "The implemented contract is safer and matches the dependency-graph rule that current backend affects only new sessions.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/process_manager_spec.md"
+      ]
+    },
+    {
+      "id": "finding-003",
+      "severity": "medium",
+      "title": "project_manager_spec drops backend in the pending delivery example",
+      "situation_simple": "project_manager_spec.md already says PendingDeliveryItem stores backend, but its delivery step calls send_response() without passing that backend. The current code passes backend explicitly.",
+      "implementation_risk": "A future implementation based on the restored spec text can format a pending Codex message as a Claude message. This can slip through because send_response() has a Claude default instead of failing immediately.",
+      "evidence": [
+        "dev/docs/specs/project_manager_spec.md:88 - send_response is called as send_response(chat_id, item.text, day_number, is_final=item.is_final), without item.backend.",
+        "dev/docs/specs/project_manager_spec.md:120 - PendingDeliveryItem includes mandatory backend.",
+        "src/claude_manager/bot.py:255 - send_response() accepts backend but defaults to BackendName.CLAUDE.",
+        "src/claude_manager/bot.py:732 - the implementation calls send_response(chat_id, pending.text, day_number, backend, is_final=is_final)."
+      ],
+      "options": [
+        {
+          "label": "fix the example in project_manager_spec.md",
+          "effect": "The spec will match the working implementation: send_response() receives item.backend explicitly."
+        },
+        {
+          "label": "move delivery details to the integration spec",
+          "effect": "project_manager_spec.md will stay focused on collecting pending items, while Telegram delivery is described only in the integration spec."
+        }
+      ],
+      "recommended_option": "fix the example in project_manager_spec.md",
+      "recommendation_reason": "This is the smallest text change and preserves the already implemented responsibility boundary.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/project_manager_spec.md"
+      ]
+    },
+    {
+      "id": "finding-004",
+      "severity": "medium",
+      "title": "storage specs say compatibility APIs are removed, but code keeps them",
+      "situation_simple": "daily_session_registry_spec.md, session_manager_spec.md, and unread_buffer_spec.md describe removing old Claude-only API names. The implementation keeps compatibility wrappers or compatibility no-op functions, and tests still assert those paths.",
+      "implementation_risk": "Moving these specs as-is would misdocument the supported module API. A future cleanup based on the specs can delete wrappers that tests and remaining integration paths still rely on.",
+      "evidence": [
+        "dev/docs/specs/daily_session_registry_spec.md:30 - get_session_id_by_number is described as removed without a wrapper.",
+        "src/claude_manager/daily_session_registry.py:240 - get_session_id_by_number remains as a compatibility wrapper.",
+        "dev/docs/specs/session_manager_spec.md:25 - old function names are described as updated to backend-aware names.",
+        "dev/docs/specs/session_manager_spec.md:29 - old names are described as removed without deprecated wrappers.",
+        "src/claude_manager/session_manager.py:208 - bind_session remains as a compatibility wrapper.",
+        "src/claude_manager/session_manager.py:225 - unbind_session remains as a compatibility wrapper.",
+        "src/claude_manager/session_manager.py:245 - get_bound_session remains as a compatibility wrapper.",
+        "src/claude_manager/session_manager.py:264 - get_chat_id_for_session remains as a compatibility wrapper.",
+        "tests/test_session_manager.py:420 - tests still use bind_session() in a load/save roundtrip.",
+        "dev/docs/specs/unread_buffer_spec.md:396 - the old project_path API is described as fully replaced.",
+        "src/claude_manager/unread_buffer.py:134 - get_pending_messages remains as a compatibility no-op.",
+        "src/claude_manager/unread_buffer.py:140 - clear_snapshot remains as a compatibility no-op.",
+        "src/claude_manager/unread_buffer.py:145 - has_pending remains as a compatibility no-op.",
+        "tests/test_unread_buffer.py:180 - tests verify the legacy pending-message API is an empty compatibility path."
+      ],
+      "options": [
+        {
+          "label": "document compatibility wrappers",
+          "effect": "Keep the implemented wrappers and update the specs so realised docs match the actual supported API surface."
+        },
+        {
+          "label": "remove wrappers and tests",
+          "effect": "Make code match the current spec text, but require broader cleanup of legacy callers and tests."
+        }
+      ],
+      "recommended_option": "document compatibility wrappers",
+      "recommendation_reason": "The wrappers are deliberate low-risk compatibility paths; documenting them is smaller and avoids breaking existing tests.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/daily_session_registry_spec.md",
+        "dev/docs/specs/session_manager_spec.md",
+        "dev/docs/specs/unread_buffer_spec.md"
+      ]
+    },
+    {
+      "id": "finding-005",
+      "severity": "medium",
+      "title": "telegram integration spec conflicts with retained legacy runner API",
+      "situation_simple": "telegram_agent_backend_integration_spec.md allows keeping ClaudeProcess temporarily, but later says claude_runner.py must contain no Claude-specific protocol parsing after migration. The code intentionally keeps the old start_process()/ClaudeProcess path while the new backend-aware path uses start_subprocess_for_backend().",
+      "implementation_risk": "A reviewer can block a working implementation because legacy parsing remains in the file, or a future cleanup can delete compatibility code that is still tested and intentionally present.",
+      "evidence": [
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md:393 - the spec allows keeping ClaudeProcess temporarily as technical debt.",
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md:460 - the test plan asks for runner tests that no longer parse stdout JSON.",
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md:478 - readiness says claude_runner.py contains no Claude-specific protocol parsing after migration.",
+        "src/claude_manager/claude_runner.py:66 - legacy Claude command construction remains.",
+        "src/claude_manager/claude_runner.py:84 - legacy stdout JSON parsing remains.",
+        "src/claude_manager/claude_runner.py:279 - the backend-aware runner starts subprocesses through the backend adapter contract.",
+        "src/claude_manager/claude_runner.py:323 - legacy start_process remains."
+      ],
+      "options": [
+        {
+          "label": "narrow the readiness criterion",
+          "effect": "Require only the new Telegram/backend-aware flow to avoid Claude-specific parsing, while explicitly allowing legacy ClaudeProcess/start_process as compatibility debt."
+        },
+        {
+          "label": "remove the legacy runner API",
+          "effect": "Delete ClaudeProcess/start_process parsing and update legacy tests and callers in a larger cleanup."
+        }
+      ],
+      "recommended_option": "narrow the readiness criterion",
+      "recommendation_reason": "The code already satisfies the architectural boundary for the new path, while the old path is still intentionally present.",
+      "change_size": "small",
+      "target_files": [
+        "dev/docs/specs/telegram_agent_backend_integration_spec.md"
+      ]
+    }
+  ],
+  "ready_to_move_to_realised": [
+    "dev/docs/specs/coding_agent_backend_spec.md",
+    "dev/docs/specs/claude_code_backend_spec.md",
+    "dev/docs/specs/codex_backend_spec.md",
+    "dev/docs/specs/current_backend_registry_spec.md",
+    "dev/docs/specs/session_watcher_spec.md",
+    "dev/docs/specs/agent_backend_selection_user_journey_spec.md"
+  ],
+  "move_notes": [
+    {
+      "path": "dev/docs/specs/coding_agent_backend_spec.md",
+      "note": "dev/docs/specs/realised/coding_agent_backend_spec.md already exists with identical content. Do not overwrite it; the active duplicate can be removed only after manual confirmation that no newer edits are present."
+    },
+    {
+      "path": "dev/docs/specs/session_watcher_spec.md",
+      "note": "dev/docs/specs/realised/session_watcher_spec.md already contains an older Claude-only version. Preserve that history with a dated/archive name or another explicit conflict-safe move; do not silently overwrite it."
+    },
+    {
+      "path": "dev/docs/specs/daily_session_registry_spec.md",
+      "note": "A same-name realised file already exists. After finding-004 is fixed, move this spec with explicit conflict handling instead of overwriting the old Claude-only realised spec."
+    },
+    {
+      "path": "dev/docs/specs/session_manager_spec.md",
+      "note": "A same-name realised file already exists. After finding-004 is fixed, preserve the old Claude-only realised spec or move the backend-aware spec under an explicit non-overwriting name."
+    },
+    {
+      "path": "dev/docs/specs/process_manager_spec.md",
+      "note": "A same-name realised file already exists. After finding-002 is fixed, move this spec only with explicit conflict handling."
+    },
+    {
+      "path": "dev/docs/brd/brd-user-journeys.md",
+      "note": "The BRD is stale around /agent and Codex backend selection, but this merge treats it as context rather than an unfinished module spec. Do not use the stale BRD alone to block moving implemented backend specs; schedule a separate BRD sync if traceability must be restored."
+    },
+    {
+      "path": "dev/docs/specs/codex_support_spec_implementation_order.md",
+      "note": "The implementation-order document still says the next step is to fix /agent CJM numbering and run feature-pipeline. Treat it as stale planning context, not as evidence that the already green backend implementation is unfinished."
+    }
+  ],
+  "not_in_scope": [
+    "dev/docs/brd/brd-user-journeys.md",
+    "dev/docs/specs/codex_support_spec_implementation_order.md",
+    "dev/docs/specs/module-dependency-graph.md"
+  ]
+}

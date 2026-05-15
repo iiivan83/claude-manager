@@ -1,0 +1,90 @@
+{
+  "agent": "root-cause-investigator",
+  "pipeline": "bugfix",
+  "called_by": "orchestrator",
+  "timestamp": "2026-04-13T16:05:00+03:00",
+  "status": "success",
+  "input": {
+    "description": "Анализ первопричины: команда /stop не останавливает retry loop",
+    "files": ["01-intake.json", "02-understanding.json"]
+  },
+  "created_files": [],
+  "result": {
+    "summary": "Первопричина бага — преждевременное удаление stop_event из словаря _stop_events в функции stop_process(). Функция устанавливает флаг отмены (stop_event.set()), но тут же удаляет объект Event из словаря через pop(). После этого все проверки через _check_stop_requested() и _wait_with_stop_check() не могут обнаружить отмену — они ищут stop_event по session_id в словаре, а запись уже удалена. Retry loop не видит сигнал остановки и продолжает работу, создавая новые процессы Claude. Дополнительно обнаружена вторичная проблема: _restart_process() воссоздаёт запись в _processes, но не воссоздаёт _stop_events и _busy_flags — это делает процесс-зомби невидимым для повторного /stop. Также handle_stop в bot.py проверяет has_process() до остановки — после того как stop_process() уже удалил запись из _processes, повторный /stop покажет пользователю 'нечего останавливать', хотя retry loop продолжает создавать новые процессы.",
+    "deviations": [
+      {
+        "id": "DEV-1",
+        "description": "stop_process() удаляет stop_event из _stop_events сразу после set() — до того, как retry loop успевает проверить флаг",
+        "chain_of_events": "1. Пользователь отправляет /stop. 2. stop_process() захватывает _busy_lock. 3. stop_event.set() устанавливает флаг (строка 520). 4. _stop_events.pop(session_id) удаляет запись (строка 525). 5. Lock освобождается. 6. Параллельно работающий retry loop (или _process_events, или _wait_with_stop_check) просыпается после await (asyncio.sleep или read_events). 7. _check_stop_requested() вызывает _stop_events.get(session_id) — возвращает None, потому что запись удалена. 8. Условие 'stop_event is not None and stop_event.is_set()' не срабатывает (stop_event is None). 9. ProcessStoppedError НЕ бросается. 10. Retry loop интерпретирует завершение процесса как обычную ошибку (is_error=True или got_result=False). 11. Вызывается _restart_process(), которая создаёт НОВЫЙ процесс Claude.",
+        "affected_files": [
+          {
+            "path": "src/claude_manager/process_manager.py",
+            "lines": "508-538",
+            "issue": "stop_process() — строка 525: _stop_events.pop(session_id, None) удаляет stop_event из словаря сразу после set(). Объект Event с установленным флагом перестаёт быть доступен по session_id. Это корневая причина — stop_event должен оставаться в словаре до тех пор, пока retry loop (или _process_events) не обнаружит его и не бросит ProcessStoppedError."
+          },
+          {
+            "path": "src/claude_manager/process_manager.py",
+            "lines": "158-162",
+            "issue": "_check_stop_requested() — проверяет _stop_events.get(session_id), получает None после удаления записи, не бросает ProcessStoppedError"
+          },
+          {
+            "path": "src/claude_manager/process_manager.py",
+            "lines": "335-345",
+            "issue": "_wait_with_stop_check() — аналогичная проблема: проверяет _stop_events.get(session_id), получает None, продолжает ожидание"
+          }
+        ],
+        "duplicates": [],
+        "not_a_bug": false,
+        "not_a_bug_reason": null
+      },
+      {
+        "id": "DEV-2",
+        "description": "_restart_process() воссоздаёт запись в _processes, но НЕ воссоздаёт _stop_events и _busy_flags — процесс-зомби невидим для повторного /stop",
+        "chain_of_events": "1. stop_process() удаляет записи из _processes, _busy_flags, _stop_events (строки 523-525). 2. Retry loop не обнаруживает остановку (DEV-1) и вызывает _restart_process(). 3. _restart_process() записывает новый ClaudeProcess в _processes[session_id] (строка 362). 4. Записи в _busy_flags и _stop_events для этого session_id НЕ создаются. 5. Последствие 1: has_process(session_id) возвращает True — но is_busy() возвращает False (ключа нет). 6. Последствие 2: повторный stop_process() найдёт процесс в _processes, но _stop_events.get() вернёт None — некуда установить флаг отмены. 7. Последствие 3: цикл _wait_with_stop_check() на каждой итерации получает None из _stop_events.get() — повторный /stop тоже не остановит retry loop.",
+        "affected_files": [
+          {
+            "path": "src/claude_manager/process_manager.py",
+            "lines": "348-368",
+            "issue": "_restart_process() — записывает только _processes[session_id] = claude_process (строка 362). Не восстанавливает _busy_flags[session_id] и _stop_events[session_id]. После вызова из retry loop процесс существует в _processes, но не контролируется через busy и stop механизмы."
+          }
+        ],
+        "duplicates": [],
+        "not_a_bug": false,
+        "not_a_bug_reason": null
+      },
+      {
+        "id": "DEV-3",
+        "description": "handle_stop в bot.py проверяет has_process() до вызова stop_process() — после первого /stop повторная остановка невозможна",
+        "chain_of_events": "1. Первый /stop вызывает stop_process() — удаляет записи из _processes. 2. Retry loop продолжает работать (DEV-1) и создаёт новый процесс через _restart_process(). 3. Пользователь пытается отправить повторный /stop. 4. handle_stop() вызывает has_process(session_id) — проверяет _processes.get(session_id). 5. Если retry loop ещё не успел вызвать _restart_process() — has_process() возвращает False (запись удалена stop_process). 6. Пользователь видит 'Claude сейчас не работает, нечего останавливать' — хотя retry loop активен. 7. Если retry loop УЖЕ вызвал _restart_process() — has_process() вернёт True, stop_process() будет вызван, но stop_event не создан (DEV-2), поэтому retry loop опять не остановится.",
+        "affected_files": [
+          {
+            "path": "src/claude_manager/bot.py",
+            "lines": "709-715",
+            "issue": "handle_stop() — проверяет has_process(session_id) перед stop_process(). Но после первого /stop запись удалена из _processes. has_process() проверяет только наличие в _processes и is_running() — не учитывает, что retry loop может быть активен без записи в _processes (в промежутке между удалением старой и созданием новой записи через _restart_process)."
+          }
+        ],
+        "duplicates": [],
+        "not_a_bug": false,
+        "not_a_bug_reason": null
+      },
+      {
+        "id": "DEV-4",
+        "description": "send_message.finally воссоздаёт зомби-запись _busy_flags[session_id]=False, если session_id изменился между stop_process и finally",
+        "chain_of_events": "1. send_message() запускает _execute_send() для session_id='abc'. 2. session_id_callback срабатывает: session_id меняется с 'abc' на 'xyz'. 3. update_session_id() переносит записи: _processes['xyz'], _busy_flags['xyz'], _stop_events['xyz']. 4. Пользователь отправляет /stop для 'xyz'. 5. stop_process('xyz') удаляет записи из всех словарей для 'xyz'. 6. _execute_send() завершается (с ошибкой или успешно). 7. send_message.finally проверяет 'session_id in _busy_flags' — session_id уже обновлён до 'xyz' (строка 460). 8. Проверка 'xyz' in _busy_flags — ключ удалён stop_process, проверка False — зомби не создаётся. 9. НО: если stop_process вызван до update_session_id (для старого 'abc') — stop_process('abc') удаляет записи 'abc', а finally проверяет 'xyz' (новый session_id), который stop_process не трогал. Запись _busy_flags['xyz'] остаётся.",
+        "affected_files": [
+          {
+            "path": "src/claude_manager/process_manager.py",
+            "lines": "462-469",
+            "issue": "send_message.finally — безопасная очистка busy корректно обрабатывает случай, когда stop_process удалил ключ. Но при смене session_id (temp->real) stop_process может быть вызван для СТАРОГО session_id, тогда как finally будет проверять НОВЫЙ. Это edge case, который сам по себе не вызывает основной баг, но может привести к зависшему busy-флагу."
+          }
+        ],
+        "duplicates": [],
+        "not_a_bug": false,
+        "not_a_bug_reason": null
+      }
+    ],
+    "total_deviations": 4,
+    "previous_attempts": []
+  },
+  "next_agent": "classifier"
+}

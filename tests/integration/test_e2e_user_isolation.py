@@ -11,6 +11,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from claude_manager import config, daily_session_registry, session_manager, session_watcher
+from claude_manager.coding_agent_backend import (
+    BackendName,
+    SessionFileInfo,
+    SessionFileSnapshot,
+    SessionMessage,
+)
 
 
 # Константы для тестов
@@ -20,14 +26,65 @@ TEST_SESSION_ID = "test-session-abc"
 FAKE_TODAY = "2026-04-11"
 
 
+class FakeBackend:
+    """Minimal backend reader for session_watcher integration tests."""
+
+    name = BackendName.CLAUDE
+
+    def __init__(self, session_id: str, snapshot: SessionFileSnapshot) -> None:
+        self.session_id = session_id
+        self.file_path = f"/tmp/{session_id}.jsonl"
+        self.snapshot = snapshot
+
+    async def list_all_session_files_for_project(
+        self,
+        _project_dir: str,
+    ) -> list[SessionFileInfo]:
+        return [
+            SessionFileInfo(
+                session_id=self.session_id,
+                file_path=self.file_path,
+                last_modified_at=1.0,
+                preview="preview",
+            )
+        ]
+
+    async def read_session_file_snapshot(
+        self,
+        _file_path: str,
+    ) -> SessionFileSnapshot:
+        return self.snapshot
+
+
+def _snapshot(text: str) -> SessionFileSnapshot:
+    return SessionFileSnapshot(
+        messages=[
+            SessionMessage(
+                role="user",
+                text="Запрос",
+                timestamp=None,
+                is_empty_response=False,
+            ),
+            SessionMessage(
+                role="assistant",
+                text=text,
+                timestamp=None,
+                is_empty_response=False,
+            ),
+        ],
+        raw_record_count=2,
+        last_record=None,
+        is_turn_active=False,
+    )
+
+
 # --- Фикстуры ---
 
 
 @pytest.fixture(autouse=True)
 def _reset_watcher_state() -> None:
     """Сбрасывает внутреннее состояние watcher перед каждым тестом."""
-    session_watcher._seen_message_counts.clear()
-    session_watcher._paused_sessions.clear()
+    session_watcher._watchers = {}
     session_watcher._callback = None
     session_watcher._get_current_session = None
 
@@ -46,6 +103,7 @@ def _reset_session_manager(tmp_path: Path) -> None:
     """Сбрасывает session_manager перед каждым тестом."""
     session_manager._bindings = {}
     session_manager._bindings_path = tmp_path / "sessions.json"
+    session_manager._bindings_loaded_from_disk = True
     session_manager._lock = asyncio.Lock()
 
 
@@ -61,23 +119,11 @@ class TestE2eUserIsolation:
         E2E_TEST_USER_ID должен быть исключён из этой рассылки.
         """
         callback = AsyncMock()
-        session_watcher._callback = callback
-        session_watcher._get_current_session = AsyncMock(return_value=None)
+        watcher = session_watcher.SessionWatcher(
+            FakeBackend(TEST_SESSION_ID, _snapshot("Ответ от Claude"))
+        )
 
-        # Watcher ещё не видел ни одного сообщения в этой сессии
-        session_watcher._seen_message_counts[TEST_SESSION_ID] = 0
-
-        # Фейковые сообщения: одно пользовательское, одно от Claude (финальное)
-        fake_messages = [
-            {"type": "user", "message": {"content": "Привет"}},
-            {"type": "assistant", "message": {"content": "Ответ от Claude"}},
-        ]
-
-        with patch(
-            "claude_manager.session_watcher.session_reader.get_session_messages",
-            new_callable=AsyncMock,
-            return_value=fake_messages,
-        ), patch.object(
+        with patch.object(
             config, "ALLOWED_USER_IDS", {MAIN_USER_ID, E2E_USER_ID}
         ), patch.object(
             config, "E2E_TEST_USER_ID", E2E_USER_ID
@@ -87,7 +133,7 @@ class TestE2eUserIsolation:
             # Сессия не привязана ни к кому — fallback на broadcast
             session_manager._bindings = {}
 
-            await session_watcher._check_session(TEST_SESSION_ID)
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
 
         # Callback должен быть вызван ровно 1 раз — для основного пользователя
         assert callback.call_count == 1
@@ -107,22 +153,11 @@ class TestE2eUserIsolation:
         получить уведомление.
         """
         callback = AsyncMock()
-        session_watcher._callback = callback
-        session_watcher._get_current_session = AsyncMock(return_value=None)
+        watcher = session_watcher.SessionWatcher(
+            FakeBackend(TEST_SESSION_ID, _snapshot("Тестовый ответ"))
+        )
 
-        # Watcher ещё не видел ни одного сообщения
-        session_watcher._seen_message_counts[TEST_SESSION_ID] = 0
-
-        fake_messages = [
-            {"type": "user", "message": {"content": "Тестовый запрос"}},
-            {"type": "assistant", "message": {"content": "Тестовый ответ"}},
-        ]
-
-        with patch(
-            "claude_manager.session_watcher.session_reader.get_session_messages",
-            new_callable=AsyncMock,
-            return_value=fake_messages,
-        ), patch.object(
+        with patch.object(
             config, "ALLOWED_USER_IDS", {MAIN_USER_ID}
         ), patch.object(
             config, "E2E_TEST_USER_ID", E2E_USER_ID
@@ -132,7 +167,7 @@ class TestE2eUserIsolation:
             # E2E-пользователь — владелец сессии
             session_manager._bindings = {E2E_USER_ID: TEST_SESSION_ID}
 
-            await session_watcher._check_session(TEST_SESSION_ID)
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
 
         # Callback вызван ровно 1 раз — для владельца (E2E-пользователя)
         assert callback.call_count == 1
