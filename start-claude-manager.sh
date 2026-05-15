@@ -27,11 +27,35 @@ MAX_RETRIES=3
 STARTUP_CRASH_THRESHOLD_SECONDS=5
 RETRY_DELAY_SECONDS=10
 CURL_TIMEOUT_SECONDS=10
+bot_process_id=""
 
 # --- Функции ---
 
 log_message() {
     echo "[start-claude-manager] $1" >&2
+}
+
+# Рекурсивно останавливает процесс и всех его потомков.
+terminate_process_tree() {
+    local parent_process_id="$1"
+    local child_process_id
+
+    while IFS= read -r child_process_id; do
+        terminate_process_tree "$child_process_id"
+    done < <(pgrep -P "$parent_process_id" 2>/dev/null || true)
+
+    kill -TERM "$parent_process_id" 2>/dev/null || true
+}
+
+# Передаёт сигнал завершения от launchd настоящему Python-процессу бота.
+terminate_running_bot_process_tree() {
+    if [[ -n "${bot_process_id:-}" ]]; then
+        log_message "получен сигнал завершения, останавливаю Python PID ${bot_process_id}"
+        terminate_process_tree "$bot_process_id"
+        wait "$bot_process_id" 2>/dev/null || true
+    fi
+
+    exit 143
 }
 
 # Читает значение переменной из .env файла.
@@ -92,11 +116,18 @@ send_macos_notification() {
 # Запускает Python-процесс бота, возвращает его exit code.
 run_bot_process() {
     "$PYTHON_BINARY" -c \
-        'import sys; sys.path.insert(0, "/Users/ivan/Desktop/claude-sandbox/claude_manager/src"); import runpy; runpy._run_module_as_main("claude_manager")'
-    return $?
+        'import sys; sys.path.insert(0, "/Users/ivan/Desktop/claude-sandbox/claude_manager/src"); import runpy; runpy._run_module_as_main("claude_manager")' &
+    bot_process_id=$!
+
+    wait "$bot_process_id"
+    local python_exit_code=$?
+    bot_process_id=""
+    return "$python_exit_code"
 }
 
 # --- Основной цикл ---
+
+trap terminate_running_bot_process_tree TERM INT
 
 attempt=1
 
