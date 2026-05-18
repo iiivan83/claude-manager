@@ -31,6 +31,7 @@ daily_sessions.json
 
 # Служебные папки проекта
 .agents/.codex-skill-mirror-backups/
+.worktrees/
 
 # dev/temp/ — черновики и временные файлы не коммитятся, остальное в dev/ трекается
 dev/temp/*
