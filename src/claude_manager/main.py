@@ -31,10 +31,10 @@ LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 SILENCED_LOGGERS = ("httpx", "telegram")
 
 # Путь к основному лог-файлу — туда пишутся строки уровня INFO и выше.
-# Совпадает с путём, куда LaunchAgent перенаправляет stderr, чтобы ротация
-# применялась к тому же файлу.
+# XDG-стандартное место для пользовательского состояния: ~/.local/state/<app>/.
+# Папка создаётся при первом запуске через os.makedirs(exist_ok=True).
 MAIN_LOG_PATH = os.path.join(
-    os.path.expanduser("~"), "Library", "Logs", "claude-manager.log"
+    os.path.expanduser("~"), ".local", "state", "claude-manager", "claude-manager.log"
 )
 
 # Максимальный размер одного лог-файла до ротации.
