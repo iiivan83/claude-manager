@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 
 from claude_manager.config import (
-    DEFAULT_PROJECTS_ROOT,
     ConfigError,
     _parse_allowed_user_ids,
     _resolve_projects_root,
@@ -263,24 +262,21 @@ class TestResolveProjectsRoot:
         """Абсолютный путь к существующей директории принимается как есть."""
         assert _resolve_projects_root("/tmp") == "/tmp"
 
-    def test_none_returns_default(self) -> None:
-        """None — возвращается значение по умолчанию (если оно существует на машине)."""
-        # На тестовой машине DEFAULT_PROJECTS_ROOT может не существовать — проверяем через patch
-        with patch("claude_manager.config.os.path.isdir", return_value=True):
-            result = _resolve_projects_root(None)
-            assert result == os.path.abspath(DEFAULT_PROJECTS_ROOT)
-
-    def test_empty_returns_default(self) -> None:
-        """Пустая строка — возвращается значение по умолчанию."""
-        with patch("claude_manager.config.os.path.isdir", return_value=True):
-            result = _resolve_projects_root("")
-            assert result == os.path.abspath(DEFAULT_PROJECTS_ROOT)
-
     def test_nonexistent_raises_error(self) -> None:
         """Несуществующая директория — ConfigError с понятным сообщением."""
         nonexistent_path = "/path/that/definitely/does/not/exist"
         with pytest.raises(ConfigError, match="несуществующую директорию"):
             _resolve_projects_root(nonexistent_path)
+
+    def test_none_raises_error(self) -> None:
+        """None — больше не используется default-путь, ConfigError с упоминанием переменной."""
+        with pytest.raises(ConfigError, match="не задан"):
+            _resolve_projects_root(None)
+
+    def test_empty_raises_error(self) -> None:
+        """Пустая строка — больше не используется default-путь, ConfigError."""
+        with pytest.raises(ConfigError, match="не задан"):
+            _resolve_projects_root("")
 
 
 class TestLoadConfigProjectsRoot:
@@ -293,16 +289,6 @@ class TestLoadConfigProjectsRoot:
         with patch.dict(os.environ, env, clear=True):
             load_config()
             assert config.PROJECTS_ROOT_DIR == "/tmp"
-
-    @patch("claude_manager.config.load_dotenv")
-    def test_projects_root_default_when_missing(self, mock_dotenv: object) -> None:
-        """Без PROJECTS_ROOT_DIR используется значение по умолчанию."""
-        env = _make_env(working_dir="/tmp")
-        with patch.dict(os.environ, env, clear=True), \
-             patch("claude_manager.config.os.path.isdir", return_value=True):
-            load_config()
-            # Путь совпадает с default после нормализации
-            assert config.PROJECTS_ROOT_DIR == os.path.abspath(DEFAULT_PROJECTS_ROOT)
 
     @patch("claude_manager.config.load_dotenv")
     def test_projects_root_nonexistent_raises(self, mock_dotenv: object) -> None:

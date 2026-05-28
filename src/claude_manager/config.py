@@ -19,10 +19,6 @@ _ENV_WORKING_DIR = "CLAUDE_WORKING_DIR"
 _ENV_PROJECTS_ROOT = "PROJECTS_ROOT_DIR"
 _ENV_E2E_TEST_USER_ID = "E2E_TEST_USER_ID"
 
-# Значение PROJECTS_ROOT_DIR по умолчанию — папка, где у пользователя лежат проекты.
-# Используется, если переменная окружения не задана. Бот ищет проекты здесь для команды /projects.
-DEFAULT_PROJECTS_ROOT = "/Users/ivan/Desktop/claude-sandbox"
-
 # Имя файла, в котором бот запоминает последний выбранный проект.
 # Файл лежит в домашней папке пользователя — не зависит от рабочей директории.
 # Используется для восстановления выбранного проекта после перезапуска бота.
@@ -93,10 +89,14 @@ def _resolve_working_dir(raw_value: str | None) -> str:
 
 def _resolve_projects_root(raw_value: str | None) -> str:
     """Определяет абсолютный путь к корневой папке со всеми проектами."""
-    # Пустое значение трактуется как «не задано» — используем значение по умолчанию
-    path_to_resolve = raw_value if raw_value else DEFAULT_PROJECTS_ROOT
+    # Пустое значение — ошибка: PROJECTS_ROOT_DIR обязателен.
+    if not raw_value:
+        raise ConfigError(
+            f"{_ENV_PROJECTS_ROOT} не задан. "
+            "Укажите путь к корневой папке проектов в файле .env"
+        )
 
-    resolved_path = os.path.abspath(path_to_resolve)
+    resolved_path = os.path.abspath(raw_value)
 
     if not os.path.isdir(resolved_path):
         raise ConfigError(
