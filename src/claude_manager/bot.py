@@ -7,7 +7,6 @@
 
 import asyncio
 import logging
-import os
 import re
 from pathlib import Path
 
@@ -104,13 +103,12 @@ PROJECT_SESSION_COMMAND_PATTERN = re.compile(
     r"^/(?P<project>\d+)s(?P<session>\d+)$"
 )
 
-# Метка launchd-сервиса бота (используется для самоперезапуска через /restart)
-LAUNCHD_SERVICE_LABEL = "com.ivan.claude-manager"
+# Задержка перед systemctl restart — чтобы бот успел ответить пользователю
+# до того, как systemd пришлёт ему SIGTERM.
+RESTART_DELAY_BEFORE_SYSTEMCTL_SECONDS = 2
 
-# Задержка перед kickstart — чтобы бот успел ответить пользователю до своей смерти
-RESTART_DELAY_BEFORE_KICKSTART_SECONDS = 2
-
-# Маркер-файл для отправки подтверждения после перезапуска через /restart
+# Маркер-файл для отправки подтверждения после перезапуска через /restart.
+# Новый процесс читает chat_id из этого файла в post_init и шлёт «готов».
 RESTART_MARKER_PATH = Path("/tmp/claude-manager-restart-chat-id")
 
 # Максимум сессий в /sessions после объединения всех backend-ов.
@@ -1290,11 +1288,11 @@ async def handle_document(
 async def handle_restart(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Обработчик команды /restart — самоперезапуск бота через launchd.
+    """Обработчик команды /restart — самоперезапуск бота через systemd.
 
-    Запускает отвязанный процесс, который через задержку выполнит
-    launchctl kickstart. Задержка нужна, чтобы бот успел отправить
-    подтверждение пользователю до того, как его убьёт launchd.
+    Запускает отвязанный subprocess, который через задержку выполняет
+    systemctl --user restart. Задержка нужна, чтобы бот успел отправить
+    подтверждение пользователю до того, как systemd пришлёт ему SIGTERM.
     """
     if not _check_access(update):
         return
@@ -1302,20 +1300,21 @@ async def handle_restart(
     chat_id = update.effective_chat.id
     await context.bot.send_message(
         chat_id,
-        f"Перезапускаюсь через {RESTART_DELAY_BEFORE_KICKSTART_SECONDS} сек...",
+        f"Перезапускаюсь через {RESTART_DELAY_BEFORE_SYSTEMCTL_SECONDS} сек...",
     )
     RESTART_MARKER_PATH.write_text(str(chat_id))
     logger.info("Запущен самоперезапуск через /restart")
 
-    # Отвязанный процесс (start_new_session=True) — чтобы kickstart -k,
-    # убивающий дерево процессов бота, не убил сам себя вместе с ботом.
+    # Отвязанный процесс (start_new_session=True) — чтобы systemctl restart
+    # пережил смерть бота-инициатора. Без отвязки systemd убил бы subprocess
+    # как часть cgroup сервиса claude-manager.service.
     # DEVNULL для stdout/stderr — чтобы не держать пайпы открытыми.
-    kickstart_command = (
-        f"sleep {RESTART_DELAY_BEFORE_KICKSTART_SECONDS} && "
-        f"launchctl kickstart -k 'gui/{os.getuid()}/{LAUNCHD_SERVICE_LABEL}'"
+    restart_command = (
+        f"sleep {RESTART_DELAY_BEFORE_SYSTEMCTL_SECONDS} && "
+        "systemctl --user restart claude-manager.service"
     )
     await asyncio.create_subprocess_exec(
-        "bash", "-c", kickstart_command,
+        "bash", "-c", restart_command,
         start_new_session=True,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,

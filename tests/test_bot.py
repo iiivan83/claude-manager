@@ -41,6 +41,7 @@ from claude_manager.bot import (
     handle_new,
     handle_photo,
     handle_projects,
+    handle_restart,
     handle_sessions,
     handle_stop,
     handle_switch_project,
@@ -2600,3 +2601,60 @@ class TestSendWatcherMessageFileMarkers:
         )
         mock_process.assert_not_awaited()
         mock_process_show.assert_not_awaited()
+
+
+class TestHandleRestart:
+    """Тесты обработчика /restart — самоперезапуск бота."""
+
+    async def test_sends_warning_message_and_writes_marker(
+        self, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """handle_restart: пишет маркер с chat_id и шлёт «Перезапускаюсь через 2 сек»."""
+        from claude_manager import bot
+
+        marker_path = tmp_path / "restart-marker"
+        monkeypatch.setattr(bot, "RESTART_MARKER_PATH", marker_path)
+
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.effective_user.id = next(iter(config_module.ALLOWED_USER_IDS))
+        context = MagicMock()
+        context.bot.send_message = AsyncMock()
+
+        with patch("claude_manager.bot.asyncio.create_subprocess_exec", new=AsyncMock()) as mock_exec:
+            await bot.handle_restart(update, context)
+
+        assert marker_path.read_text() == "12345"
+        context.bot.send_message.assert_awaited_once()
+        sent_text = context.bot.send_message.call_args[0][1]
+        assert "Перезапускаюсь" in sent_text
+        assert "2" in sent_text
+
+    async def test_launches_detached_systemctl_subprocess(
+        self, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """handle_restart: запускает bash -c 'sleep 2 && systemctl --user restart ...' detached."""
+        from claude_manager import bot
+
+        monkeypatch.setattr(bot, "RESTART_MARKER_PATH", tmp_path / "marker")
+
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.effective_user.id = next(iter(config_module.ALLOWED_USER_IDS))
+        context = MagicMock()
+        context.bot.send_message = AsyncMock()
+
+        with patch("claude_manager.bot.asyncio.create_subprocess_exec", new=AsyncMock()) as mock_exec:
+            await bot.handle_restart(update, context)
+
+        mock_exec.assert_awaited_once()
+        args, kwargs = mock_exec.call_args
+        # bash, "-c", "sleep 2 && systemctl --user restart claude-manager.service"
+        assert args[0] == "bash"
+        assert args[1] == "-c"
+        assert "systemctl --user restart claude-manager.service" in args[2]
+        assert "sleep 2" in args[2]
+        assert kwargs.get("start_new_session") is True
+        # stdout/stderr должны быть DEVNULL чтобы пайпы не висели
+        assert kwargs.get("stdout") == asyncio.subprocess.DEVNULL
+        assert kwargs.get("stderr") == asyncio.subprocess.DEVNULL
