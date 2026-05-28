@@ -451,6 +451,79 @@ class TestBackendAwareProcessState:
         assert codex_process.process.send_signal.call_args[0][0] == 2
 
 
+class TestOrphanProcessPrevention:
+    """Защита от orphan-процессов в backend-aware пути.
+
+    Каждый turn в backend-aware пути запускает новый subprocess через
+    _restart_process. Если subprocess от предыдущего turn'а не успел
+    умереть сам (медленный shutdown, зависший pipe, ошибка cleanup
+    внутри CLI), ссылка на него остаётся в _processes. _restart_process
+    обязан остановить старый процесс до перезаписи реестра — иначе
+    старый PID становится orphan'ом, невидимым для stop_process.
+    """
+
+    async def test_restart_kills_living_process_from_previous_turn(self) -> None:
+        """Если процесс из предыдущего turn'а ещё жив — новый turn останавливает его."""
+        session_id = "orphan-test-session"
+
+        successful_events = [
+            {"type": "thread.started", "thread_id": session_id},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "первый"},
+            },
+            {"type": "turn.completed"},
+        ]
+        first_process = _make_backend_subprocess(pid=10001, events=successful_events)
+        second_events = [
+            {"type": "thread.started", "thread_id": session_id},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "второй"},
+            },
+            {"type": "turn.completed"},
+        ]
+        second_process = _make_backend_subprocess(pid=10002, events=second_events)
+
+        with patch(
+            "claude_manager.process_manager.start_subprocess_for_backend",
+            new_callable=AsyncMock,
+            create=True,
+        ) as mock_start:
+            mock_start.side_effect = [first_process, second_process]
+
+            result_first = await send_message(
+                session_id,
+                "первое сообщение",
+                backend=BackendName.CODEX,
+                cwd="/tmp/orphan-test",
+            )
+
+            # Мок не имитирует завершение subprocess (returncode остаётся None) —
+            # это симулирует CLI, зависший на shutdown. is_running() = True.
+            assert first_process.is_running() is True
+            assert (session_id, BackendName.CODEX) in pm_module._processes
+            assert pm_module._processes[(session_id, BackendName.CODEX)] is first_process
+
+            result_second = await send_message(
+                session_id,
+                "второе сообщение",
+                backend=BackendName.CODEX,
+                cwd="/tmp/orphan-test",
+            )
+
+        assert result_first.is_error is False
+        assert result_second.is_error is False
+
+        # Главное утверждение: к первому процессу применили stop strategy
+        # (для Codex strategy первый шаг — SIGINT, signum=2).
+        first_process.process.send_signal.assert_called()
+        assert first_process.process.send_signal.call_args[0][0] == 2
+
+        # Реестр обновился на второй процесс.
+        assert pm_module._processes[(session_id, BackendName.CODEX)] is second_process
+
+
 @patch("claude_manager.process_manager.start_process")
 async def test_create_process_new_session(mock_start):
     """Создание нового процесса без resume."""

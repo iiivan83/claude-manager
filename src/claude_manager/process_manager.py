@@ -710,14 +710,39 @@ async def _restart_process(
     # Без этого перезапущенный процесс неуправляем: повторный /stop
     # не найдёт stop_event, is_busy() не увидит busy_flag.
     should_abort_restart = False
+    orphan_to_kill: ManagedProcess | None = None
     async with _busy_lock:
         stop_event = _stop_events.get(process_key)
         if stop_event is not None and stop_event.is_set():
             should_abort_restart = True
         else:
+            # Защита от orphan: subprocess из предыдущего turn'а
+            # мог не умереть сам после result event (медленный shutdown,
+            # зависший pipe, ошибка cleanup внутри CLI). Если ссылка
+            # на него ещё в _processes — остановим его до перезаписи.
+            # Без этого старый PID становится orphan'ом: stop_process
+            # будет видеть только новую ссылку.
+            previous_process = _processes.get(process_key)
+            if previous_process is not None and previous_process.is_running():
+                orphan_to_kill = previous_process
             _processes[process_key] = claude_process
             _busy_flags[process_key] = True
             _stop_events[process_key] = stop_event or asyncio.Event()
+
+    if orphan_to_kill is not None:
+        logger.warning(
+            "Обнаружен orphan-процесс при перезапуске: "
+            "session_id=%s backend=%s old_pid=%d new_pid=%d",
+            session_id, backend_name.value,
+            orphan_to_kill.process.pid, claude_process.process.pid,
+        )
+        try:
+            await _apply_backend_stop_strategy(orphan_to_kill, backend_name)
+        except (ProcessLookupError, OSError) as stop_error:
+            logger.warning(
+                "Ошибка при остановке orphan-процесса PID=%d: %s",
+                orphan_to_kill.process.pid, stop_error,
+            )
 
     if should_abort_restart:
         if claude_process.is_running():
