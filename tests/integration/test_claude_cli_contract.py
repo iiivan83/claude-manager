@@ -37,7 +37,10 @@ MINIMAL_PROMPT = "say hi in one word"
 CLAUDE_PROJECTS_SUBDIR = ".claude/projects"
 
 REAL_CLAUDE_BINARY = Path(
-    os.environ.get("CLAUDE_REAL_BIN", "/Users/ivan/.npm-global/bin/claude")
+    os.environ.get(
+        "CLAUDE_REAL_BIN",
+        os.path.expanduser("~/.npm-global/bin/claude"),
+    )
 )
 CLAUDE_BINARY = (
     str(REAL_CLAUDE_BINARY)

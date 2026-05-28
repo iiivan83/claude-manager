@@ -18,7 +18,7 @@ from claude_manager.config import ConfigError
 logger = logging.getLogger(__name__)
 
 # Глобальный путь к файлу-замку — в домашней папке, чтобы работал
-# независимо от рабочей директории (LaunchAgent, watch_and_restart.sh, ручной запуск)
+# независимо от рабочей директории (systemd, watch_and_restart.sh, ручной запуск)
 LOCK_PATH = os.path.join(os.path.expanduser("~"), ".claude-manager.lock")
 
 # Формат логов: время, уровень важности, модуль, сообщение
@@ -52,10 +52,10 @@ def _setup_logging() -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
-    # StreamHandler пишет в stderr. Под LaunchAgent stderr перенаправлен
-    # в error.log — тот же файл, куда пишет RotatingFileHandler ниже,
-    # и каждая WARNING+ строка задваивается. Подключаем StreamHandler
-    # только при ручном запуске (stderr — терминал).
+    # StreamHandler пишет в stderr. Под systemd stderr попадает в journalctl
+    # (отдельно от RotatingFileHandler, который пишет в свой файл —
+    # дубликата нет). Подключаем StreamHandler только при ручном запуске,
+    # чтобы не плодить шум, когда лог уже идёт в файл и journal.
     if sys.stderr.isatty():
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(

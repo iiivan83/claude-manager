@@ -36,9 +36,9 @@
 
 ## Справочники и руководства (корневой уровень dev/docs/)
 
-- [deployment-guide.md](deployment-guide.md) — пошаговая инструкция по развёртыванию бота: виртуальное окружение, .env, LaunchAgent, логи
+- [deployment-guide.md](deployment-guide.md) — пошаговая инструкция по развёртыванию бота под Linux: виртуальное окружение, .env, systemd user service, логи
 - [bot-handoff-package-guide.md](bot-handoff-package-guide.md) — инструкция для передачи бота другому пользователю: что входит в архив, какие личные данные исключаются, как запустить и где искать код для исправлений
-- [bot-launch-infrastructure.md](bot-launch-infrastructure.md) — карта всех компонентов запуска бота: что где лежит, цепочка launchd → скрипт → Python, почему venv и скрипт вне Desktop, диагностика TCC/provenance проблем
+- [bot-launch-infrastructure.md](bot-launch-infrastructure.md) — карта всех компонентов запуска бота под Linux: что где лежит, systemd user service, цепочка ExecStart → entry point → Python, /restart через отвязанный subprocess, диагностика через journalctl
 - [claude-cli-stream-json-protocol.md](claude-cli-stream-json-protocol.md) — справочник протокола `stream-json`: форматы сообщений, типы событий, известные баги Claude CLI
 - `router-configuration.md` — локальная конфигурация MikroTik L009UiGS: сетевая топология, firewall, DNS, WireGuard VPN, контентная фильтрация, список устройств. Не включается в handoff-архивы для передачи бота другому пользователю
 - [review-checklists.md](review-checklists.md) — чеклисты для ревью кода (качество, безопасность, архитектура, соответствие BRD)

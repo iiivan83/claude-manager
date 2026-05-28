@@ -1,178 +1,160 @@
 # Инфраструктура запуска бота
 
-Справочник по всем компонентам, которые участвуют в запуске и работе Claude Manager. Описывает где каждый компонент лежит, зачем он там, как компоненты связаны между собой и как их чинить.
+Справочник по всем компонентам, которые участвуют в запуске и работе Claude Manager на Linux. Описывает где каждый компонент лежит, зачем он там, как компоненты связаны между собой и как их чинить.
 
-## Почему всё устроено именно так
+## Где живёт код и состояние
 
-Проект лежит в `~/Desktop/claude-sandbox/claude_manager/` — эта папка синхронизируется через iCloud, и это принципиально: код, документация и state-файлы доступны с другого компьютера для диагностики.
+Проект лежит в `/home/ivan/claude-sandbox/claude_manager/`. Venv — в `.venv/` внутри проекта (на Linux нет macOS-овской TCC-защищённой Desktop-зоны, поэтому venv можно держать рядом с кодом без проблем с editable install).
 
-Но `~/Desktop` — TCC-защищённая директория macOS. TCC (Transparency, Consent, and Control — система разрешений macOS) создаёт две проблемы для фоновых процессов:
+### В проекте
 
-- **Провенанс и UF_HIDDEN.** APFS автоматически ставит `com.apple.provenance` на файлы внутри Desktop. Python 3.13 `site.py` (строки 177-180) считает файлы с `UF_HIDDEN` скрытыми и молча пропускает `.pth` файлы editable install → `import` падает с `ModuleNotFoundError`. `chflags`, `xattr -rc`, перемещение файлов — не помогают: APFS восстанавливает флаг из метаданных провенанса
-- **TCC-блокировка launchd.** Процессы, запущенные через launchd, не имеют Full Disk Access к `~/Desktop` → `Operation not permitted` при попытке выполнить скрипт или даже сделать `getcwd` в этой директории
+- **`src/claude_manager/`** — продакшен-код бота.
+- **`.env`** — секреты (токен, ID пользователей) — в `.gitignore`.
+- **`.venv/`** — виртуальное окружение Python с editable install (`pip install -e ".[dev]"`).
+- **`restart-claude-manager.sh`** — скрипт безопасного рестарта (preflight + systemctl + post-flight).
+- **`watch_and_restart.sh`** — наблюдатель для разработки (inotifywait + systemctl restart).
+- **`sessions.json`, `daily_sessions.json`** — файлы состояния (привязки чат ↔ сессия, дневные номера).
 
-Решение — гибридная схема: код на Desktop (iCloud sync), runtime-артефакты вне Desktop.
+### Вне проекта
 
-## Карта компонентов
+- **`~/.config/systemd/user/claude-manager.service`** — unit-файл systemd для автозапуска.
+- **`~/.local/state/claude-manager/claude-manager.log`** — основной лог (RotatingFileHandler, XDG-стандарт).
+- **`~/.claude-manager.lock`** — файловая блокировка от двойного запуска (fcntl.flock).
+- **`~/.claude-manager-current-project`** — последний выбранный проект (восстанавливается при старте).
+- **`~/.claude-manager-silence-mode`** — состояние silence mode (persisted между перезапусками).
+- **`~/.claude-manager-current-backend`** — выбранный CLI-бэкенд для новых сессий.
+- **journalctl** — stdout/stderr бота под systemd попадают в `journalctl --user -u claude-manager.service`.
 
-### В проекте (Desktop, синхронизируется через iCloud)
+## systemd user service
 
-- **`src/claude_manager/`** — весь продакшен-код бота
-- **`.env`** — секреты (токен, ID пользователей) — в `.gitignore`
-- **`start-claude-manager.sh`** — reference-копия скрипта запуска. launchd её **не использует** — она здесь для iCloud-синхронизации и как справочник. При изменении логики запуска — обновить этот файл тоже
-- **`.venv`** — симлинк на `~/.venvs/claude-manager/`. Все команды (`source .venv/bin/activate`, `pip install -e .`) работают через симлинк прозрачно
-- **`sessions.json`**, **`daily_sessions.json`** — файлы состояния, синхронизируются для удалённой диагностики
+Файл: `~/.config/systemd/user/claude-manager.service`.
 
-### Вне проекта (вне Desktop, не синхронизируется)
+Текущее содержимое:
 
-- **`~/.venvs/claude-manager/`** — виртуальное окружение Python. Здесь потому что:
-  - Нет `com.apple.provenance` → нет `UF_HIDDEN` → `.pth` файлы работают
-  - Не гоняет гигабайты платформо-специфичных бинарников через iCloud
-  - Симлинк `.venv` в проекте обеспечивает совместимость
-- **`~/.local/bin/start-claude-manager.sh`** — рабочий скрипт запуска для launchd. Здесь потому что:
-  - Нет TCC-блокировки — launchd может его запустить
-  - Нет `com.apple.provenance` на скрипте (создан вне Desktop)
-- **`~/Library/LaunchAgents/com.ivan.claude-manager.plist`** — конфигурация автозапуска macOS
-- **`~/Library/Logs/claude-manager.log`** — stdout бота
-- **`~/Library/Logs/claude-manager.error.log`** — stderr бота (здесь видны Python-крэши и TCC-ошибки)
-- **`~/.claude-manager.lock`** — файловая блокировка от двойного запуска (fcntl.flock)
-- **`~/.claude-manager-current-project`** — последний выбранный проект (восстанавливается при старте)
-- **`~/.claude-manager-silence-mode`** — состояние silence mode
+```ini
+[Unit]
+Description=Claude Manager Telegram bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ivan/claude-sandbox/claude_manager
+Environment=PATH=/home/ivan/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/ivan/claude-sandbox/claude_manager/.venv/bin/claude-manager
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+Ключевые поля:
+
+- **`ExecStart`** — entry point `claude-manager`, поставляемый pip-овым editable install из `pyproject.toml`. На прямой запуск Python через `python -m` не переходим — entry point чище и не требует костылей с `sys.path`.
+- **`Restart=always`** + **`RestartSec=10`** — systemd сам перезапускает бота при падении через 10 секунд. Раньше эту роль выполняла shell-обёртка с retry-логикой; на Linux она не нужна.
+- **`TimeoutStopSec=30`** — даёт боту до 30 секунд на корректное завершение после SIGTERM (важно для самоперезапуска через `/restart`).
+- **`Type=simple`** — stdout/stderr автоматически попадают в `journalctl`.
+- **`Environment=PATH=...`** — обязательно включить путь к `node` для Claude CLI (это Node-приложение). Без этого Claude CLI падает с `env: node: No such file or directory`.
 
 ## Цепочка запуска
 
 ```
-launchd (macOS)
-  → ~/.local/bin/start-claude-manager.sh  (bash-обёртка с retry-логикой)
-    → ~/.venvs/claude-manager/bin/python  (Python из venv вне Desktop)
-      → sys.path.insert(0, ".../src")     (обход UF_HIDDEN на .pth)
-        → runpy._run_module_as_main("claude_manager")
-          → claude_manager.main.main()    (файловая блокировка, polling)
+systemd (user)
+  → ExecStart=/home/ivan/claude-sandbox/claude_manager/.venv/bin/claude-manager
+    → claude_manager.main:main() (entry point из pyproject.toml)
+      → файловая блокировка через fcntl
+      → загрузка config, восстановление сессий
+      → Telegram polling
 ```
 
-Скрипт запуска делает `cd /Users/ivan/Desktop/claude-sandbox/claude_manager` перед вызовом Python — рабочая директория процесса бота всегда проектная.
+## Самоперезапуск через `/restart`
 
-### Retry-логика в скрипте запуска
+Команда `/restart` в Telegram запускает отвязанный subprocess:
 
-Python 3.13 может крэшиться при инициализации (`InterruptedError` в `getpath.py` — PEP 475 ещё не активен на стадии `core initialized`). Скрипт:
+```
+бот → asyncio.create_subprocess_exec("bash", "-c",
+        "sleep 2 && systemctl --user restart claude-manager.service",
+        start_new_session=True, stdout=DEVNULL, stderr=DEVNULL)
+```
 
-1. Запускает Python, замеряет время работы
-2. Если крэш в первые 5 секунд — считает startup crash, retry (до 3 попыток с паузой 10 секунд)
-3. Если Python работал дольше 5 секунд — это не startup crash, выходит с его exit code. launchd перезапустит через `KeepAlive`
-4. Если все 3 попытки исчерпаны — отправляет уведомление в Telegram (или macOS notification как fallback)
+Через 2 секунды subprocess (отвязанный от cgroup сервиса через `start_new_session=True`) выполняет `systemctl --user restart`. systemd шлёт SIGTERM текущему процессу бота, ждёт до 30 секунд (`TimeoutStopSec=30`), запускает новый процесс через `ExecStart`. В `post_init` нового процесса бот читает маркер-файл `/tmp/claude-manager-restart-chat-id`, шлёт пользователю «Перезапустился, готов к работе», удаляет маркер.
 
-### Post-flight проверка restart-скрипта
+## Внешний рестарт: `restart-claude-manager.sh`
 
-`restart-claude-manager.sh` перезапускает сервис через `launchctl kickstart -k`, но успешность проверяет не только по `launchctl list`.
+Скрипт в корне проекта. Безопасен для запуска из терминала или внешнего агента, **не** из подпроцесса самого бота (бот убьёт собственное дерево — exit 137).
 
-Почему одной строки `launchctl list` недостаточно:
+Поток:
 
-- Первая колонка показывает PID shell-обёртки `~/.local/bin/start-claude-manager.sh`, а не обязательно PID Python-бота
-- Вторая колонка может сохранять старый `last exit code = -15` после штатного kill старого процесса во время kickstart
-- Shell-обёртка может быть жива, пока ждёт retry-паузу после startup crash, а Python-бот в этот момент ещё не запущен
+1. **Preflight** — `check_editable_install` проверяет наличие `.venv/bin/claude-manager` и успешность `import claude_manager`. При ошибке — exit 1 + подсказка по починке.
+2. **Restart** — `systemctl --user restart claude-manager.service`.
+3. **Post-flight** — 3 попытки с интервалом 5 секунд. Успех = `systemctl --user is-active` + `pgrep -f claude_manager`. При провале — диагностика через `tail` лога и `journalctl`, exit 1.
 
-Правильный критерий успешного post-flight:
+Хелперы (`check_editable_install`, `service_is_running`, `print_diagnostics_on_failure`) вынесены в отдельные функции и покрыты юнит-тестами в `tests/test_restart_claude_manager_script.py`.
 
-1. `launchctl list` показывает числовой PID wrapper-процесса
-2. Под этим PID есть дочерний Python-процесс с запуском `runpy._run_module_as_main("claude_manager")`
+## Watcher для разработки: `watch_and_restart.sh`
 
-Только после этого restart считается успешным. Если wrapper жив, но Python-процесс ещё не найден, скрипт ждёт следующую post-flight попытку.
+Использует `inotifywait` из пакета `inotify-tools`. При изменении любого `.py`-файла в `src/` шлёт `systemctl --user restart claude-manager.service`. Дебаунс 1 секунда защищает от шквала событий при сохранении нескольких файлов одновременно в IDE.
 
-## launchd plist
-
-Файл: `~/Library/LaunchAgents/com.ivan.claude-manager.plist`
-
-Ключевые поля:
-- **`ProgramArguments`** → `~/.local/bin/start-claude-manager.sh` (НЕ проектная копия)
-- **`WorkingDirectory`** → `/Users/ivan` (НЕ Desktop — иначе `getcwd` вернёт `Operation not permitted`)
-- **`KeepAlive`** → `true` — launchd перезапускает бота при падении
-- **`ThrottleInterval`** → `60` — минимальная пауза между перезапусками (секунды)
-- **`RunAtLoad`** → `true` — запускать при загрузке
-- **`PATH`** в `EnvironmentVariables` — обязательно включить путь к `node` (Claude CLI = Node.js-приложение)
+Зависимость: `sudo apt install inotify-tools` (Debian/Ubuntu) или `sudo dnf install inotify-tools` (Fedora). Скрипт проверяет наличие команды на старте.
 
 ## Пересоздание venv
 
-При обновлении Python или повреждении venv:
-
 ```bash
-# ВАЖНО: создавать в ~/.venvs/, НЕ в проекте
-rm -rf ~/.venvs/claude-manager
-python3.13 -m venv ~/.venvs/claude-manager
-
-# Симлинк уже на месте (.venv → ~/.venvs/claude-manager)
+cd /home/ivan/claude-sandbox/claude_manager
+rm -rf .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Проверка: флаги должны быть 0x0, импорт должен пройти
-python -c "
-import os, stat
-s = os.stat('.venv/lib/python3.13/site-packages/__editable__.claude_manager-0.1.0.pth')
-print('flags:', hex(s.st_flags), '— OK' if s.st_flags == 0 else '— ПРОБЛЕМА: UF_HIDDEN')
-"
+# Проверка: entry point на месте, импорт проходит
+ls .venv/bin/claude-manager
 python -c "import claude_manager; print('import OK')"
 ```
 
-Если симлинк потерялся: `ln -s ~/.venvs/claude-manager .venv`
+После пересоздания обязательно прогнать `./restart-claude-manager.sh` для проверки. Бот может работать «по инерции» (живой процесс держит модуль в памяти), но при первом рестарте упадёт с `No module named claude_manager`, если editable install не прошёл.
 
-## Обновление скрипта запуска
-
-При изменении логики запуска (retry, пути, уведомления):
-
-1. Отредактировать `start-claude-manager.sh` в проекте (reference-копия)
-2. Скопировать в `~/.local/bin/`: `cp start-claude-manager.sh ~/.local/bin/start-claude-manager.sh`
-3. Сделать исполняемым: `chmod +x ~/.local/bin/start-claude-manager.sh`
-4. Перезагрузить launchd: `launchctl unload ~/Library/LaunchAgents/com.ivan.claude-manager.plist && launchctl load ~/Library/LaunchAgents/com.ivan.claude-manager.plist`
-
-## Диагностика проблем
+## Диагностика
 
 ### Бот не запускается
 
 ```bash
-# 1. Проверить статус launchd
-launchctl list | grep claude-manager
-# PID  Exit  Label
-# 1234  -15  com.ivan.claude-manager  ← wrapper жив; дополнительно проверить Python-потомка
-# -     126  com.ivan.claude-manager  ← не работает (PID нет, exit 126)
+# 1. Статус сервиса
+systemctl --user status claude-manager.service
 
-# 2. Проверить, что под wrapper есть Python-бот
-WRAPPER_PID=$(launchctl list | awk '/com.ivan.claude-manager/ {print $1}')
-ps -axo ppid=,command= | awk -v wrapper_pid="$WRAPPER_PID" '$1 == wrapper_pid && /runpy\._run_module_as_main\("claude_manager"\)/'
+# 2. Последние строки journalctl (stdout/stderr под systemd)
+journalctl --user -u claude-manager.service -n 50 --no-pager
 
-# 3. Проверить error-лог (здесь видны TCC-ошибки, Python-крэши)
-tail -20 ~/Library/Logs/claude-manager.error.log
+# 3. Лог приложения (RotatingFileHandler)
+tail -50 ~/.local/state/claude-manager/claude-manager.log
 
-# 4. Проверить что Python может импортировать модуль
+# 4. Проверить editable install
 source .venv/bin/activate
 python -c "import claude_manager; print('OK')"
 
-# 5. Проверить UF_HIDDEN на .pth (должно быть 0x0)
-python -c "
-import os, stat
-s = os.stat('.venv/lib/python3.13/site-packages/__editable__.claude_manager-0.1.0.pth')
-print(hex(s.st_flags))
-"
+# 5. Проверить, что entry point на месте
+ls -l .venv/bin/claude-manager
 ```
 
-### `Operation not permitted` в error-логе
+### Сервис в состоянии `failed`
 
-Launchd не может получить доступ к Desktop. Проверить:
-- `ProgramArguments` указывает на `~/.local/bin/start-claude-manager.sh` (не на проектную копию)
-- `WorkingDirectory` — `/Users/ivan` (не Desktop)
+systemd считает сервис «провалившимся», когда `Restart=always` исчерпал retry-budget. Сбросить статус:
 
-### `ModuleNotFoundError: No module named 'claude_manager'`
+```bash
+systemctl --user reset-failed claude-manager.service
+systemctl --user start claude-manager.service
+```
 
-UF_HIDDEN на `.pth` файле. Проверить флаги (см. выше). Если `0x8040` — venv внутри TCC-зоны, нужно пересоздать в `~/.venvs/`.
+### `claude-manager: command not found` в journalctl
 
-### `Fatal Python error: error evaluating path`
+Editable install сломан — entry point из `pyproject.toml` не зарегистрирован. Пересоздать venv (см. выше).
 
-Python 3.13 startup crash (InterruptedError). Transient — скрипт запуска делает retry автоматически. Если все 3 попытки провалились — придёт уведомление в Telegram. Обычно помогает подождать и перезапустить: `launchctl kickstart -k "gui/$(id -u)/com.ivan.claude-manager"`
+### Бот запущен в двух экземплярах
 
-### Бот работал, но перестал после обновления macOS
-
-macOS может сбросить TCC-разрешения при обновлении. Проверить error-лог на `Operation not permitted`. Если есть — убедиться что скрипт запуска лежит в `~/.local/bin/` (не в Desktop) и plist указывает на него.
+Защита: файловая блокировка `~/.claude-manager.lock` через `fcntl.flock`. Вторая копия (например, ручной `python -m claude_manager` параллельно с systemd-сервисом) сразу завершится с понятным сообщением.
 
 ## Связанные документы
 
-- [deployment-guide.md](deployment-guide.md) — пошаговая установка от нуля
-- [dev/docs/adr/03.05_10.58-...-venv-launchd-migration-out-of-desktop.md](adr/03.05_10.58-session-change-documenter-venv-launchd-migration-out-of-desktop.md) — ADR с историей решения и альтернативами
-- CLAUDE.md, секции «Принцип изоляции venv от TCC-защищённых директорий» и «Принцип изоляции скрипта запуска от TCC-зоны»
+- `deployment-guide.md` — пошаговая установка от нуля.
+- `dev/docs/specs/28.05_17.25-linux-bot-commands-cleanup-spec.md` — спека миграции с macOS на Linux.
+- `CLAUDE.md`, секции «Принципы эксплуатации» и «Команды разработки».
