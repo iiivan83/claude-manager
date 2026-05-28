@@ -218,11 +218,19 @@ class CodexBackend(CodingAgentBackend):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
-        """Return all Codex rollout files for operational flows."""
+        """Return Codex rollout files for operational flows.
+
+        With lookback_days set the scan walks only that many recent
+        YYYY/MM/DD directories instead of the full Codex sessions root —
+        critical for project switching when the global Codex archive holds
+        thousands of files.
+        """
         return await list_all_session_file_infos_for_project(
             self.locate_session_files_directory_for_project(project_dir),
             project_dir,
+            lookback_days=lookback_days,
         )
 
     async def list_all_session_files_for_projects(

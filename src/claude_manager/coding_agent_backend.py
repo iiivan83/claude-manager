@@ -168,8 +168,14 @@ class CodingAgentBackend(ABC):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
-        """Return all known project session files for operational flows."""
+        """Return known project session files for operational flows.
+
+        lookback_days=None preserves the full scan (compat default).
+        A positive value restricts the scan to that many recent days, used by
+        latency-sensitive callers (watcher reset, pending collection).
+        """
 
     async def list_all_session_files_for_projects(
         self,

@@ -82,7 +82,10 @@ class FakeBackend(CodingAgentBackend):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
+        del project_dir
+        del lookback_days
         return list(self.files)
 
     async def session_file_exists_for_project(

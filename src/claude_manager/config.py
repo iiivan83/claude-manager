@@ -36,6 +36,13 @@ CURRENT_BACKEND_FILE: Path = Path.home() / ".claude-manager-current-backend"
 # Сообщения старше этого возраста не доставляются при возврате в проект.
 UNREAD_BUFFER_TTL_HOURS: int = 3
 
+# Окно (в днях) для оперативного листинга файлов сессий при переключении проекта.
+# При смене проекта watcher и сбор pending-сообщений сканируют только эти N последних
+# дней, иначе глобальная папка ~/.codex/sessions (десятки тысяч файлов от всех проектов)
+# делает переключение мучительно медленным. Значение должно покрывать TTL unread_buffer
+# (UNREAD_BUFFER_TTL_HOURS) с запасом на «возврат после выходных».
+OPERATIONAL_SESSION_LOOKBACK_DAYS: int = 3
+
 # Константы модуля — заполняются после вызова load_config()
 BOT_TOKEN: str = ""
 ALLOWED_USER_IDS: set[int] = set()

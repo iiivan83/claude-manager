@@ -345,12 +345,29 @@ async def list_session_file_infos_for_project(
 async def list_all_session_file_infos_for_project(
     sessions_root: str,
     project_dir: str,
+    lookback_days: int | None = None,
 ) -> list[SessionFileInfo]:
-    """Return all Codex rollout metadata for one project."""
+    """Return Codex rollout metadata for one project.
+
+    With lookback_days set the scan touches only the recent N day directories,
+    which avoids walking the global ~/.codex/sessions root that can hold tens
+    of thousands of unrelated files. lookback_days=None keeps the legacy full
+    scan for compat.
+    """
     if not await asyncio.to_thread(os.path.exists, sessions_root):
         logger.info("Codex sessions directory not found: %s", sessions_root)
         return []
-    file_paths = await asyncio.to_thread(_list_all_rollout_files_blocking, sessions_root)
+    if lookback_days is None:
+        file_paths = await asyncio.to_thread(
+            _list_all_rollout_files_blocking, sessions_root,
+        )
+    else:
+        file_paths = await asyncio.to_thread(
+            _list_rollout_files_blocking,
+            sessions_root,
+            lookback_days,
+            date.today(),
+        )
     return await _list_operational_session_file_infos_from_paths(
         file_paths,
         project_dir,

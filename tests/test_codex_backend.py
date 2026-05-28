@@ -513,6 +513,28 @@ async def test_list_all_session_files_ignores_recent_and_lookback_limits(
     assert len(recent_infos) == MAX_RECENT_SESSIONS
 
 
+async def test_list_all_session_files_respects_operational_lookback_days(
+    backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operational lookback prunes Codex sessions older than the window."""
+    patch_codex_home(monkeypatch, tmp_path)
+    sessions_root = tmp_path / ".codex" / "sessions"
+    project_dir = "/tmp/project-with-lookback"
+    for days_ago in (0, 1, 2, 5, 30):
+        make_rollout_file(
+            sessions_root,
+            f"019dfaeb-7c5b-7ba1-9e56-a33b5e0c{days_ago:03d}",
+            project_dir,
+            days_ago=days_ago,
+        )
+
+    infos_within_two_days = await backend.list_all_session_files_for_project(
+        project_dir, lookback_days=2,
+    )
+
+    assert len(infos_within_two_days) == 2
+
+
 async def test_read_session_file_snapshot_counts_records_and_activity(
     backend: CodexBackend, tmp_path: Path,
 ) -> None:

@@ -39,7 +39,9 @@ class FakeBackend:
     async def list_all_session_files_for_project(
         self,
         _project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
+        del lookback_days
         return [
             SessionFileInfo(
                 session_id=self.session_id,

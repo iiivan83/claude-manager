@@ -38,6 +38,7 @@ class FakeBackend(CodingAgentBackend):
         self.files: list[SessionFileInfo] = []
         self.snapshots: dict[str, SessionFileSnapshot] = {}
         self.list_calls: list[str] = []
+        self.list_lookback_history: list[int | None] = []
         self.snapshot_calls: list[str] = []
 
     @property
@@ -91,8 +92,10 @@ class FakeBackend(CodingAgentBackend):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
         self.list_calls.append(project_dir)
+        self.list_lookback_history.append(lookback_days)
         return list(self.files)
 
     async def session_file_exists_for_project(
@@ -611,4 +614,35 @@ class TestResetState:
         assert peak_in_flight_count > 1, (
             "reset_state читает файлы последовательно — переключение проектов будет тормозить "
             f"при большом числе сессий (peak concurrency = {peak_in_flight_count})"
+        )
+
+    async def test_reset_state_requests_operational_lookback_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reset_state must scope the backend listing to the operational lookback window.
+
+        Иначе при переключении проекта watcher сканирует всю историю Codex (десятки тысяч
+        файлов), которая полностью не имеет отношения к текущему проекту.
+        """
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.reset_state()
+
+        assert backend.list_lookback_history, (
+            "reset_state не вызвал list_all_session_files_for_project"
+        )
+        assert (
+            backend.list_lookback_history[-1]
+            == session_watcher.config.OPERATIONAL_SESSION_LOOKBACK_DAYS
+        ), (
+            "reset_state должен ограничивать листинг сессий operational lookback окном, "
+            f"но передал lookback_days={backend.list_lookback_history[-1]}"
         )

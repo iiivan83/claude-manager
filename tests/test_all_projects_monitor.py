@@ -41,7 +41,9 @@ class FakeBackend:
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
+        del lookback_days
         self.individual_project_dir_calls.append(project_dir)
         return self.files_by_project.get(project_dir, [])
 
@@ -97,7 +99,9 @@ class FailingBackend:
     async def list_all_session_files_for_project(
         self,
         _project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
+        del lookback_days
         raise OSError("backend unavailable")
 
 

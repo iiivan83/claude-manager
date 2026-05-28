@@ -209,9 +209,18 @@ class ClaudeCodeBackend(CodingAgentBackend):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
-        """Return all Claude session files for operational flows."""
-        return await list_all_session_file_infos_for_project(project_dir)
+        """Return Claude session files for operational flows.
+
+        Claude sessions live in a per-project directory, so listing is already
+        cheap. lookback_days, when set, filters the result by file mtime so
+        callers get the same recency semantics across backends.
+        """
+        return await list_all_session_file_infos_for_project(
+            project_dir,
+            lookback_days=lookback_days,
+        )
 
     async def session_file_exists_for_project(
         self,

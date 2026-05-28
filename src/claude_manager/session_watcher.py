@@ -281,11 +281,13 @@ class SessionWatcher:
         *,
         include_registry: bool = True,
         apply_missing_backoff: bool = True,
+        lookback_days: int | None = None,
     ) -> tuple[list[str], dict[str, SessionFileInfo]]:
         """Return session ids and file metadata visible to this backend."""
         effective_project_path = project_path or config.WORKING_DIR
         files = await self.backend.list_all_session_files_for_project(
-            effective_project_path
+            effective_project_path,
+            lookback_days=lookback_days,
         )
         files_by_session_id = {info.session_id: info for info in files}
         session_ids = [info.session_id for info in files]
@@ -552,6 +554,7 @@ class SessionWatcher:
             project_path=config.WORKING_DIR,
             include_registry=False,
             apply_missing_backoff=False,
+            lookback_days=config.OPERATIONAL_SESSION_LOOKBACK_DAYS,
         )
 
         new_states = await self._read_baseline_states_concurrently(

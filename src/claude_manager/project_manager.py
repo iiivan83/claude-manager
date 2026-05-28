@@ -458,10 +458,16 @@ async def _collect_pending_for_backend(
     backend_adapter: CodingAgentBackend,
     project_path: str,
 ) -> list[PendingDeliveryItem]:
-    """Собирает pending items для всех файлов одного backend-а."""
+    """Собирает pending items для всех файлов одного backend-а.
+
+    Листинг ограничен operational lookback окном — глобальные backend-папки
+    (например, ~/.codex/sessions с десятками тысяч файлов от всех проектов)
+    иначе блокируют ответ пользователю на /pN.
+    """
     backend = backend_adapter.name
     session_files = await backend_adapter.list_all_session_files_for_project(
-        project_path
+        project_path,
+        lookback_days=config.OPERATIONAL_SESSION_LOOKBACK_DAYS,
     )
     pending_items: list[PendingDeliveryItem] = []
     for file_info in session_files:

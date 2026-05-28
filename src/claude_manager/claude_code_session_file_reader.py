@@ -128,6 +128,28 @@ def _sort_paths_by_mtime_descending(file_paths: list[str]) -> list[str]:
     return sorted(file_paths, key=os.path.getmtime, reverse=True)
 
 
+# Seconds in one day — for lookback-by-mtime filtering of operational session lists.
+SECONDS_IN_ONE_DAY = 24 * 60 * 60
+
+
+def _filter_paths_within_lookback_window(
+    file_paths: list[str],
+    lookback_days: int,
+) -> list[str]:
+    """Drop paths whose mtime is older than lookback_days days from now."""
+    import time
+
+    cutoff_timestamp = time.time() - lookback_days * SECONDS_IN_ONE_DAY
+    kept_paths: list[str] = []
+    for file_path in file_paths:
+        try:
+            if os.path.getmtime(file_path) >= cutoff_timestamp:
+                kept_paths.append(file_path)
+        except OSError:
+            continue
+    return kept_paths
+
+
 def _normalize_session_message_timestamp(raw_timestamp: object) -> float | None:
     """Normalize a Claude JSONL timestamp to a Unix timestamp."""
     if raw_timestamp is None:
@@ -281,8 +303,14 @@ async def list_session_file_infos_for_project(
 
 async def list_all_session_file_infos_for_project(
     project_dir: str,
+    lookback_days: int | None = None,
 ) -> list[SessionFileInfo]:
-    """Return lightweight metadata for all Claude session files in a project."""
+    """Return lightweight metadata for Claude session files in a project.
+
+    lookback_days=None keeps the legacy full listing. A positive value drops
+    files whose mtime is older than that many days from now — keeps recency
+    semantics aligned with the Codex backend for project-switch hot paths.
+    """
     sessions_dir = build_sessions_path(project_dir)
     if not await asyncio.to_thread(os.path.exists, sessions_dir):
         logger.debug("Claude sessions directory not found: %s", sessions_dir)
@@ -296,6 +324,12 @@ async def list_all_session_file_infos_for_project(
             _list_jsonl_file_paths_blocking,
             sessions_dir,
         )
+        if lookback_days is not None:
+            file_paths = await asyncio.to_thread(
+                _filter_paths_within_lookback_window,
+                file_paths,
+                lookback_days,
+            )
         sorted_file_paths = await asyncio.to_thread(
             _sort_paths_by_mtime_descending,
             file_paths,
