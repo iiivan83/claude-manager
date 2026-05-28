@@ -39,6 +39,11 @@ from claude_manager.coding_agent_backend import (
 BACKEND_DISPLAY_NAME_CLAUDE = "🤖 Claude"
 CLAUDE_CLI_DEFAULT_PATH = "/usr/local/bin/claude"
 
+# Точное имя API-модели Claude Opus 4.8 (вышла 28.05.2026). Фиксируем версию,
+# а не алиас "opus" — чтобы при выходе следующей модели бот не уехал на неё
+# автоматически и поведение оставалось воспроизводимым.
+CLAUDE_OPUS_MODEL_ID = "claude-opus-4-8"
+
 STREAM_JSON_INPUT_FORMAT = "stream-json"
 STREAM_JSON_OUTPUT_FORMAT = "stream-json"
 STREAM_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
@@ -112,6 +117,8 @@ class ClaudeCodeBackend(CodingAgentBackend):
             "--input-format",
             STREAM_JSON_INPUT_FORMAT,
             "--dangerously-skip-permissions",
+            "--model",
+            CLAUDE_OPUS_MODEL_ID,
             "--effort",
             "max",
             "--disallowedTools",

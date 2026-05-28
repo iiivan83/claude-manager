@@ -90,6 +90,32 @@ def test_compose_args_for_resume_session_appends_resume(
     assert command_args[-2:] == ["--resume", session_id]
 
 
+def test_compose_args_pins_opus_4_8_model(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot pins the exact Opus 4.8 version instead of the rolling 'opus' alias."""
+    monkeypatch.setattr(
+        "claude_manager.claude_code_backend._resolve_claude_binary_path",
+        lambda: "/bin/claude",
+    )
+
+    command_args = backend.compose_subprocess_command_args(
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        [],
+    )
+
+    assert "--model" in command_args, (
+        "Backend must pass --model so the bot does not depend on subscription default"
+    )
+    model_index = command_args.index("--model")
+    assert command_args[model_index + 1] == "claude-opus-4-8", (
+        f"Must pin the exact 4.8 version, not the rolling alias "
+        f"(got: {command_args[model_index + 1]!r})"
+    )
+
+
 def test_compose_args_disallow_ask_user_question_tool(
     backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
