@@ -19,11 +19,7 @@ from claude_manager.coding_agent_backend import (
 )
 from claude_manager.daily_session_registry import DailySessionEntry
 from claude_manager.session_manager import ActiveSession
-from claude_manager.session_watcher import (
-    _extract_assistant_messages,
-    _extract_message_text,
-    _is_empty_response,
-)
+from claude_manager.session_watcher import _is_empty_response
 
 
 TEST_CHAT_ID = 12345
@@ -185,35 +181,8 @@ def _reset_watcher_state() -> None:
     session_watcher._get_current_session = None
 
 
-class TestLegacyExtractionHelpers:
-    """Small compatibility checks for raw Claude-message helper functions."""
-
-    def test_extract_text_from_string_content(self) -> None:
-        message = {"type": "assistant", "message": {"content": "Привет"}}
-
-        assert _extract_message_text(message) == "Привет"
-
-    def test_extract_text_from_list_content(self) -> None:
-        message = {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "text", "text": "Первая"},
-                    {"type": "text", "text": "Вторая"},
-                ],
-            },
-        }
-
-        assert _extract_message_text(message) == "Первая Вторая"
-
-    def test_extract_assistant_messages_skips_seen_items(self) -> None:
-        messages = [
-            {"type": "user", "message": {"content": "Q1"}},
-            {"type": "assistant", "message": {"content": "A1"}},
-            {"type": "assistant", "message": {"content": "A2"}},
-        ]
-
-        assert _extract_assistant_messages(messages, already_seen_count=2) == ["A2"]
+class TestEmptyResponseDetection:
+    """Verifies the deliverability filter rejects empty and no-response markers."""
 
     def test_empty_response_markers(self) -> None:
         assert _is_empty_response("") is True
