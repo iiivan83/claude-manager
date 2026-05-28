@@ -374,8 +374,10 @@ class TestFilePersistence:
         assert saved_data[FAKE_TODAY]["1"] == {
             "session_id": SESSION_ALPHA,
             "backend": "claude",
+            "summary": "",
         }
         assert saved_data[FAKE_TODAY]["2"] == {
             "session_id": SESSION_BETA,
             "backend": "claude",
+            "summary": "",
         }
