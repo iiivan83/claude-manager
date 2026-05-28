@@ -361,6 +361,12 @@ async def _process_events(
     terminal_event: UnifiedEvent | None = None
     callback_fired = False
     effective_backend = backend_obj or get_backend(backend_name)
+    # Look-ahead против дубля «промежуточное+финальное»: текст из assistant-события
+    # сначала кладётся в pending, а уходит к пользователю как progress только если
+    # позже мы убедились, что он НЕ совпадает с финальным result.result.
+    # Совпадает → подавляем (финал уйдёт один раз через SendResult).
+    # Не совпадает → это был thinking или промежуточный текст до tool_use → flush.
+    pending_progress_text: str | None = None
 
     async for event in _iter_events_from_managed_process(
         claude_process, effective_backend,
@@ -369,6 +375,14 @@ async def _process_events(
             _check_stop_requested(final_session_id, backend_name)
         else:
             _check_stop_requested(final_session_id)
+
+        is_terminal_event = effective_backend.is_turn_complete_event(event)
+
+        if pending_progress_text is not None and not is_terminal_event:
+            if progress_callback and _should_send_progress(last_progress_time):
+                await progress_callback(final_session_id, pending_progress_text)
+                last_progress_time = time.monotonic()
+            pending_progress_text = None
 
         event_session_id = effective_backend.read_session_id_from_event(event)
         if event_session_id is not None and event_session_id != final_session_id:
@@ -395,21 +409,27 @@ async def _process_events(
                     )
 
         progress_text = effective_backend.read_progress_text_from_event(event)
-        if (
-            progress_text
-            and progress_callback
-            and _should_send_progress(last_progress_time)
-        ):
-            await progress_callback(final_session_id, progress_text)
-            last_progress_time = time.monotonic()
+        if progress_text:
+            pending_progress_text = progress_text
 
         assistant_text = effective_backend.read_assistant_text_from_event(event)
         if assistant_text is not None:
             last_assistant_text = assistant_text
 
-        if effective_backend.is_turn_complete_event(event):
+        if is_terminal_event:
             terminal_event = event
             terminal_status = effective_backend.read_terminal_status_from_event(event)
+            # Если pending не совпадает с финалом — это был thinking/промежуточный
+            # текст, его надо доставить пользователю как progress.
+            if (
+                pending_progress_text is not None
+                and pending_progress_text != last_assistant_text
+                and progress_callback
+                and _should_send_progress(last_progress_time)
+            ):
+                await progress_callback(final_session_id, pending_progress_text)
+                last_progress_time = time.monotonic()
+            pending_progress_text = None
             break
 
     if terminal_status is None:

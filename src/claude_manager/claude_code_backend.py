@@ -47,6 +47,19 @@ TERMINATE_TIMEOUT_SECONDS = 5
 
 CONTENT_BLOCK_THINKING = "thinking"
 
+# В bot-режиме Claude общается с пользователем через Telegram, а не через TUI Claude Code.
+# Инструмент AskUserQuestion в Telegram не работает: его «плашка» с вариантами никуда
+# не доставляется, и Claude получает пустой ответ → уходит в «разумный дефолт».
+# Отключаем инструмент и просим Claude задавать вопросы обычным текстом.
+DISALLOWED_TOOLS_IN_BOT_MODE = "AskUserQuestion"
+BOT_MODE_SYSTEM_PROMPT_APPENDIX = (
+    "You are running inside a Telegram bot, not the interactive Claude Code TUI. "
+    "The user cannot see interactive pickers or option menus. "
+    "If you need to ask the user a question, write the question as plain text "
+    "in your response (with numbered options when appropriate) and wait for the "
+    "user's next text message. Never rely on UI-based question tools."
+)
+
 CLAUDE_CODE_STOP_STRATEGY = StopStrategy(
     steps=(
         StopSignalStep(signal.SIGTERM, float(TERMINATE_TIMEOUT_SECONDS)),
@@ -101,6 +114,10 @@ class ClaudeCodeBackend(CodingAgentBackend):
             "--dangerously-skip-permissions",
             "--effort",
             "max",
+            "--disallowedTools",
+            DISALLOWED_TOOLS_IN_BOT_MODE,
+            "--append-system-prompt",
+            BOT_MODE_SYSTEM_PROMPT_APPENDIX,
         ]
         if not session_id.startswith("_new_"):
             command_args.extend(["--resume", session_id])

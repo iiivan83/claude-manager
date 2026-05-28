@@ -1824,3 +1824,115 @@ async def test_execute_send_passes_remapped_session_id_to_retry_loop():
     assert retry_session_id == real_id, (
         f"_retry_loop получил {retry_session_id!r}, ожидался {real_id!r}"
     )
+
+
+# --- Тесты look-ahead для устранения дубля progress+final (Bug 1) ---
+
+
+async def test_progress_not_duplicated_when_assistant_text_equals_final_result():
+    """Look-ahead: assistant-текст, который станет финалом, не шлётся как progress."""
+    session_id = "session-no-duplicate"
+    final_text = "Похоже, ты не ответил на вопрос — иду разумным дефолтом"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": final_text}],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": final_text,
+            "session_id": session_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+    progress_callback = AsyncMock()
+
+    result = await _process_events(
+        claude_process, session_id, progress_callback=progress_callback,
+    )
+
+    assert result.text == final_text
+    assert result.is_error is False
+    progress_texts = [call.args[1] for call in progress_callback.await_args_list]
+    assert final_text not in progress_texts, (
+        "Финальный текст не должен дублироваться как progress "
+        f"(было отправлено: {progress_texts!r})"
+    )
+
+
+async def test_intermediate_assistant_text_still_sent_as_progress():
+    """Look-ahead: промежуточный текст до tool_use всё ещё доставляется как progress."""
+    session_id = "session-with-intermediate-step"
+    intermediate_text = "Сейчас проверю файл"
+    final_text = "Готово, файл проверен"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": intermediate_text},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-read-1",
+                        "name": "Read",
+                        "input": {"file_path": "/tmp/x"},
+                    },
+                ],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "tool_use_id": "tool-read-1",
+                        "type": "tool_result",
+                        "content": "file content",
+                    }
+                ],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": final_text}],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": final_text,
+            "session_id": session_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+    progress_callback = AsyncMock()
+
+    result = await _process_events(
+        claude_process, session_id, progress_callback=progress_callback,
+    )
+
+    progress_texts = [call.args[1] for call in progress_callback.await_args_list]
+    assert intermediate_text in progress_texts, (
+        f"Промежуточный текст должен быть отправлен (отправлено: {progress_texts!r})"
+    )
+    assert final_text not in progress_texts, (
+        f"Финальный текст не должен дублироваться (отправлено: {progress_texts!r})"
+    )
+    assert result.text == final_text
+    assert result.is_error is False

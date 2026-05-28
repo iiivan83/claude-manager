@@ -90,6 +90,58 @@ def test_compose_args_for_resume_session_appends_resume(
     assert command_args[-2:] == ["--resume", session_id]
 
 
+def test_compose_args_disallow_ask_user_question_tool(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot mode must explicitly disable AskUserQuestion so questions arrive as text."""
+    monkeypatch.setattr(
+        "claude_manager.claude_code_backend._resolve_claude_binary_path",
+        lambda: "/bin/claude",
+    )
+
+    command_args = backend.compose_subprocess_command_args(
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        [],
+    )
+
+    assert "--disallowedTools" in command_args, (
+        "Bot must pass --disallowedTools to disable interactive UI tools"
+    )
+    disallow_value = command_args[command_args.index("--disallowedTools") + 1]
+    disallowed_tool_names = disallow_value.replace(",", " ").split()
+    assert "AskUserQuestion" in disallowed_tool_names, (
+        f"AskUserQuestion must be disallowed (got: {disallow_value!r})"
+    )
+
+
+def test_compose_args_append_system_prompt_explains_text_only_questions(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot mode appends a system prompt telling Claude to ask via plain text."""
+    monkeypatch.setattr(
+        "claude_manager.claude_code_backend._resolve_claude_binary_path",
+        lambda: "/bin/claude",
+    )
+
+    command_args = backend.compose_subprocess_command_args(
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        [],
+    )
+
+    assert "--append-system-prompt" in command_args, (
+        "Bot must pass --append-system-prompt to instruct Claude on text-only questions"
+    )
+    appended_prompt = command_args[command_args.index("--append-system-prompt") + 1]
+    lowered_prompt = appended_prompt.lower()
+    assert "telegram" in lowered_prompt, (
+        f"System prompt must mention Telegram context (got: {appended_prompt!r})"
+    )
+
+
 def test_compose_args_ignore_prompt_text_and_image_paths(
     backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
