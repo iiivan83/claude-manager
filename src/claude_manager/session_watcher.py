@@ -40,6 +40,11 @@ MISSING_FILE_RETRY_BASE_SECONDS = 5
 MISSING_FILE_RETRY_MAX_SECONDS = 60
 MISSING_FILE_RETRY_STATE_TTL_SECONDS = 300
 
+# Максимум одновременно читаемых файлов при reset_state.
+# Без этого ограничения переключение проектов в больших проектах
+# создаёт сотни одновременных I/O операций и упирается в файловые дескрипторы.
+MAX_CONCURRENT_RESET_READS = 16
+
 # Compatibility marker for old Claude helper functions and legacy snapshots.
 NO_RESPONSE_MARKERS = frozenset({"No response requested."})
 
@@ -548,22 +553,10 @@ class SessionWatcher:
             include_registry=False,
             apply_missing_backoff=False,
         )
-        new_states: dict[str, SessionWatcherState] = {}
 
-        for session_id in session_ids:
-            file_info = files_by_session_id.get(session_id)
-            if file_info is None:
-                continue
-            snapshot = await self.backend.read_session_file_snapshot(
-                file_info.file_path
-            )
-            new_states[session_id] = SessionWatcherState(
-                raw_count=snapshot.raw_record_count,
-                parsed_message_count=len(snapshot.messages),
-                cli_process_is_currently_writing_session_file=snapshot.is_turn_active,
-                last_delivered_idx=len(snapshot.messages) - 1,
-                paused_at=None,
-            )
+        new_states = await self._read_baseline_states_concurrently(
+            session_ids, files_by_session_id,
+        )
 
         self._states.clear()
         self._states.update(new_states)
@@ -574,6 +567,42 @@ class SessionWatcher:
             self.backend.name.value,
             len(new_states),
         )
+
+    async def _read_baseline_states_concurrently(
+        self,
+        session_ids: list[str],
+        files_by_session_id: dict[str, SessionFileInfo],
+    ) -> dict[str, SessionWatcherState]:
+        """Прочитать снапшоты всех сессий параллельно — узкое место переключения проектов."""
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_RESET_READS)
+
+        async def read_one(
+            session_id: str,
+        ) -> tuple[str, SessionWatcherState] | None:
+            file_info = files_by_session_id.get(session_id)
+            if file_info is None:
+                return None
+            async with semaphore:
+                snapshot = await self.backend.read_session_file_snapshot(
+                    file_info.file_path
+                )
+            return session_id, SessionWatcherState(
+                raw_count=snapshot.raw_record_count,
+                parsed_message_count=len(snapshot.messages),
+                cli_process_is_currently_writing_session_file=snapshot.is_turn_active,
+                last_delivered_idx=len(snapshot.messages) - 1,
+                paused_at=None,
+            )
+
+        results = await asyncio.gather(
+            *(read_one(session_id) for session_id in session_ids)
+        )
+        return {
+            session_id: state
+            for result in results
+            if result is not None
+            for session_id, state in [result]
+        }
 
     def pause_session(self, session_id: str) -> None:
         state = self._states.setdefault(session_id, SessionWatcherState())

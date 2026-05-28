@@ -34,16 +34,22 @@ LOAD_RETRY_COUNT = 5
 # Пауза между попытками чтения (секунды)
 LOAD_RETRY_DELAY_SECONDS = 1
 
+# Максимум одновременных stat-проверок при чистке записей-сирот.
+# Без параллелизации проверка существования файла на каждую запись реестра
+# превращается в N последовательных I/O операций и тормозит переключение проектов.
+MAX_CONCURRENT_ORPHAN_CHECKS = 16
+
 # Backend старых строковых записей. До миграции существовал только Claude.
 DEFAULT_BACKEND_FOR_LEGACY_ENTRIES = BackendName.CLAUDE
 
 
 @dataclass(frozen=True, eq=False)
 class DailySessionEntry:
-    """Session id plus the backend that owns it."""
+    """Session id, backend ownership, and optional short user-facing summary."""
 
     session_id: str
     backend: BackendName
+    summary: str = ""
 
     def __eq__(self, other: object) -> bool:
         """Compare entries, with temporary compatibility for old string tests."""
@@ -51,6 +57,7 @@ class DailySessionEntry:
             return (
                 self.session_id == other.session_id
                 and self.backend == other.backend
+                and self.summary == other.summary
             )
         if isinstance(other, str):
             return self.session_id == other
@@ -108,11 +115,19 @@ def _coerce_value_to_entry(raw_value: object) -> DailySessionEntry | None:
     if isinstance(raw_value, dict):
         session_id = raw_value.get("session_id")
         raw_backend = raw_value.get("backend")
+        raw_summary = raw_value.get("summary", "")
         if not isinstance(session_id, str) or not isinstance(raw_backend, str):
             logger.warning("Повреждённая запись дневного реестра: %r", raw_value)
             return None
+        if not isinstance(raw_summary, str):
+            logger.warning("Некорректное summary в дневном реестре: %r", raw_value)
+            raw_summary = ""
         try:
-            return DailySessionEntry(session_id, BackendName(raw_backend))
+            return DailySessionEntry(
+                session_id,
+                BackendName(raw_backend),
+                raw_summary,
+            )
         except ValueError:
             logger.warning("Неизвестный backend в дневном реестре: %r", raw_backend)
             return None
@@ -135,6 +150,7 @@ def _serialize_registry_to_json_dict(
             serialized_day[number_str] = {
                 "session_id": entry.session_id,
                 "backend": entry.backend.value,
+                "summary": entry.summary,
             }
         serialized[day_key] = serialized_day
     return serialized
@@ -275,6 +291,7 @@ async def update_session_id(old_session_id: str, new_session_id: str) -> None:
                     day_entries[number_str] = DailySessionEntry(
                         new_session_id,
                         current_entry.backend,
+                        current_entry.summary,
                     )
                     found = True
                     break
@@ -290,6 +307,68 @@ async def update_session_id(old_session_id: str, new_session_id: str) -> None:
 
         await _save_registry()
         logger.info("Session ID обновлён: %s → %s", old_session_id, new_session_id)
+
+
+async def update_session_summary(
+    session_id: str,
+    backend: BackendName,
+    summary: str,
+) -> None:
+    """Stores a generated short summary for a known session."""
+    normalized_summary = summary.strip()
+    if not normalized_summary:
+        return
+
+    async with _lock:
+        found = False
+        for day_entries in _registry.values():
+            for number_str, raw_entry in day_entries.items():
+                entry = _coerce_value_to_entry(raw_entry)
+                if (
+                    entry is not None
+                    and entry.session_id == session_id
+                    and entry.backend == backend
+                ):
+                    day_entries[number_str] = DailySessionEntry(
+                        entry.session_id,
+                        entry.backend,
+                        normalized_summary,
+                    )
+                    found = True
+
+        if not found:
+            logger.debug(
+                "Session summary skipped: session %s (%s) is not registered",
+                session_id,
+                backend.value,
+            )
+            return
+
+        await _save_registry()
+        logger.info(
+            "Session summary обновлён: %s (%s)",
+            session_id,
+            backend.value,
+        )
+
+
+async def get_session_summary(
+    session_id: str,
+    backend: BackendName,
+) -> str:
+    """Returns a generated session summary, or an empty string if missing."""
+    async with _lock:
+        for day_entries in _registry.values():
+            for raw_entry in day_entries.values():
+                entry = _coerce_value_to_entry(raw_entry)
+                if (
+                    entry is not None
+                    and entry.session_id == session_id
+                    and entry.backend == backend
+                    and entry.summary.strip()
+                ):
+                    return entry.summary
+        return ""
 
 
 async def get_all_today_sessions() -> dict[int, DailySessionEntry]:
@@ -396,19 +475,18 @@ def _remove_duplicate_entries() -> int:
 
 async def _remove_orphan_entries() -> int:
     """Удаляет записи с session_id, для которых нет .jsonl файла на диске."""
-    total_removed = 0
+    candidates_to_check, immediate_orphans = _classify_registry_entries()
 
-    for day_key, day_entries in _registry.items():
-        orphan_keys = []
-        for number_str, raw_entry in day_entries.items():
-            entry = _coerce_value_to_entry(raw_entry)
-            if entry is None:
-                orphan_keys.append(number_str)
-                continue
-            # Записи с _new_ — временные ID, для них файлов нет по определению
-            if entry.session_id.startswith("_new_"):
-                continue
+    if not candidates_to_check:
+        _delete_orphan_entries(immediate_orphans)
+        return len(immediate_orphans)
 
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_ORPHAN_CHECKS)
+
+    async def check_one(
+        day_key: str, number_str: str, entry: DailySessionEntry,
+    ) -> tuple[str, str, bool] | None:
+        async with semaphore:
             try:
                 backend = get_backend(entry.backend)
                 file_exists = await backend.session_file_exists_for_project(
@@ -422,20 +500,60 @@ async def _remove_orphan_entries() -> int:
                     entry.backend.value,
                     error,
                 )
+                return None
+        return day_key, number_str, file_exists
+
+    check_results = await asyncio.gather(
+        *(
+            check_one(day_key, number_str, entry)
+            for day_key, number_str, entry in candidates_to_check
+        )
+    )
+
+    orphan_keys = list(immediate_orphans)
+    for (day_key, number_str, entry), result in zip(
+        candidates_to_check, check_results, strict=True,
+    ):
+        if result is None:
+            continue
+        _, _, file_exists = result
+        if not file_exists:
+            orphan_keys.append((day_key, number_str))
+            logger.info(
+                "Запись-сирота: день %s, #%s -> %s (%s, файл не найден)",
+                day_key, number_str, entry.session_id, entry.backend.value,
+            )
+
+    _delete_orphan_entries(orphan_keys)
+    return len(orphan_keys)
+
+
+def _classify_registry_entries() -> tuple[
+    list[tuple[str, str, DailySessionEntry]],
+    list[tuple[str, str]],
+]:
+    """Разделяет записи реестра на «требуют проверки на диске» и «удалить сразу»."""
+    candidates: list[tuple[str, str, DailySessionEntry]] = []
+    immediate_orphans: list[tuple[str, str]] = []
+    for day_key, day_entries in _registry.items():
+        for number_str, raw_entry in day_entries.items():
+            entry = _coerce_value_to_entry(raw_entry)
+            if entry is None:
+                immediate_orphans.append((day_key, number_str))
                 continue
+            # Записи с _new_ — временные ID, для них файлов нет по определению
+            if entry.session_id.startswith("_new_"):
+                continue
+            candidates.append((day_key, number_str, entry))
+    return candidates, immediate_orphans
 
-            if not file_exists:
-                orphan_keys.append(number_str)
-                logger.info(
-                    "Запись-сирота: день %s, #%s -> %s (%s, файл не найден)",
-                    day_key, number_str, entry.session_id, entry.backend.value,
-                )
 
-        for key in orphan_keys:
-            del day_entries[key]
-        total_removed += len(orphan_keys)
-
-    return total_removed
+def _delete_orphan_entries(keys_to_delete: list[tuple[str, str]]) -> None:
+    """Удаляет указанные записи реестра по парам (день, номер)."""
+    for day_key, number_str in keys_to_delete:
+        day_entries = _registry.get(day_key)
+        if day_entries is not None and number_str in day_entries:
+            del day_entries[number_str]
 
 
 async def load_registry() -> None:

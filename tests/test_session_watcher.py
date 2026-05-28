@@ -562,3 +562,53 @@ class TestResetState:
         assert watcher._states["stale-session"].raw_count == 4
         assert watcher._states["stale-session"].last_delivered_idx == 0
         assert "stale-session" not in watcher._missing_files
+
+    @pytest.mark.asyncio
+    async def test_reset_state_reads_session_snapshots_concurrently(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reset_state должен читать снапшоты сессий параллельно, иначе переключение проекта тормозит."""
+        import asyncio as asyncio_module
+
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        session_count = 8
+        for index in range(session_count):
+            session_id = f"session-{index}"
+            backend.files.append(_file(session_id))
+            backend.snapshots[f"/tmp/{session_id}.jsonl"] = _snapshot(
+                f"Old {index}",
+                raw_count=index + 1,
+            )
+
+        in_flight_count = 0
+        peak_in_flight_count = 0
+        original_read = backend.read_session_file_snapshot
+
+        async def tracking_read(file_path: str) -> SessionFileSnapshot:
+            nonlocal in_flight_count, peak_in_flight_count
+            in_flight_count += 1
+            peak_in_flight_count = max(peak_in_flight_count, in_flight_count)
+            try:
+                await asyncio_module.sleep(0.01)
+                return await original_read(file_path)
+            finally:
+                in_flight_count -= 1
+
+        backend.read_session_file_snapshot = tracking_read  # type: ignore[assignment]
+
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.reset_state()
+
+        assert len(watcher._states) == session_count
+        assert peak_in_flight_count > 1, (
+            "reset_state читает файлы последовательно — переключение проектов будет тормозить "
+            f"при большом числе сессий (peak concurrency = {peak_in_flight_count})"
+        )
