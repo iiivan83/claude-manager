@@ -1,156 +1,103 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-# Безопасный рестарт claude-manager через launchd.
-# Выполняет preflight-проверку (editable install жив?), kickstart, post-flight (сервис поднялся?).
-# Exit 0 = успех, exit 1 = провал с диагностикой.
-# ВАЖНО: скрипт предназначен для ВНЕШНЕГО вызова (терминал, другой агент).
-# НЕ вызывайте из подпроцесса самого бота (Claude Code Bash tool) —
-# скрипт убьёт собственное дерево процессов. Для самоперезапуска: /restart.
+# Безопасный рестарт claude-manager через systemd.
+# Выполняет preflight (editable install здоров?), systemctl restart, post-flight
+# (сервис активен + Python-бот запущен?). Exit 0 — успех, exit 1 — провал с диагностикой.
+# ВАЖНО: только для ВНЕШНЕГО вызова (терминал). Самоперезапуск из бота — /restart.
 
-SERVICE_LABEL="com.ivan.claude-manager"
-PROJECT_DIR="/Users/ivan/Desktop/claude-sandbox/claude_manager"
-VENV_PYTHON="${PROJECT_DIR}/.venv/bin/python"
-LOG_FILE="$HOME/Library/Logs/claude-manager.log"
-# launchd stderr — только необработанные крэши Python; основные логи — в LOG_FILE
-ERROR_LOG_FILE="$HOME/Library/Logs/claude-manager.error.log"
+SERVICE_NAME="claude-manager.service"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+VENV_BIN="${PROJECT_DIR}/.venv/bin"
+LOG_FILE="$HOME/.local/state/claude-manager/claude-manager.log"
 
 POST_FLIGHT_CHECK_COUNT=3
-POST_FLIGHT_CHECK_INTERVAL_SECONDS=10
-LOG_TAIL_LINES=20
+POST_FLIGHT_CHECK_INTERVAL_SECONDS=5
+LOG_TAIL_LINES=30
 
-launchctl_service_pid_from_status() {
-    local service_status="$1"
-    awk '{print $1}' <<< "$service_status"
+# --- Helpers (тестируются отдельно через source-only mode) ---
+
+check_editable_install() {
+    local venv_bin="${1:-$VENV_BIN}"
+
+    if [[ ! -x "${venv_bin}/claude-manager" ]]; then
+        echo "FAIL: ${venv_bin}/claude-manager не найден или не исполняем"
+        return 1
+    fi
+    if ! "${venv_bin}/python" -c "import claude_manager" 2>&1; then
+        echo "FAIL: модуль claude_manager не импортируется"
+        "${venv_bin}/python" -c "import sys; print('python:', sys.executable); print('version:', sys.version)" 2>&1
+        return 1
+    fi
+    return 0
 }
 
-launchctl_service_exit_code_from_status() {
-    local service_status="$1"
-    awk '{print $2}' <<< "$service_status"
+service_is_running() {
+    local service="${1:-$SERVICE_NAME}"
+    systemctl --user is-active --quiet "$service" \
+        && pgrep -f "claude_manager" >/dev/null 2>&1
 }
 
-launchctl_service_has_running_pid() {
-    local service_status="$1"
-    local service_pid
+print_diagnostics_on_failure() {
+    local service="${1:-$SERVICE_NAME}"
+    local log_file="${2:-$LOG_FILE}"
 
-    service_pid=$(launchctl_service_pid_from_status "$service_status")
-    [[ "$service_pid" =~ ^[0-9]+$ ]]
+    echo ""
+    echo "=== Последние ${LOG_TAIL_LINES} строк ${log_file} ==="
+    tail -"$LOG_TAIL_LINES" "$log_file" 2>/dev/null || echo "(лог не найден)"
+    echo ""
+    echo "=== Последние ${LOG_TAIL_LINES} строк journalctl ==="
+    journalctl --user -u "$service" -n "$LOG_TAIL_LINES" --no-pager 2>/dev/null \
+        || echo "(journal недоступен)"
 }
 
-process_table_has_claude_manager_python_child() {
-    local wrapper_pid="$1"
-    local process_table="$2"
-
-    awk -v wrapper_pid="$wrapper_pid" '
-        $1 == wrapper_pid && /runpy\._run_module_as_main\("claude_manager"\)/ {
-            found = 1
-        }
-        END { exit found ? 0 : 1 }
-    ' <<< "$process_table"
-}
-
-claude_manager_python_child_is_running() {
-    local wrapper_pid="$1"
-    local process_table
-
-    process_table=$(ps -axo ppid=,command=)
-    process_table_has_claude_manager_python_child "$wrapper_pid" "$process_table"
-}
+# --- Source-only mode (для тестов: загружаем функции, не запускаем основной поток) ---
 
 if [[ "${CLAUDE_MANAGER_RESTART_SOURCE_ONLY:-0}" == "1" ]]; then
     return 0 2>/dev/null || exit 0
 fi
 
-# Защита от вызова изнутри бота: скрипт убьёт собственное дерево процессов
-BOT_PID=$(launchctl list | awk "/$SERVICE_LABEL/ {print \$1}")
-if [[ -n "$BOT_PID" && "$BOT_PID" != "-" ]]; then
-    CURRENT_PID=$$
-    ANCESTOR_PID=$CURRENT_PID
-    while [[ "$ANCESTOR_PID" -gt 1 ]]; do
-        ANCESTOR_PID=$(ps -o ppid= -p "$ANCESTOR_PID" 2>/dev/null | tr -d ' ')
-        if [[ "$ANCESTOR_PID" == "$BOT_PID" ]]; then
-            echo "FAIL: скрипт вызван изнутри процесса бота (PID $BOT_PID)."
-            echo "Бот не может перезапустить себя из своего собственного процесса."
-            echo "Запустите скрипт из терминала или из другого агента."
-            exit 2
-        fi
-    done
-fi
+# --- Main flow ---
 
 echo "=== Preflight ==="
-
-if [[ ! -x "$VENV_PYTHON" ]]; then
-    echo "FAIL: Python не найден: $VENV_PYTHON"
+if ! check_editable_install; then
+    echo ""
+    echo "Починка: cd $PROJECT_DIR && source .venv/bin/activate && pip install -e \".[dev]\""
     exit 1
 fi
-
-if ! "$VENV_PYTHON" -c "import sys; sys.path.insert(0, '${PROJECT_DIR}/src'); import claude_manager" 2>&1; then
-    echo ""
-    echo "FAIL: модуль claude_manager не импортируется."
-    echo "Починка: cd $PROJECT_DIR && source .venv/bin/activate && pip install -e ."
-    exit 1
-fi
-
-echo "OK: модуль claude_manager импортируется"
-
-if ! "$VENV_PYTHON" -c "import sys; sys.path.insert(0, '${PROJECT_DIR}/src'); import claude_manager; from claude_manager.config import load_config; load_config()" 2>&1; then
-    echo ""
-    echo "WARN: конфиг не загружается (возможно, .env отсутствует или невалиден)"
-fi
+echo "OK: editable install здоров"
 
 echo ""
-echo "=== Kickstart ==="
-
-launchctl kickstart -k "gui/$(id -u)/${SERVICE_LABEL}" 2>&1
-echo "kickstart отправлен, запускаю post-flight проверку (${POST_FLIGHT_CHECK_COUNT} попыток с интервалом ${POST_FLIGHT_CHECK_INTERVAL_SECONDS}с)..."
+echo "=== Restart ==="
+systemctl --user restart "$SERVICE_NAME"
+echo "systemctl --user restart отправлен"
 
 echo ""
 echo "=== Post-flight ==="
-
 POST_FLIGHT_OK=false
-SERVICE_PID="-"
-EXIT_CODE="unknown"
-
 for CHECK_NUMBER in $(seq 1 "$POST_FLIGHT_CHECK_COUNT"); do
     sleep "$POST_FLIGHT_CHECK_INTERVAL_SECONDS"
 
-    SERVICE_STATUS=$(launchctl list | grep "$SERVICE_LABEL" || true)
-
-    # Сервис исчез из launchctl — launchd потерял его, ретраить бессмысленно
-    if [[ -z "$SERVICE_STATUS" ]]; then
-        echo "FAIL: сервис $SERVICE_LABEL не найден в launchctl list"
-        echo "Последние строки error.log:"
-        tail -"$LOG_TAIL_LINES" "$ERROR_LOG_FILE" 2>/dev/null || echo "(лог не найден)"
-        exit 1
-    fi
-
-    SERVICE_PID=$(launchctl_service_pid_from_status "$SERVICE_STATUS")
-    EXIT_CODE=$(launchctl_service_exit_code_from_status "$SERVICE_STATUS")
-
-    # Живой PID wrapper-а ещё не значит, что Python-бот уже поднялся.
-    if launchctl_service_has_running_pid "$SERVICE_STATUS" \
-        && claude_manager_python_child_is_running "$SERVICE_PID"; then
-        echo "OK: сервис в launchctl list, PID = $SERVICE_PID, Python-бот запущен, last exit code = $EXIT_CODE (попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT)"
+    if service_is_running; then
+        SERVICE_PID=$(systemctl --user show -p MainPID --value "$SERVICE_NAME")
+        echo "OK: $SERVICE_NAME active, MainPID=$SERVICE_PID (попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT)"
         POST_FLIGHT_OK=true
         break
     fi
 
-    # Wrapper может переживать retry-паузу после startup crash — ждём Python-процесс.
     if [[ "$CHECK_NUMBER" -lt "$POST_FLIGHT_CHECK_COUNT" ]]; then
-        echo "WARN: попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT, PID = $SERVICE_PID, exit code $EXIT_CODE — Python-бот ещё не найден, жду следующей проверки..."
+        echo "WARN: попытка $CHECK_NUMBER/$POST_FLIGHT_CHECK_COUNT — сервис ещё не активен"
     fi
 done
 
 if [[ "$POST_FLIGHT_OK" != "true" ]]; then
-    echo "FAIL: сервис не поднялся после $POST_FLIGHT_CHECK_COUNT проверок, последний PID = $SERVICE_PID, последний exit code = $EXIT_CODE"
-    echo ""
-    echo "Последние строки error.log:"
-    tail -"$LOG_TAIL_LINES" "$ERROR_LOG_FILE" 2>/dev/null || echo "(лог не найден)"
+    echo "FAIL: сервис не поднялся за $POST_FLIGHT_CHECK_COUNT проверок"
+    print_diagnostics_on_failure
     exit 1
 fi
 
 echo ""
-echo "Последние строки лога:"
+echo "=== Последние строки лога ==="
 tail -"$LOG_TAIL_LINES" "$LOG_FILE" 2>/dev/null || echo "(лог не найден)"
 
 echo ""
