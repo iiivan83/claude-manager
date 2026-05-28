@@ -42,8 +42,9 @@ def _make_env(
         env["ALLOWED_USER_IDS"] = user_ids
     if working_dir is not None:
         env["CLAUDE_WORKING_DIR"] = working_dir
-    if projects_root is not None:
-        env["PROJECTS_ROOT_DIR"] = projects_root
+    # Дефолт: валидный существующий путь, чтобы load_config() не падал
+    # в тестах, которые не заботятся о PROJECTS_ROOT_DIR.
+    env["PROJECTS_ROOT_DIR"] = projects_root if projects_root is not None else tempfile.gettempdir()
     return env
 
 
