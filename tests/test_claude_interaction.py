@@ -872,6 +872,81 @@ class TestSendToClaudeAndRespondBehavior:
     """Тесты основного сценария отправки сообщения в Claude и обработки ответа."""
 
     @pytest.mark.asyncio()
+    @patch.object(ci_module, "generate_session_summary", new_callable=AsyncMock, create=True)
+    @patch.object(daily_session_registry, "update_session_summary", new_callable=AsyncMock, create=True)
+    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(session_manager, "get_active_session")
+    async def test_first_prompt_summary_saved_after_temp_session_gets_real_id(
+        self,
+        mock_get_active: MagicMock,
+        mock_register: AsyncMock,
+        _mock_send_response: AsyncMock,
+        mock_update_summary: AsyncMock,
+        mock_generate_summary: AsyncMock,
+    ) -> None:
+        """Первый prompt новой сессии получает LLM-summary после замены temp id."""
+        mock_get_active.return_value = ActiveSession("_new_codex", BackendName.CODEX)
+        mock_register.return_value = 1
+        mock_generate_summary.return_value = "Загрузка отзывов за период"
+
+        async def fake_send_message(
+            session_id,
+            text,
+            progress_callback=None,
+            retry_callback=None,
+            session_id_callback=None,
+            **_kwargs,
+        ):
+            if session_id_callback is not None:
+                await session_id_callback(
+                    "_new_codex",
+                    "real-codex-id",
+                    BackendName.CODEX,
+                )
+            return SendResult(
+                text="OK",
+                session_id="real-codex-id",
+                is_error=False,
+                retries_used=0,
+                backend=BackendName.CODEX,
+            )
+
+        with patch.object(
+            process_manager,
+            "send_message",
+            side_effect=fake_send_message,
+        ), patch.object(
+            session_watcher,
+            "pause_session",
+        ), patch.object(
+            session_watcher,
+            "update_session_id",
+        ), patch.object(
+            session_manager,
+            "update_session_id",
+            new_callable=AsyncMock,
+        ), patch.object(
+            session_watcher,
+            "resume_session",
+            new_callable=AsyncMock,
+        ):
+            await send_to_claude_and_respond(
+                TEST_CHAT_ID,
+                "Давай загрузим отзывы за период без фотографий",
+            )
+
+        mock_generate_summary.assert_awaited_once_with(
+            "Давай загрузим отзывы за период без фотографий",
+            BackendName.CODEX,
+        )
+        mock_update_summary.assert_awaited_once_with(
+            "real-codex-id",
+            BackendName.CODEX,
+            "Загрузка отзывов за период",
+        )
+
+    @pytest.mark.asyncio()
     @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     @patch.object(session_manager, "get_bound_session")

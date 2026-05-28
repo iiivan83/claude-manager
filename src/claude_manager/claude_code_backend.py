@@ -15,7 +15,9 @@ from claude_manager.claude_code_session_file_reader import (
     EVENT_TYPE_ASSISTANT,
     EVENT_TYPE_RESULT,
     MAX_RECENT_SESSIONS,
+    list_all_session_file_infos_for_project,
     list_session_file_infos_for_project,
+    read_session_file_cursor as read_claude_session_file_cursor,
     read_session_file_snapshot as read_claude_session_file_snapshot,
     session_file_exists_for_project as claude_session_file_exists_for_project,
 )
@@ -192,7 +194,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
         project_dir: str,
     ) -> list[SessionFileInfo]:
         """Return all Claude session files for operational flows."""
-        return await list_session_file_infos_for_project(project_dir)
+        return await list_all_session_file_infos_for_project(project_dir)
 
     async def session_file_exists_for_project(
         self,
@@ -227,6 +229,13 @@ class ClaudeCodeBackend(CodingAgentBackend):
     ) -> SessionFileSnapshot:
         """Read messages and watcher cursor state from one Claude JSONL file."""
         return await read_claude_session_file_snapshot(file_path)
+
+    async def read_session_file_cursor(
+        self,
+        file_path: str,
+    ) -> SessionFileSnapshot:
+        """Read lightweight cursor state from one Claude JSONL file."""
+        return await read_claude_session_file_cursor(file_path)
 
     def is_error_event(self, event: UnifiedEvent) -> bool:
         """Return whether a Claude stdout event is an error result."""

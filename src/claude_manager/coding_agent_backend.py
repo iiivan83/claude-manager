@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TypeAlias
 
@@ -36,6 +36,7 @@ class SessionMessage:
     text: str
     timestamp: float | None
     is_empty_response: bool
+    raw_record_index: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,16 @@ class CodingAgentBackend(ABC):
     ) -> list[SessionFileInfo]:
         """Return all known project session files for operational flows."""
 
+    async def list_all_session_files_for_projects(
+        self,
+        project_dirs: list[str],
+    ) -> dict[str, list[SessionFileInfo]]:
+        """Return operational session files grouped by project path."""
+        return {
+            project_dir: await self.list_all_session_files_for_project(project_dir)
+            for project_dir in project_dirs
+        }
+
     @abstractmethod
     async def session_file_exists_for_project(
         self,
@@ -203,6 +214,13 @@ class CodingAgentBackend(ABC):
         file_path: str,
     ) -> SessionFileSnapshot:
         """Read a complete backend-neutral snapshot of a session file."""
+
+    async def read_session_file_cursor(
+        self,
+        file_path: str,
+    ) -> SessionFileSnapshot:
+        """Read lightweight cursor state for one backend session file."""
+        return await self.read_session_file_snapshot(file_path)
 
     @abstractmethod
     def is_error_event(self, event: UnifiedEvent) -> bool:

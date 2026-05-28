@@ -618,7 +618,12 @@ async def handle_sessions(
             session.session_id,
             backend.name,
         )
-        lines.append(f"/{day_number} {backend.display_name} {session.preview}")
+        session_summary = await daily_session_registry.get_session_summary(
+            session.session_id,
+            backend.name,
+        )
+        session_label = session_summary or session.preview
+        lines.append(f"/{day_number} {backend.display_name} {session_label}")
 
     lines.extend(error_lines)
     if not lines:

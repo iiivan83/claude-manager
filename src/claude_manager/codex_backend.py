@@ -24,12 +24,14 @@ from claude_manager.codex_session_file_reader import (
     _parse_jsonl_string_lines, _read_file_lines_blocking,
     is_turn_terminal_session_record as _is_codex_turn_terminal_session_record,
     read_messages_from_session_file as read_codex_messages_from_session_file,
+    read_session_file_cursor as read_codex_session_file_cursor,
     read_session_file_snapshot as read_codex_session_file_snapshot,
 )
 from claude_manager.codex_session_file_listing import (
     _iter_session_dirs_in_lookback_window, _list_all_rollout_files_blocking,
     _list_rollout_files_blocking, _read_first_user_response_item_blocking,
     _read_session_meta_record_blocking, _sort_paths_by_mtime_descending,
+    list_all_session_file_infos_by_project,
     list_all_session_file_infos_for_project, list_session_file_infos_for_project,
     session_file_exists_for_project as codex_session_file_exists_for_project,
     sessions_root_from_home,
@@ -223,6 +225,17 @@ class CodexBackend(CodingAgentBackend):
             project_dir,
         )
 
+    async def list_all_session_files_for_projects(
+        self,
+        project_dirs: list[str],
+    ) -> dict[str, list[SessionFileInfo]]:
+        """Return all Codex rollout files grouped by project path."""
+        sessions_root = self.locate_session_files_directory_for_project("")
+        return await list_all_session_file_infos_by_project(
+            sessions_root,
+            project_dirs,
+        )
+
     async def session_file_exists_for_project(
         self,
         session_id: str,
@@ -260,6 +273,13 @@ class CodexBackend(CodingAgentBackend):
     ) -> SessionFileSnapshot:
         """Read messages and watcher cursor state from one Codex rollout file."""
         return await read_codex_session_file_snapshot(file_path)
+
+    async def read_session_file_cursor(
+        self,
+        file_path: str,
+    ) -> SessionFileSnapshot:
+        """Read lightweight cursor state from one Codex rollout file."""
+        return await read_codex_session_file_cursor(file_path)
 
     def is_error_event(self, event: UnifiedEvent) -> bool:
         """Return whether a Codex stdout event is a failed turn."""

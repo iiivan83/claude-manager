@@ -540,6 +540,50 @@ class TestHandleSessions:
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(
+        daily_session_registry,
+        "get_session_summary",
+        new_callable=AsyncMock,
+        create=True,
+    )
+    async def test_handle_sessions_prefers_daily_registry_summary(
+        self,
+        mock_get_summary: AsyncMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Команда /sessions показывает сохранённую краткую суть вместо длинного preview."""
+        claude_backend = FakeBackendForSessionList(
+            BackendName.CLAUDE,
+            "🤖 Claude",
+            [
+                _session_file(
+                    "id-1",
+                    10.0,
+                    "Давай доработаем инициализирующий скрипт загрузки данных по отзывам",
+                ),
+            ],
+        )
+        mock_register.return_value = 1
+        mock_get_summary.return_value = "Загрузка отзывов за период"
+
+        update = _make_update(text="/sessions")
+        context = _make_context()
+        with patch.object(
+            coding_agent_backend,
+            "get_all_backends",
+            return_value=[claude_backend],
+        ):
+            await handle_sessions(update, context)
+
+        mock_get_summary.assert_awaited_once_with("id-1", BackendName.CLAUDE)
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert "/1 🤖 Claude Загрузка отзывов за период" in sent_text
+        assert "инициализирующий скрипт" not in sent_text
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     async def test_handle_sessions_shows_list(
         self,
         mock_register: AsyncMock,

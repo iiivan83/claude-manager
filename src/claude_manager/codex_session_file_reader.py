@@ -28,6 +28,7 @@ BUSY_ROLLOUT_TYPES = frozenset({
     ROLLOUT_TYPE_TURN_CONTEXT,
     ROLLOUT_TYPE_COMPACTED,
 })
+RAW_RECORD_INDEX_KEY = "_raw_record_index"
 
 EVENT_MSG_SUBTYPE_TASK_COMPLETE = "task_complete"
 EVENT_MSG_SUBTYPE_TASK_STARTED = "task_started"
@@ -98,10 +99,12 @@ def _parse_jsonl_string_lines(
 ) -> list[dict[str, object]]:
     """Parse JSONL lines, skipping malformed Codex records."""
     parsed_records: list[dict[str, object]] = []
+    raw_record_index = 0
     for line_number, raw_line in enumerate(raw_lines, start=1):
         stripped_line = raw_line.strip()
         if not stripped_line:
             continue
+        raw_record_index += 1
         try:
             parsed_value = json.loads(stripped_line)
         except json.JSONDecodeError:
@@ -112,6 +115,7 @@ def _parse_jsonl_string_lines(
             )
             continue
         if isinstance(parsed_value, dict):
+            parsed_value[RAW_RECORD_INDEX_KEY] = raw_record_index
             parsed_records.append(parsed_value)
     return parsed_records
 
@@ -160,9 +164,27 @@ def messages_from_jsonl_records(
                 text=_extract_text_from_content_blocks(payload.get("content")),
                 timestamp=_parse_iso_timestamp_to_unix(session_record.get("timestamp")),
                 is_empty_response=False,
+                raw_record_index=_read_raw_record_index(session_record),
             )
         )
     return messages
+
+
+def _read_raw_record_index(session_record: dict[str, object]) -> int | None:
+    """Return the non-empty JSONL record index for a parsed record."""
+    raw_record_index = session_record.get(RAW_RECORD_INDEX_KEY)
+    return raw_record_index if isinstance(raw_record_index, int) else None
+
+
+def _public_record_without_raw_index(
+    session_record: dict[str, object] | None,
+) -> dict[str, object] | None:
+    """Return a parsed record without internal cursor metadata."""
+    if session_record is None:
+        return None
+    public_record = dict(session_record)
+    public_record.pop(RAW_RECORD_INDEX_KEY, None)
+    return public_record
 
 
 def is_turn_terminal_session_record(record: dict[str, object]) -> bool:
@@ -207,12 +229,21 @@ async def read_messages_from_session_file(file_path: str) -> list[SessionMessage
 
 async def read_session_file_snapshot(file_path: str) -> SessionFileSnapshot:
     """Read messages and watcher cursor state from one Codex rollout file."""
+    return await asyncio.to_thread(_read_session_file_snapshot_blocking, file_path)
+
+
+async def read_session_file_cursor(file_path: str) -> SessionFileSnapshot:
+    """Read lightweight cursor state from one Codex rollout file."""
+    return await asyncio.to_thread(_read_session_file_cursor_blocking, file_path)
+
+
+def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
+    """Read and parse one Codex rollout file in a worker thread."""
     try:
-        file_exists = await asyncio.to_thread(os.path.exists, file_path)
-        if not file_exists:
+        if not os.path.exists(file_path):
             logger.debug("Codex session file not found: %s", file_path)
             return empty_session_file_snapshot()
-        raw_lines = await asyncio.to_thread(_read_file_lines_blocking, file_path)
+        raw_lines = _read_file_lines_blocking(file_path)
     except PermissionError:
         logger.error("No permission to read Codex session file: %s", file_path)
         return empty_session_file_snapshot()
@@ -223,12 +254,65 @@ async def read_session_file_snapshot(file_path: str) -> SessionFileSnapshot:
     raw_record_count = sum(1 for raw_line in raw_lines if raw_line.strip())
     parsed_records = _parse_jsonl_string_lines(raw_lines, file_path)
     messages = messages_from_jsonl_records(parsed_records)
-    last_record = parsed_records[-1] if parsed_records else None
+    last_record = _public_record_without_raw_index(
+        parsed_records[-1] if parsed_records else None
+    )
     return SessionFileSnapshot(
         messages=messages,
         raw_record_count=raw_record_count,
         last_record=last_record,
         is_turn_active=_compute_is_turn_active_for_codex(last_record),
+    )
+
+
+def _read_session_file_cursor_blocking(file_path: str) -> SessionFileSnapshot:
+    """Read raw count and active state without parsing historical messages."""
+    try:
+        if not os.path.exists(file_path):
+            logger.debug("Codex session file not found: %s", file_path)
+            return empty_session_file_snapshot()
+        raw_record_count, last_record = _read_cursor_record_count_and_last_record(
+            file_path
+        )
+    except PermissionError:
+        logger.error("No permission to read Codex session file: %s", file_path)
+        return empty_session_file_snapshot()
+    except OSError as error:
+        logger.warning("Could not read Codex session file %s: %s", file_path, error)
+        return empty_session_file_snapshot()
+
+    return SessionFileSnapshot(
+        messages=[],
+        raw_record_count=raw_record_count,
+        last_record=last_record,
+        is_turn_active=_compute_is_turn_active_for_codex(last_record),
+    )
+
+
+def _read_cursor_record_count_and_last_record(
+    file_path: str,
+) -> tuple[int, dict[str, object] | None]:
+    """Count non-empty records and parse only the last non-empty Codex record."""
+    raw_record_count = 0
+    last_raw_record = ""
+    with open(file_path, encoding="utf-8") as file_handle:
+        for raw_line in file_handle:
+            stripped_line = raw_line.strip()
+            if not stripped_line:
+                continue
+            raw_record_count += 1
+            last_raw_record = stripped_line
+
+    if not last_raw_record:
+        return 0, None
+    try:
+        parsed_record = json.loads(last_raw_record)
+    except json.JSONDecodeError:
+        logger.warning("Invalid final JSON record in Codex session %s", file_path)
+        return raw_record_count, None
+    return (
+        raw_record_count,
+        parsed_record if isinstance(parsed_record, dict) else None,
     )
 
 

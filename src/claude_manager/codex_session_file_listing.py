@@ -196,6 +196,25 @@ async def _build_session_file_info(
     return SessionFileInfo(session_id, file_path, last_modified_at, preview)
 
 
+async def _build_operational_session_file_info(
+    file_path: str,
+    meta_record: dict[str, object],
+) -> SessionFileInfo | None:
+    """Build lightweight metadata for watcher and all-project scans."""
+    payload = _payload_from_meta_record(meta_record)
+    raw_session_id = payload.get("id")
+    session_id = raw_session_id if isinstance(raw_session_id, str) else None
+    session_id = session_id or _extract_uuid_from_rollout_filename(file_path)
+    if session_id is None:
+        return None
+    try:
+        last_modified_at = await asyncio.to_thread(os.path.getmtime, file_path)
+    except OSError as error:
+        logger.warning("Could not stat Codex session file %s: %s", file_path, error)
+        return None
+    return SessionFileInfo(session_id, file_path, last_modified_at, preview="")
+
+
 async def _list_session_file_infos_from_paths(
     file_paths: list[str],
     project_dir: str,
@@ -225,6 +244,81 @@ async def _list_session_file_infos_from_paths(
         if session_file_info is not None:
             session_file_infos.append(session_file_info)
     return session_file_infos
+
+
+async def _list_operational_session_file_infos_from_paths(
+    file_paths: list[str],
+    project_dir: str,
+) -> list[SessionFileInfo]:
+    """Filter rollout files by project and return lightweight metadata."""
+    meta_pairs: list[tuple[str, dict[str, object]]] = []
+    for file_path in file_paths:
+        meta_pair = await _read_project_meta_pair(file_path, project_dir)
+        if meta_pair is not None:
+            meta_pairs.append(meta_pair)
+
+    sorted_paths = await asyncio.to_thread(
+        _sort_paths_by_mtime_descending,
+        [file_path for file_path, _meta_record in meta_pairs],
+    )
+    meta_by_path = {file_path: meta_record for file_path, meta_record in meta_pairs}
+    session_file_infos: list[SessionFileInfo] = []
+    for file_path in sorted_paths:
+        session_file_info = await _build_operational_session_file_info(
+            file_path,
+            meta_by_path[file_path],
+        )
+        if session_file_info is not None:
+            session_file_infos.append(session_file_info)
+    return session_file_infos
+
+
+async def _read_project_meta_pair_for_known_projects(
+    file_path: str,
+    project_dirs: set[str],
+) -> tuple[str, str, dict[str, object]] | None:
+    """Return project/file/meta when a rollout belongs to one known project."""
+    try:
+        meta_record = await asyncio.to_thread(_read_session_meta_record_blocking, file_path)
+    except PermissionError:
+        logger.error("No permission to read Codex session file: %s", file_path)
+        return None
+    except OSError as error:
+        logger.warning("Could not read Codex session file %s: %s", file_path, error)
+        return None
+    if meta_record is None:
+        logger.debug("Codex session_meta not found in %s", file_path)
+        return None
+
+    raw_project_dir = _payload_from_meta_record(meta_record).get("cwd")
+    if not isinstance(raw_project_dir, str) or raw_project_dir not in project_dirs:
+        return None
+    return raw_project_dir, file_path, meta_record
+
+
+async def _build_operational_infos_by_project(
+    meta_pairs_by_project: dict[str, list[tuple[str, dict[str, object]]]],
+) -> dict[str, list[SessionFileInfo]]:
+    """Convert grouped Codex metadata records into sorted lightweight infos."""
+    result: dict[str, list[SessionFileInfo]] = {}
+    for project_dir, meta_pairs in meta_pairs_by_project.items():
+        sorted_paths = await asyncio.to_thread(
+            _sort_paths_by_mtime_descending,
+            [file_path for file_path, _meta_record in meta_pairs],
+        )
+        meta_by_path = {
+            file_path: meta_record for file_path, meta_record in meta_pairs
+        }
+        session_file_infos: list[SessionFileInfo] = []
+        for file_path in sorted_paths:
+            session_file_info = await _build_operational_session_file_info(
+                file_path,
+                meta_by_path[file_path],
+            )
+            if session_file_info is not None:
+                session_file_infos.append(session_file_info)
+        result[project_dir] = session_file_infos
+    return result
 
 
 async def list_session_file_infos_for_project(
@@ -257,7 +351,41 @@ async def list_all_session_file_infos_for_project(
         logger.info("Codex sessions directory not found: %s", sessions_root)
         return []
     file_paths = await asyncio.to_thread(_list_all_rollout_files_blocking, sessions_root)
-    return await _list_session_file_infos_from_paths(file_paths, project_dir, None)
+    return await _list_operational_session_file_infos_from_paths(
+        file_paths,
+        project_dir,
+    )
+
+
+async def list_all_session_file_infos_by_project(
+    sessions_root: str,
+    project_dirs: list[str],
+) -> dict[str, list[SessionFileInfo]]:
+    """Return all Codex rollout metadata grouped by exact project path."""
+    result: dict[str, list[SessionFileInfo]] = {
+        project_dir: [] for project_dir in project_dirs
+    }
+    if not await asyncio.to_thread(os.path.exists, sessions_root):
+        logger.info("Codex sessions directory not found: %s", sessions_root)
+        return result
+
+    file_paths = await asyncio.to_thread(_list_all_rollout_files_blocking, sessions_root)
+    project_dir_set = set(project_dirs)
+    meta_pairs_by_project: dict[str, list[tuple[str, dict[str, object]]]] = {
+        project_dir: [] for project_dir in project_dirs
+    }
+    for file_path in file_paths:
+        meta_pair = await _read_project_meta_pair_for_known_projects(
+            file_path,
+            project_dir_set,
+        )
+        if meta_pair is None:
+            continue
+        project_dir, matched_file_path, meta_record = meta_pair
+        meta_pairs_by_project[project_dir].append((matched_file_path, meta_record))
+
+    result.update(await _build_operational_infos_by_project(meta_pairs_by_project))
+    return result
 
 
 async def session_file_exists_for_project(

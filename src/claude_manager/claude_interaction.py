@@ -23,6 +23,7 @@ from claude_manager import (
 )
 from claude_manager.coding_agent_backend import BackendName
 from claude_manager.session_manager import ActiveSession
+from claude_manager.session_summary_generator import generate_session_summary
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ MONITORING_MODE_MESSAGE = (
     "Вы в режиме мониторинга. Для отправки сообщений "
     "подключитесь к сессии — нажмите на номер сессии или отправьте /new"
 )
+
+# Максимум ожидания отдельного LLM-вызова, который делает короткое название сессии.
+SESSION_SUMMARY_TIMEOUT_SECONDS = 45
 
 
 # --- Callback-зависимости от транспортного слоя ---
@@ -337,6 +341,42 @@ async def handle_claude_result(
     return actual_session_id
 
 
+async def _generate_and_store_session_summary(
+    session_id: str,
+    backend: BackendName,
+    user_prompt: str,
+) -> None:
+    """Generates and stores a short summary for a newly-created session."""
+    try:
+        summary = await asyncio.wait_for(
+            generate_session_summary(user_prompt, backend),
+            timeout=SESSION_SUMMARY_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Генерация summary сессии %s (%s) превысила %d секунд",
+            session_id,
+            backend.value,
+            SESSION_SUMMARY_TIMEOUT_SECONDS,
+        )
+        return
+    except Exception:
+        logger.warning(
+            "Генерация summary сессии %s (%s) упала",
+            session_id,
+            backend.value,
+            exc_info=True,
+        )
+        return
+
+    if summary:
+        await daily_session_registry.update_session_summary(
+            session_id,
+            backend,
+            summary,
+        )
+
+
 async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
     """Отправляет сообщение в Claude и обрабатывает ответ."""
     original_project_path = config.WORKING_DIR
@@ -353,6 +393,7 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
 
     session_id = active_session.session_id
     backend = active_session.backend
+    should_generate_session_summary = session_id.startswith("_new_")
 
     session_watcher.pause_session(session_id, backend)
     start_agent_silence_watchdog(session_id, backend)
@@ -434,6 +475,12 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
             )
         else:
             session_id = await handle_claude_result(chat_id, session_id, result)
+            if should_generate_session_summary and not result.is_error:
+                await _generate_and_store_session_summary(
+                    session_id,
+                    backend,
+                    text,
+                )
     except process_manager.ProcessStoppedError:
         logger.info("Запрос прерван командой /stop: session_id=%s", session_id)
     except process_manager.ProcessNotFoundError:

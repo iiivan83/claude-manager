@@ -25,6 +25,7 @@ CONTENT_BLOCK_TEXT = "text"
 EMPTY_RESPONSE_MARKER = "No response requested."
 EMPTY_RESPONSE_MARKERS = frozenset({EMPTY_RESPONSE_MARKER})
 BUSY_EVENT_TYPES = frozenset({"assistant", "progress", "queue-operation"})
+RAW_RECORD_INDEX_KEY = "_raw_record_index"
 
 MAX_RECENT_SESSIONS = 15
 PREVIEW_MAX_LENGTH = 120
@@ -54,10 +55,12 @@ def extract_text_from_message_content(content: object) -> str:
 def parse_jsonl_string_lines(raw_lines: list[str], file_path: str) -> list[dict[str, object]]:
     """Parse JSONL lines, skipping malformed records."""
     parsed_records: list[dict[str, object]] = []
+    raw_record_index = 0
     for line_number, raw_line in enumerate(raw_lines, start=1):
         stripped_line = raw_line.strip()
         if not stripped_line:
             continue
+        raw_record_index += 1
         try:
             parsed_value = json.loads(stripped_line)
         except json.JSONDecodeError:
@@ -68,6 +71,7 @@ def parse_jsonl_string_lines(raw_lines: list[str], file_path: str) -> list[dict[
             )
             continue
         if isinstance(parsed_value, dict):
+            parsed_value[RAW_RECORD_INDEX_KEY] = raw_record_index
             parsed_records.append(parsed_value)
     return parsed_records
 
@@ -163,9 +167,27 @@ def messages_from_jsonl_records(
                     session_record.get("timestamp")
                 ),
                 is_empty_response=text in EMPTY_RESPONSE_MARKERS,
+                raw_record_index=_read_raw_record_index(session_record),
             )
         )
     return messages
+
+
+def _read_raw_record_index(session_record: dict[str, object]) -> int | None:
+    """Return the non-empty JSONL record index for a parsed record."""
+    raw_record_index = session_record.get(RAW_RECORD_INDEX_KEY)
+    return raw_record_index if isinstance(raw_record_index, int) else None
+
+
+def _public_record_without_raw_index(
+    session_record: dict[str, object] | None,
+) -> dict[str, object] | None:
+    """Return a parsed record without internal cursor metadata."""
+    if session_record is None:
+        return None
+    public_record = dict(session_record)
+    public_record.pop(RAW_RECORD_INDEX_KEY, None)
+    return public_record
 
 
 async def _read_session_file_metadata(file_path: str) -> SessionFileInfo | None:
@@ -205,6 +227,25 @@ async def _read_session_file_metadata(file_path: str) -> SessionFileInfo | None:
     )
 
 
+async def _read_session_file_operational_metadata(
+    file_path: str,
+) -> SessionFileInfo | None:
+    """Read lightweight metadata for watcher and all-project scans."""
+    try:
+        last_modified_at = await asyncio.to_thread(os.path.getmtime, file_path)
+    except OSError as error:
+        logger.warning("Could not stat Claude session file %s: %s", file_path, error)
+        return None
+
+    session_id = os.path.basename(file_path).removesuffix(".jsonl")
+    return SessionFileInfo(
+        session_id=session_id,
+        file_path=file_path,
+        last_modified_at=last_modified_at,
+        preview="",
+    )
+
+
 async def list_session_file_infos_for_project(
     project_dir: str,
 ) -> list[SessionFileInfo]:
@@ -238,6 +279,39 @@ async def list_session_file_infos_for_project(
     return session_file_infos
 
 
+async def list_all_session_file_infos_for_project(
+    project_dir: str,
+) -> list[SessionFileInfo]:
+    """Return lightweight metadata for all Claude session files in a project."""
+    sessions_dir = build_sessions_path(project_dir)
+    if not await asyncio.to_thread(os.path.exists, sessions_dir):
+        logger.debug("Claude sessions directory not found: %s", sessions_dir)
+        return []
+    if not await asyncio.to_thread(os.path.isdir, sessions_dir):
+        logger.debug("Claude sessions path is not a directory: %s", sessions_dir)
+        return []
+
+    try:
+        file_paths = await asyncio.to_thread(
+            _list_jsonl_file_paths_blocking,
+            sessions_dir,
+        )
+        sorted_file_paths = await asyncio.to_thread(
+            _sort_paths_by_mtime_descending,
+            file_paths,
+        )
+    except OSError as error:
+        logger.error("Could not list Claude session files in %s: %s", sessions_dir, error)
+        return []
+
+    session_file_infos: list[SessionFileInfo] = []
+    for file_path in sorted_file_paths:
+        session_file_info = await _read_session_file_operational_metadata(file_path)
+        if session_file_info is not None:
+            session_file_infos.append(session_file_info)
+    return session_file_infos
+
+
 async def session_file_exists_for_project(
     session_id: str,
     project_dir: str,
@@ -254,12 +328,21 @@ async def session_file_exists_for_project(
 
 async def read_session_file_snapshot(file_path: str) -> SessionFileSnapshot:
     """Read messages and watcher cursor state from one Claude JSONL file."""
+    return await asyncio.to_thread(_read_session_file_snapshot_blocking, file_path)
+
+
+async def read_session_file_cursor(file_path: str) -> SessionFileSnapshot:
+    """Read lightweight cursor state from one Claude JSONL file."""
+    return await asyncio.to_thread(_read_session_file_cursor_blocking, file_path)
+
+
+def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
+    """Read and parse one Claude JSONL file in a worker thread."""
     try:
-        file_exists = await asyncio.to_thread(os.path.exists, file_path)
-        if not file_exists:
+        if not os.path.exists(file_path):
             logger.debug("Claude session file not found: %s", file_path)
             return empty_session_file_snapshot()
-        raw_lines = await asyncio.to_thread(_read_file_lines_blocking, file_path)
+        raw_lines = _read_file_lines_blocking(file_path)
     except PermissionError:
         logger.error("No permission to read Claude session file: %s", file_path)
         return empty_session_file_snapshot()
@@ -270,7 +353,9 @@ async def read_session_file_snapshot(file_path: str) -> SessionFileSnapshot:
     raw_record_count = sum(1 for raw_line in raw_lines if raw_line.strip())
     parsed_records = parse_jsonl_string_lines(raw_lines, file_path)
     messages = messages_from_jsonl_records(parsed_records)
-    last_record = parsed_records[-1] if parsed_records else None
+    last_record = _public_record_without_raw_index(
+        parsed_records[-1] if parsed_records else None
+    )
     is_turn_active = (
         last_record is not None
         and last_record.get("type") in BUSY_EVENT_TYPES
@@ -280,6 +365,61 @@ async def read_session_file_snapshot(file_path: str) -> SessionFileSnapshot:
         raw_record_count=raw_record_count,
         last_record=last_record,
         is_turn_active=is_turn_active,
+    )
+
+
+def _read_session_file_cursor_blocking(file_path: str) -> SessionFileSnapshot:
+    """Read raw count and active state without parsing historical messages."""
+    try:
+        if not os.path.exists(file_path):
+            logger.debug("Claude session file not found: %s", file_path)
+            return empty_session_file_snapshot()
+        raw_record_count, last_record = _read_cursor_record_count_and_last_record(
+            file_path
+        )
+    except PermissionError:
+        logger.error("No permission to read Claude session file: %s", file_path)
+        return empty_session_file_snapshot()
+    except OSError as error:
+        logger.warning("Could not read Claude session file %s: %s", file_path, error)
+        return empty_session_file_snapshot()
+
+    is_turn_active = (
+        last_record is not None
+        and last_record.get("type") in BUSY_EVENT_TYPES
+    )
+    return SessionFileSnapshot(
+        messages=[],
+        raw_record_count=raw_record_count,
+        last_record=last_record,
+        is_turn_active=is_turn_active,
+    )
+
+
+def _read_cursor_record_count_and_last_record(
+    file_path: str,
+) -> tuple[int, dict[str, object] | None]:
+    """Count non-empty records and parse only the last non-empty Claude record."""
+    raw_record_count = 0
+    last_raw_record = ""
+    with open(file_path, encoding="utf-8") as file_handle:
+        for raw_line in file_handle:
+            stripped_line = raw_line.strip()
+            if not stripped_line:
+                continue
+            raw_record_count += 1
+            last_raw_record = stripped_line
+
+    if not last_raw_record:
+        return 0, None
+    try:
+        parsed_record = json.loads(last_raw_record)
+    except json.JSONDecodeError:
+        logger.warning("Invalid final JSON record in Claude session %s", file_path)
+        return raw_record_count, None
+    return (
+        raw_record_count,
+        parsed_record if isinstance(parsed_record, dict) else None,
     )
 
 

@@ -91,8 +91,9 @@
 - **session-reports/09-04/** — **session-reports/14-04/** — файловая доставка, session_id callback, гонки при переключении проектов, E2E тесты
 - **session-reports/19-04/** — **session-reports/22-04/** — root-cause исправления: ConnectionError, прогресс text-блоков, рестарт бота, watchdog тишины Agent, EDEADLK retry
 - **session-reports/10-05/** — диагностика и исправление бага pending-доставки при возврате в проект: `silence mode` скрывал промежуточные сообщения, а доставка очищала snapshot непрочитанных
-- **session-reports/13-05/** — исправление preview Codex-сессий в `/sessions`: фильтрация bootstrap-блока `AGENTS.md instructions`, извлечение подписи файловой задачи как исходного запроса пользователя, регрессионные тесты, полный pytest-прогон
+- **session-reports/13-05/** — исправление preview Codex-сессий в `/sessions`: фильтрация bootstrap-блока `AGENTS.md instructions`, извлечение подписи файловой задачи как исходного запроса пользователя, регрессионные тесты, полный pytest-прогон; отчёт о баге `/restart` при активных дочерних Codex-задачах
 - **session-reports/14-05/** — реализация и стабилизация глобального режима `/all`: мониторинг всех проектов, кликабельные команды `/3s12`, сохранение pending-доставки и восстановление all-mode после неудачного переключения проекта
+- **session-reports/15-05/** — handoff по ветке `codex-support-spec-implementation-cycle`: состояние уже влитой Codex-support работы, незакоммиченные summary `/sessions` и оптимизация `/all`, план стабилизации и отдельного фикса `/restart`
 
 ## Логи
 
