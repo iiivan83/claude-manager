@@ -535,6 +535,56 @@ async def test_list_all_session_files_respects_operational_lookback_days(
     assert len(infos_within_two_days) == 2
 
 
+async def test_list_all_session_files_reads_meta_records_concurrently(
+    backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Чтение meta-записей должно идти параллельно, иначе переключение проектов тормозит."""
+    import asyncio as asyncio_module
+
+    from claude_manager import codex_session_file_listing
+
+    patch_codex_home(monkeypatch, tmp_path)
+    sessions_root = tmp_path / ".codex" / "sessions"
+    project_dir = "/tmp/project-parallel-meta"
+    file_count = 8
+    for index in range(file_count):
+        make_rollout_file(
+            sessions_root,
+            f"019dfaeb-7c5b-7ba1-9e56-a33b5e0d{index:03d}",
+            project_dir,
+            days_ago=0,
+        )
+
+    in_flight_count = 0
+    peak_in_flight_count = 0
+    original_read_meta_pair = codex_session_file_listing._read_project_meta_pair
+
+    async def tracking_read_meta_pair(file_path: str, target_project_dir: str):
+        nonlocal in_flight_count, peak_in_flight_count
+        in_flight_count += 1
+        peak_in_flight_count = max(peak_in_flight_count, in_flight_count)
+        try:
+            await asyncio_module.sleep(0.01)
+            return await original_read_meta_pair(file_path, target_project_dir)
+        finally:
+            in_flight_count -= 1
+
+    monkeypatch.setattr(
+        codex_session_file_listing,
+        "_read_project_meta_pair",
+        tracking_read_meta_pair,
+    )
+
+    infos = await backend.list_all_session_files_for_project(project_dir)
+
+    assert len(infos) == file_count
+    assert peak_in_flight_count > 1, (
+        "_list_operational_session_file_infos_from_paths читает meta-записи "
+        "последовательно — переключение проектов будет тормозить "
+        f"(peak concurrency = {peak_in_flight_count})"
+    )
+
+
 async def test_read_session_file_snapshot_counts_records_and_activity(
     backend: CodexBackend, tmp_path: Path,
 ) -> None:

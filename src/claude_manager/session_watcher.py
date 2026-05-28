@@ -241,6 +241,7 @@ class SessionWatcher:
         project_generation = self._project_generation
         session_ids, files_by_session_id = await self._get_sessions_to_monitor(
             project_path=project_path,
+            lookback_days=config.OPERATIONAL_SESSION_LOOKBACK_DAYS,
         )
         if not self._poll_context_is_current(project_path, project_generation):
             return

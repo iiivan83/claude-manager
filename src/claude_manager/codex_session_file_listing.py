@@ -31,6 +31,25 @@ logger = logging.getLogger(__name__)
 CODEX_BOOTSTRAP_AGENTS_PREFIX = "# AGENTS.md instructions for "
 CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER = "<INSTRUCTIONS>"
 
+# Параллелизм чтения мета-записей и построения SessionFileInfo при листинге Codex-сессий.
+# Без ограничения большой проект (десятки сессий за lookback-окно) создаёт сотни
+# одновременных I/O-операций и упирается в файловые дескрипторы / thread pool.
+MAX_CONCURRENT_FILE_READS = 16
+
+
+async def _gather_optional_results_with_concurrency_limit(
+    awaitables: list,
+) -> list:
+    """Run awaitables with a concurrency cap and drop None results."""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_FILE_READS)
+
+    async def with_semaphore(awaitable):
+        async with semaphore:
+            return await awaitable
+
+    results = await asyncio.gather(*(with_semaphore(a) for a in awaitables))
+    return [result for result in results if result is not None]
+
 
 def _iter_session_dirs_in_lookback_window(
     sessions_root: str,
@@ -221,11 +240,9 @@ async def _list_session_file_infos_from_paths(
     max_results: int | None,
 ) -> list[SessionFileInfo]:
     """Filter rollout files by project and convert them to metadata."""
-    meta_pairs: list[tuple[str, dict[str, object]]] = []
-    for file_path in file_paths:
-        meta_pair = await _read_project_meta_pair(file_path, project_dir)
-        if meta_pair is not None:
-            meta_pairs.append(meta_pair)
+    meta_pairs = await _gather_optional_results_with_concurrency_limit(
+        [_read_project_meta_pair(file_path, project_dir) for file_path in file_paths]
+    )
 
     sorted_paths = await asyncio.to_thread(
         _sort_paths_by_mtime_descending,
@@ -235,15 +252,12 @@ async def _list_session_file_infos_from_paths(
     if max_results is not None:
         sorted_paths = sorted_paths[:max_results]
 
-    session_file_infos: list[SessionFileInfo] = []
-    for file_path in sorted_paths:
-        session_file_info = await _build_session_file_info(
-            file_path,
-            meta_by_path[file_path],
-        )
-        if session_file_info is not None:
-            session_file_infos.append(session_file_info)
-    return session_file_infos
+    return await _gather_optional_results_with_concurrency_limit(
+        [
+            _build_session_file_info(file_path, meta_by_path[file_path])
+            for file_path in sorted_paths
+        ]
+    )
 
 
 async def _list_operational_session_file_infos_from_paths(
@@ -251,26 +265,21 @@ async def _list_operational_session_file_infos_from_paths(
     project_dir: str,
 ) -> list[SessionFileInfo]:
     """Filter rollout files by project and return lightweight metadata."""
-    meta_pairs: list[tuple[str, dict[str, object]]] = []
-    for file_path in file_paths:
-        meta_pair = await _read_project_meta_pair(file_path, project_dir)
-        if meta_pair is not None:
-            meta_pairs.append(meta_pair)
+    meta_pairs = await _gather_optional_results_with_concurrency_limit(
+        [_read_project_meta_pair(file_path, project_dir) for file_path in file_paths]
+    )
 
     sorted_paths = await asyncio.to_thread(
         _sort_paths_by_mtime_descending,
         [file_path for file_path, _meta_record in meta_pairs],
     )
     meta_by_path = {file_path: meta_record for file_path, meta_record in meta_pairs}
-    session_file_infos: list[SessionFileInfo] = []
-    for file_path in sorted_paths:
-        session_file_info = await _build_operational_session_file_info(
-            file_path,
-            meta_by_path[file_path],
-        )
-        if session_file_info is not None:
-            session_file_infos.append(session_file_info)
-    return session_file_infos
+    return await _gather_optional_results_with_concurrency_limit(
+        [
+            _build_operational_session_file_info(file_path, meta_by_path[file_path])
+            for file_path in sorted_paths
+        ]
+    )
 
 
 async def _read_project_meta_pair_for_known_projects(
@@ -309,15 +318,14 @@ async def _build_operational_infos_by_project(
         meta_by_path = {
             file_path: meta_record for file_path, meta_record in meta_pairs
         }
-        session_file_infos: list[SessionFileInfo] = []
-        for file_path in sorted_paths:
-            session_file_info = await _build_operational_session_file_info(
-                file_path,
-                meta_by_path[file_path],
-            )
-            if session_file_info is not None:
-                session_file_infos.append(session_file_info)
-        result[project_dir] = session_file_infos
+        result[project_dir] = await _gather_optional_results_with_concurrency_limit(
+            [
+                _build_operational_session_file_info(
+                    file_path, meta_by_path[file_path]
+                )
+                for file_path in sorted_paths
+            ]
+        )
     return result
 
 
@@ -388,17 +396,16 @@ async def list_all_session_file_infos_by_project(
 
     file_paths = await asyncio.to_thread(_list_all_rollout_files_blocking, sessions_root)
     project_dir_set = set(project_dirs)
+    matched_triples = await _gather_optional_results_with_concurrency_limit(
+        [
+            _read_project_meta_pair_for_known_projects(file_path, project_dir_set)
+            for file_path in file_paths
+        ]
+    )
     meta_pairs_by_project: dict[str, list[tuple[str, dict[str, object]]]] = {
         project_dir: [] for project_dir in project_dirs
     }
-    for file_path in file_paths:
-        meta_pair = await _read_project_meta_pair_for_known_projects(
-            file_path,
-            project_dir_set,
-        )
-        if meta_pair is None:
-            continue
-        project_dir, matched_file_path, meta_record = meta_pair
+    for project_dir, matched_file_path, meta_record in matched_triples:
         meta_pairs_by_project[project_dir].append((matched_file_path, meta_record))
 
     result.update(await _build_operational_infos_by_project(meta_pairs_by_project))

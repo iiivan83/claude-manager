@@ -406,6 +406,40 @@ class TestPollingThroughBackendContract:
 
         assert delivered == ["First"]
 
+    @pytest.mark.asyncio
+    async def test_poll_once_requests_operational_lookback_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """poll_once must scope the backend listing to the operational lookback window.
+
+        Без этого ограничения poll_once видит все codex-сессии за всё время через
+        полный скан ~/.codex/sessions. Сессии за пределами baseline (reset_state с
+        lookback) попадают в poll как «никогда не виденные», last_delivered_idx=-1,
+        и вся их история выливается в Telegram (cold-start flood).
+        """
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CODEX)
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.poll_once(AsyncMock(), AsyncMock(return_value=None))
+
+        assert backend.list_lookback_history, (
+            "poll_once не вызвал list_all_session_files_for_project"
+        )
+        assert (
+            backend.list_lookback_history[-1]
+            == session_watcher.config.OPERATIONAL_SESSION_LOOKBACK_DAYS
+        ), (
+            "poll_once должен ограничивать листинг сессий operational lookback окном, "
+            f"но передал lookback_days={backend.list_lookback_history[-1]}"
+        )
+
 
 class TestBufferAndHold:
     @pytest.mark.asyncio
