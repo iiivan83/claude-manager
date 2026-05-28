@@ -22,7 +22,8 @@
   - [changelog/22.04_13.57-edeadlk-retry-project-switch.md](changelog/22.04_13.57-edeadlk-retry-project-switch.md) — 22.04.2026: retry OSError (EDEADLK) при загрузке состояния, 5×1 сек с fallback
 - **claude-md-updates/** — лог изменений CLAUDE.md
   - [claude-md-updates/10.04_22.19-file-delivery-rule.md](claude-md-updates/10.04_22.19-file-delivery-rule.md) — 10.04.2026: глобальное правило File Delivery Rule в `~/.claude/CLAUDE.md` — маркеры `[SEND_FILE:path]` для доставки файлов через бот
-  - [claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md](claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md) — 03.05.2026: миграция venv и скрипта запуска из TCC-зоны Desktop — новые принципы изоляции, обновлённые пути
+  - [claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md](claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md) — 03.05.2026: миграция venv и скрипта запуска из TCC-зоны Desktop — новые принципы изоляции, обновлённые пути (теперь устарело — см. запись от 28.05.2026 ниже про обратную миграцию на Linux)
+  - [claude-md-updates/28.05_19.45-session-change-documenter.md](claude-md-updates/28.05_19.45-session-change-documenter.md) — 28.05.2026: миграция инфраструктуры с macOS на Linux — удалены принципы TCC-изоляции venv и скрипта, retry-обёртка для launchd, буллет про EDEADLK; переписаны принципы verify-before-and-after и запрета самоперезапуска под systemctl; обновлены команды разработки, структура проекта, ОС-линия
 
 ## BRD и пользовательские пути
 
