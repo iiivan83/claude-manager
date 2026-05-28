@@ -468,6 +468,103 @@ async def test_read_session_file_snapshot_marks_assistant_last_as_active(
     assert snapshot.is_turn_active is True
 
 
+async def test_read_session_file_snapshot_turn_active_after_tool_result(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """A user tool_result after assistant text means Claude is still processing.
+
+    Регрессионная защита: до фикса is_turn_active определялся по типу последнего
+    record (BUSY_EVENT_TYPES = {assistant, progress, queue-operation}), и после
+    user-tool_result turn ошибочно считался закрытым. Это приводило к тому, что
+    watcher помечал промежуточный assistant text как is_final=True, и в Telegram
+    приходил «финал» посреди работы Claude (особенно заметно в silence mode).
+    Корректный критерий: turn закрыт только когда в файле есть result-event
+    позже последнего assistant.
+    """
+    session_file = tmp_path / "after_tool_result.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {"type": "user", "message": {"content": "do something"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Sure, checking"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_01",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_01",
+                            "content": "file.txt",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert snapshot.is_turn_active is True
+
+
+async def test_read_session_file_cursor_turn_active_after_tool_result(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """Cursor reader uses the same is_turn_active rule as the full snapshot."""
+    session_file = tmp_path / "cursor_after_tool_result.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {"type": "user", "message": {"content": "do something"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Sure"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_02",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_02",
+                            "content": "ok",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    snapshot = await backend.read_session_file_cursor(str(session_file))
+
+    assert snapshot.is_turn_active is True
+
+
 async def test_session_file_exists_for_project(
     backend: ClaudeCodeBackend,
     tmp_path: Path,

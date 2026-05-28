@@ -370,6 +370,33 @@ async def read_session_file_cursor(file_path: str) -> SessionFileSnapshot:
     return await asyncio.to_thread(_read_session_file_cursor_blocking, file_path)
 
 
+def _compute_is_turn_active_from_parsed_records(
+    parsed_records: list[dict[str, object]],
+) -> bool:
+    """Return True if Claude is still working on the most recent turn.
+
+    Сканируем записи с конца и ищем первый значимый тип:
+    - `result` встретился раньше любого assistant/progress/queue-operation →
+      turn закрыт (Claude CLI пишет `result` только при завершении turn'а).
+    - assistant/progress/queue-operation встретился раньше result-event'а →
+      turn активен (после tool_result последний record в файле — `user`,
+      но реальный конец turn'а ещё не наступил, потому что `result`
+      не записан).
+
+    Это правильнее, чем смотреть только на тип последнего record:
+    после tool_result последний record — `user`, но Claude ещё думает
+    над следующим шагом, и watcher не должен помечать промежуточный
+    assistant text как is_final.
+    """
+    for record in reversed(parsed_records):
+        record_type = record.get("type")
+        if record_type == "result":
+            return False
+        if record_type in BUSY_EVENT_TYPES:
+            return True
+    return False
+
+
 def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
     """Read and parse one Claude JSONL file in a worker thread."""
     try:
@@ -390,10 +417,7 @@ def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
     last_record = _public_record_without_raw_index(
         parsed_records[-1] if parsed_records else None
     )
-    is_turn_active = (
-        last_record is not None
-        and last_record.get("type") in BUSY_EVENT_TYPES
-    )
+    is_turn_active = _compute_is_turn_active_from_parsed_records(parsed_records)
     return SessionFileSnapshot(
         messages=messages,
         raw_record_count=raw_record_count,
@@ -408,8 +432,8 @@ def _read_session_file_cursor_blocking(file_path: str) -> SessionFileSnapshot:
         if not os.path.exists(file_path):
             logger.debug("Claude session file not found: %s", file_path)
             return empty_session_file_snapshot()
-        raw_record_count, last_record = _read_cursor_record_count_and_last_record(
-            file_path
+        raw_record_count, last_record, is_turn_active = (
+            _read_cursor_count_last_record_and_turn_active(file_path)
         )
     except PermissionError:
         logger.error("No permission to read Claude session file: %s", file_path)
@@ -418,10 +442,6 @@ def _read_session_file_cursor_blocking(file_path: str) -> SessionFileSnapshot:
         logger.warning("Could not read Claude session file %s: %s", file_path, error)
         return empty_session_file_snapshot()
 
-    is_turn_active = (
-        last_record is not None
-        and last_record.get("type") in BUSY_EVENT_TYPES
-    )
     return SessionFileSnapshot(
         messages=[],
         raw_record_count=raw_record_count,
@@ -430,31 +450,56 @@ def _read_session_file_cursor_blocking(file_path: str) -> SessionFileSnapshot:
     )
 
 
-def _read_cursor_record_count_and_last_record(
+def _read_cursor_count_last_record_and_turn_active(
     file_path: str,
-) -> tuple[int, dict[str, object] | None]:
-    """Count non-empty records and parse only the last non-empty Claude record."""
-    raw_record_count = 0
-    last_raw_record = ""
+) -> tuple[int, dict[str, object] | None, bool]:
+    """Return raw count, last valid record and is_turn_active in one file pass.
+
+    Для is_turn_active нужно reverse-сканировать парсенные records до первого
+    result-event'а или assistant/progress/queue-operation. Если последний record
+    в файле — это `user`-tool_result (Claude между шагами с инструментами),
+    последний record сам по себе не даёт ответа: нужно посмотреть вверх по
+    записям.
+    """
+    non_empty_lines: list[str] = []
     with open(file_path, encoding="utf-8") as file_handle:
         for raw_line in file_handle:
             stripped_line = raw_line.strip()
             if not stripped_line:
                 continue
-            raw_record_count += 1
-            last_raw_record = stripped_line
+            non_empty_lines.append(stripped_line)
 
-    if not last_raw_record:
-        return 0, None
-    try:
-        parsed_record = json.loads(last_raw_record)
-    except json.JSONDecodeError:
-        logger.warning("Invalid final JSON record in Claude session %s", file_path)
-        return raw_record_count, None
-    return (
-        raw_record_count,
-        parsed_record if isinstance(parsed_record, dict) else None,
-    )
+    raw_record_count = len(non_empty_lines)
+    if raw_record_count == 0:
+        return 0, None, False
+
+    last_record: dict[str, object] | None = None
+    is_turn_active = False
+    is_turn_active_decided = False
+
+    # Reverse-проход: сразу заполняем last_record (первый валидный JSON с конца)
+    # и одновременно ищем первый result/busy-event для is_turn_active.
+    for raw_line in reversed(non_empty_lines):
+        try:
+            parsed_value = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed_value, dict):
+            continue
+        if last_record is None:
+            last_record = parsed_value
+        if not is_turn_active_decided:
+            record_type = parsed_value.get("type")
+            if record_type == "result":
+                is_turn_active = False
+                is_turn_active_decided = True
+            elif record_type in BUSY_EVENT_TYPES:
+                is_turn_active = True
+                is_turn_active_decided = True
+        if last_record is not None and is_turn_active_decided:
+            break
+
+    return raw_record_count, last_record, is_turn_active
 
 
 def empty_session_file_snapshot() -> SessionFileSnapshot:
