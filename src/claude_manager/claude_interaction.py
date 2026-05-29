@@ -21,7 +21,7 @@ from claude_manager import (
     session_reader,
     session_watcher,
 )
-from claude_manager.coding_agent_backend import BackendName
+from claude_manager.coding_agent_backend import BackendName, PermanentErrorKind
 from claude_manager.session_manager import ActiveSession
 from claude_manager.session_summary_generator import generate_session_summary
 
@@ -49,6 +49,30 @@ MONITORING_MODE_MESSAGE = (
 
 # Максимум ожидания отдельного LLM-вызова, который делает короткое название сессии.
 SESSION_SUMMARY_TIMEOUT_SECONDS = 45
+
+# Человекочитаемые сообщения о постоянных ошибках backend (повтор бессмыслен).
+# Транспортный слой владеет текстом для пользователя — инфраструктура (process_manager)
+# только помечает результат kind'ом, но не знает про Telegram и формулировки.
+PERMANENT_ERROR_MESSAGES = {
+    PermanentErrorKind.CONTEXT_OVERFLOW: (
+        "Сессия переполнилась и больше не может принимать сообщения. "
+        "Начни новую через /new"
+    ),
+    PermanentErrorKind.USAGE_LIMIT: (
+        "Исчерпан лимит запросов к Claude — повтор не поможет. "
+        "Дождись обновления лимита и попробуй снова"
+    ),
+}
+
+
+def _build_permanent_error_message(
+    kind: PermanentErrorKind, display_name: str,
+) -> str:
+    """Человекочитаемое сообщение о постоянной ошибке backend."""
+    base_message = PERMANENT_ERROR_MESSAGES.get(kind)
+    if base_message is None:
+        return f"{display_name}: запрос нельзя повторить"
+    return f"{display_name}: {base_message}"
 
 
 # --- Callback-зависимости от транспортного слоя ---
@@ -321,13 +345,19 @@ async def handle_claude_result(
     )
 
     if result.is_error:
-        error_text = (
-            result.error_text
-            or result.text
-            or f"Неизвестная ошибка {display_name}"
-        )
+        if result.permanent_error_kind is not None:
+            message_text = _build_permanent_error_message(
+                result.permanent_error_kind, display_name,
+            )
+        else:
+            error_text = (
+                result.error_text
+                or result.text
+                or f"Неизвестная ошибка {display_name}"
+            )
+            message_text = f"Ошибка {display_name}: {error_text}"
         await _get_send_telegram_message()(
-            chat_id, f"Ошибка {display_name}: {error_text}", parse_mode=None,
+            chat_id, message_text, parse_mode=None,
         )
     else:
         await _get_send_response()(
@@ -510,3 +540,4 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
         cancel_agent_silence_watchdog(session_id, backend)
         if config.WORKING_DIR == original_project_path:
             await session_watcher.resume_session(session_id, backend)
+            session_watcher.clear_handler_owns_final_delivery(session_id, backend)

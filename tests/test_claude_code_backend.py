@@ -10,6 +10,7 @@ import pytest
 from claude_manager.coding_agent_backend import (
     BackendName,
     BackendProtocolError,
+    PermanentErrorKind,
     SessionFileInfo,
     SessionFileSnapshot,
     SessionMessage,
@@ -262,6 +263,34 @@ def test_stdout_event_extractors(backend: ClaudeCodeBackend) -> None:
     assert backend.read_terminal_status_from_event(result_event) == TerminalStatus.SUCCESS
     assert backend.read_terminal_status_from_event(error_event) == TerminalStatus.FAILED
     assert backend.read_terminal_status_from_event({"type": "assistant"}) is None
+
+
+def test_classify_permanent_error_recognizes_overflow_and_limit(
+    backend: ClaudeCodeBackend,
+) -> None:
+    """Постоянные ошибки Claude распознаются по тексту, временные — нет."""
+    # Переполнение контекста сессии (инцидент 29-05) — повтор бессмыслен.
+    assert (
+        backend.classify_permanent_error("Prompt is too long")
+        == PermanentErrorKind.CONTEXT_OVERFLOW
+    )
+    # Регистр не важен: Claude не гарантирует капитализацию текста ошибки.
+    assert (
+        backend.classify_permanent_error("PROMPT IS TOO LONG")
+        == PermanentErrorKind.CONTEXT_OVERFLOW
+    )
+    # Исчерпан лимит запросов (инцидент 13-04) — тоже постоянная ошибка.
+    assert (
+        backend.classify_permanent_error(
+            "Claude AI usage limit reached — you've hit your limit"
+        )
+        == PermanentErrorKind.USAGE_LIMIT
+    )
+    # Временная ошибка остаётся повторяемой.
+    assert backend.classify_permanent_error("Error: service unavailable") is None
+    # Пустой текст ошибки считаем повторяемым (поведение как раньше).
+    assert backend.classify_permanent_error(None) is None
+    assert backend.classify_permanent_error("") is None
 
 
 def test_read_progress_text_prefers_text_over_thinking(

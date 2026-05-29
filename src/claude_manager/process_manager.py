@@ -18,6 +18,7 @@ from claude_manager.coding_agent_backend import (
     BackendName,
     BackendProtocolError,
     CodingAgentBackend,
+    PermanentErrorKind,
     StopStrategy,
     TerminalStatus,
     UnifiedEvent,
@@ -103,6 +104,9 @@ class SendResult:
     retries_used: int
     backend: BackendName = BackendName.CLAUDE
     error_text: str | None = None
+    # Заполняется, если ошибка постоянная (повтор бессмыслен): транспортный
+    # слой по этому полю показывает понятное сообщение вместо «повтор N/10».
+    permanent_error_kind: PermanentErrorKind | None = None
 
 
 @dataclass(frozen=True)
@@ -574,6 +578,38 @@ def _build_exhausted_result(
     )
 
 
+def _classify_permanent_error_result(
+    error_result: SendResult,
+    backend_name: BackendName,
+) -> SendResult | None:
+    """Возвращает готовый результат, если повторять ошибку бессмысленно.
+
+    Спрашивает у backend-контракта, постоянная ли это ошибка (переполнение
+    контекста, исчерпанный лимит). Если да — повтор не нужен: собираем финальный
+    результат с пометкой permanent_error_kind, чтобы транспортный слой показал
+    пользователю понятное сообщение вместо «повтор N/10». None — ошибка может
+    быть временной, повтор имеет смысл.
+    """
+    permanent_error_kind = get_backend(backend_name).classify_permanent_error(
+        error_result.error_text or error_result.text
+    )
+    if permanent_error_kind is None:
+        return None
+    logger.warning(
+        "Постоянная ошибка backend=%s session_id=%s kind=%s — повтор пропущен",
+        backend_name.value, error_result.session_id, permanent_error_kind.value,
+    )
+    return SendResult(
+        text=error_result.text,
+        session_id=error_result.session_id,
+        is_error=True,
+        retries_used=0,
+        backend=backend_name,
+        error_text=error_result.error_text,
+        permanent_error_kind=permanent_error_kind,
+    )
+
+
 async def _retry_loop(
     session_id: str,
     text: str,
@@ -632,6 +668,9 @@ async def _retry_loop(
                 is_error=False, retries_used=attempt,
                 backend=backend_name, error_text=None,
             )
+        permanent_result = _classify_permanent_error_result(result, backend_name)
+        if permanent_result is not None:
+            return permanent_result
         logger.warning(
             "Ретрай %d вернул ошибку (сессия %s): %s",
             attempt, session_id, (result.error_text or result.text)[:200],
@@ -1009,6 +1048,11 @@ async def _send_message_backend_aware(
             )
 
         if result.is_error:
+            permanent_result = _classify_permanent_error_result(
+                result, effective_backend,
+            )
+            if permanent_result is not None:
+                return permanent_result
             error_reason = (
                 (result.error_text or result.text)[:200]
                 if (result.error_text or result.text)
@@ -1091,6 +1135,11 @@ async def _execute_send(
         )
 
     if result.is_error:
+        permanent_result = _classify_permanent_error_result(
+            result, BackendName.CLAUDE,
+        )
+        if permanent_result is not None:
+            return permanent_result
         logger.warning(
             "Claude вернул ошибку (сессия %s): %s",
             current_session_id, result.text[:200],
@@ -1251,7 +1300,16 @@ async def update_session_id(
     async with _busy_lock:
         old_key = _prefer_existing_process_key_unlocked(old_session_id, backend)
         old_session_id, resolved_backend = _split_process_key(old_key)
-        new_key = _make_process_key(new_session_id, resolved_backend)
+        # Сохраняем форму ключа: если состояние лежит под tuple-ключом
+        # (backend-aware путь), новый ключ тоже обязан быть tuple. Иначе
+        # _make_process_key схлопнет его в голую строку для CLAUDE,
+        # состояние переедет под строковый ключ, а finally backend-aware
+        # пути чистит только tuple-ключи — выставленный stop_event останется
+        # висеть и убьёт следующий turn (сессия «не оживает» после /stop).
+        if isinstance(old_key, tuple):
+            new_key = _make_backend_process_key(new_session_id, resolved_backend)
+        else:
+            new_key = _make_process_key(new_session_id, resolved_backend)
         new_key = _session_id_aliases.get(new_key, new_key)
         new_session_id, _new_backend = _split_process_key(new_key)
         if old_key == new_key:

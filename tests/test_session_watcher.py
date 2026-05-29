@@ -649,3 +649,190 @@ class TestResetState:
             "reset_state должен ограничивать листинг сессий operational lookback окном, "
             f"но передал lookback_days={backend.list_lookback_history[-1]}"
         )
+
+
+class TestHandlerOwnedFinalNotDuplicated:
+    """Watcher не должен доставлять финал сессии, которую обрабатывает обработчик запроса.
+
+    Сценарий дубликата: обработчик берёт сессию на паузу и сам доставит финал. Если
+    stdout молчит дольше таймаута, agent-silence watchdog снимает паузу, чтобы показать
+    промежуточный прогресс. Когда после этого приходит финал, watcher доставляет его как
+    is_final=True — и обработчик тоже доставляет его. Пользователь получает финал дважды.
+    В режиме тишины это особенно заметно: промежуточные подавлены, виден только дубль финала.
+    """
+
+    @pytest.mark.asyncio
+    async def test_watchdog_resume_does_not_let_watcher_deliver_handler_final(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1")]
+        # Снимок на момент срабатывания watchdog: ход активен, один промежуточный блок.
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "thinking...",
+            raw_count=1,
+            is_turn_active=True,
+        )
+        callback = AsyncMock()
+        get_current_session = AsyncMock(return_value=None)
+        watcher = session_watcher.SessionWatcher(backend)
+
+        # Обработчик берёт сессию на паузу (старт send_to_claude_and_respond).
+        watcher.pause_session("session-1")
+        # watchdog снимает паузу после таймаута тишины, чтобы показать прогресс.
+        await watcher.resume_session("session-1")
+
+        # Ход завершился: появился финал, который доставит сам обработчик.
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "thinking...",
+            "FINAL ANSWER",
+            raw_count=2,
+            is_turn_active=False,
+        )
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=5),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, get_current_session)
+
+        final_deliveries = [
+            call for call in callback.await_args_list if call.args[6] is True
+        ]
+        assert not final_deliveries, (
+            "watcher доставил финал сессии, которой владеет обработчик запроса — "
+            "финальный ответ придёт дважды (от обработчика и от watcher)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_handler_owned_session_still_delivers_intermediate_progress(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Даже когда финал принадлежит обработчику, watchdog-resume watcher должен
+        показывать промежуточный прогресс — иначе теряется смысл watchdog."""
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1")]
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "chunk 1",
+            raw_count=1,
+            is_turn_active=True,
+        )
+        callback = AsyncMock()
+        watcher = session_watcher.SessionWatcher(backend)
+        watcher.pause_session("session-1")
+        await watcher.resume_session("session-1")
+
+        # Новые промежуточные блоки, ход ещё активен (финала пока нет).
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "chunk 1",
+            "chunk 2",
+            "chunk 3",
+            raw_count=3,
+            is_turn_active=True,
+        )
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=9),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
+
+        # chunk 2 доставлен как промежуточный; chunk 3 удержан (последний при активном ходе).
+        callback.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "session-1",
+            BackendName.CLAUDE,
+            9,
+            "chunk 2",
+            False,
+            False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_after_clear_ownership_watcher_delivers_final_again(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """После снятия владения (обработчик завершил доставку) watcher снова доставляет
+        финал — например, поздние терминальные обновления или следующий ход."""
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1")]
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "earlier final",
+            raw_count=1,
+            is_turn_active=True,
+        )
+        callback = AsyncMock()
+        watcher = session_watcher.SessionWatcher(backend)
+        watcher.pause_session("session-1")
+        # Обработчик завершает: finally вызывает resume_session, затем снятие владения.
+        await watcher.resume_session("session-1")
+        watcher.clear_handler_owns_final_delivery("session-1")
+
+        # Появляется новый финал уже без владельца-обработчика.
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "earlier final",
+            "new terminal final",
+            raw_count=2,
+            is_turn_active=False,
+        )
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=11),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
+
+        callback.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "session-1",
+            BackendName.CLAUDE,
+            11,
+            "new terminal final",
+            False,
+            True,
+        )

@@ -13,7 +13,7 @@ from claude_manager import (
     session_reader,
     session_watcher,
 )
-from claude_manager.coding_agent_backend import BackendName
+from claude_manager.coding_agent_backend import BackendName, PermanentErrorKind
 from claude_manager.claude_interaction import (
     AGENT_SILENCE_TIMEOUT_SECONDS,
     EMPTY_RESPONSE_TEXT,
@@ -1651,6 +1651,31 @@ class TestHandleClaudeResultBehavior:
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
         assert "Ошибка" in sent_text
         assert "Процесс упал" in sent_text
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    async def test_permanent_overflow_result_sends_new_session_hint(
+        self,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Постоянная ошибка переполнения советует /new, а не сырой текст ошибки."""
+        mock_register.return_value = 9
+        result = SendResult(
+            text="",
+            session_id=TEST_SESSION_ID,
+            is_error=True,
+            retries_used=0,
+            error_text="Prompt is too long",
+            permanent_error_kind=PermanentErrorKind.CONTEXT_OVERFLOW,
+        )
+
+        await handle_claude_result(TEST_CHAT_ID, TEST_SESSION_ID, result)
+
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert "/new" in sent_text
+        assert "Prompt is too long" not in sent_text
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)

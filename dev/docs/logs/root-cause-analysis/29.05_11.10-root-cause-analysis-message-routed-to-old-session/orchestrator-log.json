@@ -1,0 +1,108 @@
+{
+  "pipeline": "root-cause-analysis",
+  "problem_summary": "Сообщение/скриншот пользователя выглядело как обработанное старой переполненной сессией #9 (ошибка 'Prompt is too long' + цикл из 10 повторов), хотя пользователь только что создал новую сессию через /new. По логам маршрутизация корректна: каждый скриншот ушёл в сессию, привязанную к chat_id в момент загрузки. Реальная причина — фоновый retry-цикл переполненной сессии #9 спамил ~11 минут параллельно с новыми сессиями, создавая иллюзию, что новое сообщение проигнорировано.",
+  "start_time": "2026-05-29T06:10:36Z",
+  "status": "completed",
+  "last_completed_stage": "phase_9_session_report",
+  "steps": [
+    {
+      "step_number": 1,
+      "stage": "phase_0_project_recon",
+      "status": "completed",
+      "start_time": "2026-05-29T06:10:36Z",
+      "end_time": "2026-05-29T06:25:00Z",
+      "duration_seconds": 864,
+      "comment": "Прочитаны CLAUDE.md проекта и глобальные референсы. Карта проекта: код в src/claude_manager/, тесты в tests/, документация в dev/docs/, спецификации в dev/docs/specs/, root-cause отчёты в dev/docs/logs/root-cause-reports/. Проект — однопользовательский Telegram-бот, Python 3.13, async, протокол stream-json с Claude CLI. Обнаружено: проект теперь поддерживает два backend (Claude и Codex) через общий контракт coding_agent_backend.py."
+    },
+    {
+      "step_number": 2,
+      "stage": "phase_1_problem_context",
+      "status": "completed",
+      "start_time": "2026-05-29T06:25:00Z",
+      "end_time": "2026-05-29T06:50:00Z",
+      "duration_seconds": 1500,
+      "comment": "Восстановлена фактура из логов ~/.local/state/claude-manager/claude-manager.log (chat REDACTED_OWNER_TELEGRAM_ID). Часы телефона на скриншоте отстают на 2 часа от сервера. Привязки: #9=ac6207af (10:53:30), #10=8dd9d9a8 (10:57:55), #11=0efbcb35 (11:00:37), #12=a0cc24bd (11:14:24). Каждый скриншот ушёл в активную на момент загрузки сессию — маршрутизация корректна. #9 переполнилась ('Prompt is too long') и ушла в retry-цикл 10:59:20 -> 11:10:09 (~11 мин). ПАТТЕРН: найден прежний отчёт 13-04_17-45_retry-loop-session-multiplication.md о ТОМ ЖЕ retry-цикле (rate limit как нерекаверабельная ошибка). 2 инцидента одного класса на одном модуле."
+    },
+    {
+      "step_number": 3,
+      "stage": "phase_2_documentation_analysis",
+      "status": "completed",
+      "start_time": "2026-05-29T06:50:00Z",
+      "end_time": "2026-05-29T07:05:00Z",
+      "duration_seconds": 900,
+      "comment": "Спецификация process_manager_spec.md, строка 338: MAX_RETRIES=10 описан как покрытие 'большинства временных сбоев Claude API'. Спека прямо предполагает, что retry — только для ВРЕМЕННЫХ сбоев, но в коде нет проверки временности. Прежний отчёт 13-04 рекомендовал различать 'Claude упал' и 'Claude ответил, но не так' (рек. #2/#3, ОДОБРЕНО), но grep подтверждает: классификация ошибок так и не добавлена (rate-limit детекции в коде нет)."
+    },
+    {
+      "step_number": 4,
+      "stage": "phase_3_skill_analysis",
+      "status": "completed",
+      "start_time": "2026-05-29T07:05:00Z",
+      "end_time": "2026-05-29T07:15:00Z",
+      "duration_seconds": 600,
+      "comment": "Скиллы проекта не участвуют напрямую в рантайме бота (это инструменты разработки). Релевантен root-cause-analysis (текущий) и feature/fix-пайплайны, которые реализовывали retry. Прежний RCA-отчёт 13-04 дал верную рекомендацию по классификации ошибок, но реализация была неполной — это пробел в цикле fix/verify, а не в скилле RCA."
+    },
+    {
+      "step_number": 5,
+      "stage": "phase_4_code_analysis",
+      "status": "completed",
+      "start_time": "2026-05-29T07:15:00Z",
+      "end_time": "2026-05-29T07:45:00Z",
+      "duration_seconds": 1800,
+      "comment": "session_manager.get_active_session (230-234) просто читает _bindings[chat_id] — маршрутизация без гонок и stale-кэша. claude_interaction.send_to_claude_and_respond (380-513) резолвит сессию в момент вызова. КОРЕНЬ: process_manager._process_events (452-464) при terminal_status=FAILED возвращает SendResult(is_error=True) без классификации временная/постоянная. _send_message_backend_aware (1011) и _retry_loop (593) слепо повторяют любой is_error 10 раз. Контракт ошибок бинарный (is_error: bool / TerminalStatus SUCCESS|FAILED) в coding_agent_backend.py — у обоих backend (claude_code_backend.py, codex_backend.py) нет понятия 'retryable'. Вторичные факторы: handle_new (bot.py 541-577) не останавливает зависший запрос старой сессии; handle_stop (699-746) бьёт только по активной сессии, фоновую #9 убить нельзя."
+    },
+    {
+      "step_number": 6,
+      "stage": "phase_5_cause_chain",
+      "status": "completed",
+      "start_time": "2026-05-29T07:45:00Z",
+      "end_time": "2026-05-29T08:00:00Z",
+      "duration_seconds": 900,
+      "comment": "Цепочка (6 звеньев): пользователь видит старую #9 на 'Prompt is too long' с повторами параллельно с новыми сессиями -> кажется, что сообщение ушло не туда -> на деле #9 переполнилась и ушла в фоновый retry на ~11 мин -> retry слепо повторяет любой is_error -> 'Prompt is too long' постоянная (--resume грузит ту же переполненную историю) -> _retry_loop не классифицирует ошибку -> КОРЕНЬ: контракт ошибок backend бинарный, нет измерения retryable. ZOOM OUT: это архитектурный долг — тот же класс уже ловили 13-04, фикс был неполный. Каждая новая постоянная ошибка (rate limit, prompt too long, будущие) повторяет инцидент."
+    },
+    {
+      "step_number": 7,
+      "stage": "phase_6_verification",
+      "status": "completed",
+      "start_time": "2026-05-29T08:00:00Z",
+      "end_time": "2026-05-29T08:15:00Z",
+      "duration_seconds": 900,
+      "comment": "Корень объясняет ВСЕ симптомы: повтор 'Prompt is too long' (постоянная ошибка в retry), спам 'повтор N/10' (retry_callback), появление после /new (фоновый ~11-мин retry #9 параллельно с #10/#11), невозможность остановить (handle_stop бьёт только активную). Отвергнуты альтернативы: (1) баг маршрутизации chat_id->session_id — опровергнут логами, каждый скриншот ушёл в верную сессию; (2) гонка /new vs доставка (temp->real) — опровергнута, привязки чистые, /new #10 был ПОСЛЕ старта #9; (3) media_group потерял привязку — неприменимо, фото были одиночные, и callback резолвит chat_id в момент вызова. Корень подтверждён."
+    },
+    {
+      "step_number": 8,
+      "stage": "phase_6_5_solution_verification",
+      "status": "completed",
+      "start_time": "2026-05-29T08:15:00Z",
+      "end_time": "2026-05-29T08:35:00Z",
+      "duration_seconds": 1200,
+      "comment": "Рекомендации верифицированы по 5 критериям. ОДОБРЕНО: [ARCHITECTURE] принцип классификации retryable/permanent ошибок в architecture.md; [CODE] метод классификации в контракте backend + гард в _retry_loop/_send_message_backend_aware + понятное сообщение пользователю ('сессия переполнилась, начни /new'); [DOC] обновить process_manager_spec.md. ОДОБРЕНО С ЗАМЕЧАНИЯМИ: [CODE] /new останавливает зависший запрос старой сессии — есть blast radius (можно убить легитимно работающую сессию), вторично; [CODE] /stop может бить по фоновым сессиям — вторично. После основного фикса #9 сама бы прекратила повторы мгновенно."
+    },
+    {
+      "step_number": 9,
+      "stage": "phase_7_report_creation",
+      "status": "completed",
+      "start_time": "2026-05-29T08:35:00Z",
+      "end_time": "2026-05-29T08:56:00Z",
+      "duration_seconds": 1260,
+      "comment": "RCA-отчёт сохранён: dev/docs/logs/root-cause-reports/29-05_11-26_session-overflow-retry-spam.md. Дружелюбный разговорный стиль, без таблиц, каждая сущность кода пояснена. Phase 7.1.1: корень признан архитектурным — добавлена [ARCHITECTURE] рекомендация принципа классификации ошибок в architecture.md с точным местом вставки (после 'Привязка рабочей директории к запросу'). Приоритет рекомендаций ARCHITECTURE -> DOC -> CODE -> SKILL соблюдён."
+    },
+    {
+      "step_number": 10,
+      "stage": "phase_8_documentalist",
+      "status": "completed",
+      "start_time": "2026-05-29T08:56:00Z",
+      "end_time": "2026-05-29T09:05:00Z",
+      "duration_seconds": 540,
+      "comment": "CLI-подпроцесс документалиста (BUDGET_LIGHT, exit 0). summary.json прочитан. Сработал триггер session-report → создан dev/docs/session-reports/29-05/11-26_session-overflow-retry-spam-rca.md. Пропущены (с обоснованием): adr, claude-md-update-log, brd, docs-index, architecture-md (architecture.md в проекте отсутствует, принцип лишь рекомендован, не применён). КЛЮЧЕВАЯ НАХОДКА документалиста: связанный сессионный отчёт 29-05/03-36 о ТОМ ЖЕ корне (API Error 400 thinking blocks, ~8ч до инцидента) — подтверждает 3-4х рецидив. RCA-отчёт обновлён: хроника рецидива (13-04, 27-05, 29-05 03:36, 29-05 11:26), усилена верификация и список проверенных документов."
+    },
+    {
+      "step_number": 11,
+      "stage": "phase_9_session_report",
+      "status": "completed",
+      "start_time": "2026-05-29T09:05:00Z",
+      "end_time": "2026-05-29T09:08:00Z",
+      "duration_seconds": 180,
+      "comment": "Сессионный отчёт уже создан Фазой 8 (документалист сработал по триггеру session-report) и проверен на полноту: содержит Резюме, Изменённые файлы, Решения, Проблемы и решения, Контекст для следующей сессии, Выполненные команды. Отдельный /session-report подпроцесс НЕ запускался во избежание дубликата того же файла — требование пайплайна (сессионный отчёт существует) выполнено. Путь: dev/docs/session-reports/29-05/11-26_session-overflow-retry-spam-rca.md."
+    }
+  ]
+}

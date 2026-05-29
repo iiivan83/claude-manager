@@ -19,6 +19,11 @@ class SessionWatcherState:
     cli_process_is_currently_writing_session_file: bool = False
     last_delivered_idx: int = -1
     paused_at: float | None = None
+    # True, пока запрос обрабатывает send_to_claude_and_respond: обработчик сам
+    # доставит финальный ответ этой сессии. Watcher в это время не доставляет финал,
+    # даже если agent-silence watchdog снял паузу для показа промежуточного прогресса —
+    # иначе финал придёт дважды (от обработчика и от watcher).
+    handler_owns_final_delivery: bool = False
 
 
 @dataclass

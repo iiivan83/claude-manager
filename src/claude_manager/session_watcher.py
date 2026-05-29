@@ -42,6 +42,7 @@ __all__ = [
     "SessionWatcher",
     "SessionWatcherState",
     "_is_empty_response",
+    "clear_handler_owns_final_delivery",
     "coding_agent_backend",
     "config",
     "daily_session_registry",
@@ -127,6 +128,14 @@ async def resume_session(
 ) -> None:
     """Resume monitoring for one backend-owned session."""
     await _get_watcher(backend).resume_session(session_id)
+
+
+def clear_handler_owns_final_delivery(
+    session_id: str,
+    backend: BackendName | str = BackendName.CLAUDE,
+) -> None:
+    """Release the request handler's ownership of a session's final delivery."""
+    _get_watcher(backend).clear_handler_owns_final_delivery(session_id)
 
 
 async def reset_state() -> None:

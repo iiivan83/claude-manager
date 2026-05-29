@@ -27,6 +27,7 @@ from claude_manager.coding_agent_backend import (
     BackendName,
     BackendProtocolError,
     CodingAgentBackend,
+    PermanentErrorKind,
     SessionFileInfo,
     SessionFileSnapshot,
     SessionMessage,
@@ -71,6 +72,16 @@ CLAUDE_CODE_STOP_STRATEGY = StopStrategy(
         StopSignalStep(signal.SIGKILL, 0.0),
     )
 )
+
+# Подстроки финального result-события Claude (is_error=true), при которых
+# повтор бессмыслен: --resume каждый раз грузит то же самое состояние,
+# поэтому каждая из 10 попыток обречена падать снова. Источник строк —
+# реальные инциденты в логах бота (dev/docs/logs/root-cause-reports):
+#   29-05 "Prompt is too long"   → история сессии не помещается в модель
+#   13-04 "You've hit your limit" → исчерпан лимит запросов к Claude
+# Сравнение регистронезависимое — Claude присылает текст без гарантий капитализации.
+CLAUDE_CONTEXT_OVERFLOW_ERROR_MARKERS = ("prompt is too long",)
+CLAUDE_USAGE_LIMIT_ERROR_MARKERS = ("hit your limit",)
 
 
 def _resolve_claude_binary_path() -> str:
@@ -280,6 +291,26 @@ class ClaudeCodeBackend(CodingAgentBackend):
             return None
         error_text = event.get("result")
         return error_text if isinstance(error_text, str) and error_text else None
+
+    def classify_permanent_error(
+        self,
+        error_text: str | None,
+    ) -> PermanentErrorKind | None:
+        """Recognize Claude error texts that must not be retried."""
+        if not error_text:
+            return None
+        normalized_error_text = error_text.lower()
+        if any(
+            marker in normalized_error_text
+            for marker in CLAUDE_CONTEXT_OVERFLOW_ERROR_MARKERS
+        ):
+            return PermanentErrorKind.CONTEXT_OVERFLOW
+        if any(
+            marker in normalized_error_text
+            for marker in CLAUDE_USAGE_LIMIT_ERROR_MARKERS
+        ):
+            return PermanentErrorKind.USAGE_LIMIT
+        return None
 
     def read_terminal_status_from_event(
         self,

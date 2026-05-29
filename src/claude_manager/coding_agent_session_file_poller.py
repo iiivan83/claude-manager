@@ -272,6 +272,10 @@ class SessionWatcher:
             if pause_age < PAUSE_LEAK_SAFETY_TIMEOUT_SECONDS:
                 return
             previous.paused_at = None
+            # Пауза держится дольше safety-таймаута — обработчик, видимо, завис или
+            # упал, не сняв владение финалом. Снимаем владение, чтобы watcher мог
+            # доставить финал и сессия не осталась без ответа.
+            previous.handler_owns_final_delivery = False
             logger.warning(
                 "Пауза сессии %s (%s) превысила %d сек — автоматическое снятие",
                 session_id,
@@ -295,10 +299,17 @@ class SessionWatcher:
             return
 
         messages = snapshot.messages
+        # Финал «придерживается» (не доставляется watcher-ом) в двух случаях:
+        # 1) ход ещё активен — последнее сообщение дописывается;
+        # 2) обработчик запроса владеет финалом — он сам его доставит, иначе финал
+        #    придёт дважды, когда watchdog снял паузу для показа прогресса.
+        hold_final_message = (
+            snapshot.is_turn_active or previous.handler_owns_final_delivery
+        )
         candidate_indices = list(
             range(previous.last_delivered_idx + 1, len(messages))
         )
-        if snapshot.is_turn_active and candidate_indices:
+        if hold_final_message and candidate_indices:
             last_idx = len(messages) - 1
             candidate_indices = [
                 index for index in candidate_indices if index < last_idx
@@ -334,7 +345,7 @@ class SessionWatcher:
 
             for position, (_index, message) in enumerate(deliverable):
                 is_final = (
-                    not snapshot.is_turn_active
+                    not hold_final_message
                     and position == len(deliverable) - 1
                 )
                 if (
@@ -355,7 +366,7 @@ class SessionWatcher:
                     get_current_session,
                 )
 
-        if snapshot.is_turn_active and messages:
+        if hold_final_message and messages:
             new_last_delivered_idx = max(
                 previous.last_delivered_idx,
                 len(messages) - 2,
@@ -369,6 +380,7 @@ class SessionWatcher:
             cli_process_is_currently_writing_session_file=snapshot.is_turn_active,
             last_delivered_idx=new_last_delivered_idx,
             paused_at=previous.paused_at,
+            handler_owns_final_delivery=previous.handler_owns_final_delivery,
         )
         self._missing_files.pop(session_id, None)
 
@@ -544,11 +556,26 @@ class SessionWatcher:
     def pause_session(self, session_id: str) -> None:
         state = self._states.setdefault(session_id, SessionWatcherState())
         state.paused_at = time.monotonic()
+        # Паузу ставит только обработчик запроса (старт запроса и каждое progress-
+        # событие) — значит он же доставит финал. Помечаем владение, чтобы watcher
+        # не доставил финал повторно, если watchdog временно снимет паузу.
+        state.handler_owns_final_delivery = True
         logger.debug(
             "Watcher (%s): сессия %s на паузе",
             self.backend.name.value,
             session_id,
         )
+
+    def clear_handler_owns_final_delivery(self, session_id: str) -> None:
+        """Снимает владение финалом: обработчик запроса завершил доставку.
+
+        Вызывается из finally в send_to_claude_and_respond после resume_session.
+        После этого watcher снова доставляет финалы этой сессии (например, поздние
+        терминальные обновления или следующий ход).
+        """
+        state = self._states.get(session_id)
+        if state is not None:
+            state.handler_owns_final_delivery = False
 
     async def resume_session(self, session_id: str) -> None:
         state = self._states.get(session_id)
