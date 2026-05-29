@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -35,6 +35,8 @@ CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER = "<INSTRUCTIONS>"
 # Без ограничения большой проект (десятки сессий за lookback-окно) создаёт сотни
 # одновременных I/O-операций и упирается в файловые дескрипторы / thread pool.
 MAX_CONCURRENT_FILE_READS = 16
+UUID_V7_TIMESTAMP_HEX_LENGTH = 12
+MILLISECONDS_PER_SECOND = 1000
 
 
 async def _gather_optional_results_with_concurrency_limit(
@@ -153,6 +155,45 @@ def _list_all_rollout_files_blocking(sessions_root: str) -> list[str]:
             if file_name.startswith("rollout-") and file_name.endswith(".jsonl"):
                 rollout_file_paths.append(file_path)
     return rollout_file_paths
+
+
+def _candidate_paths_from_uuid_v7(sessions_root: str, session_id: str) -> list[str]:
+    """Return likely exact rollout paths encoded in a UUIDv7 session id."""
+    normalized_session_id = session_id.replace("-", "")
+    if len(normalized_session_id) < UUID_V7_TIMESTAMP_HEX_LENGTH:
+        return []
+    try:
+        timestamp = (
+            int(normalized_session_id[:UUID_V7_TIMESTAMP_HEX_LENGTH], 16)
+            / MILLISECONDS_PER_SECOND
+        )
+    except ValueError:
+        return []
+
+    return [
+        os.path.join(
+            sessions_root,
+            f"{candidate:%Y}",
+            f"{candidate:%m}",
+            f"{candidate:%d}",
+            f"rollout-{candidate:%Y-%m-%dT%H-%M-%S}-{session_id}.jsonl",
+        )
+        for candidate in (
+            datetime.fromtimestamp(timestamp),
+            datetime.fromtimestamp(timestamp, timezone.utc),
+        )
+    ]
+
+
+def _find_rollout_file_by_uuid_date_blocking(
+    sessions_root: str,
+    session_id: str,
+) -> str | None:
+    """Find a rollout file by checking likely UUIDv7 date directories first."""
+    for file_path in _candidate_paths_from_uuid_v7(sessions_root, session_id):
+        if os.path.isfile(file_path):
+            return file_path
+    return None
 
 
 def _sort_paths_by_mtime_descending(file_paths: list[str]) -> list[str]:
@@ -420,6 +461,19 @@ async def session_file_exists_for_project(
     """Return whether an exact Codex rollout belongs to one project."""
     if not await asyncio.to_thread(os.path.exists, sessions_root):
         return False
+    likely_file_path = await asyncio.to_thread(
+        _find_rollout_file_by_uuid_date_blocking,
+        sessions_root,
+        session_id,
+    )
+    if likely_file_path is not None:
+        meta_pair = await _read_project_meta_pair(likely_file_path, project_dir)
+        if meta_pair is None:
+            return False
+        payload = _payload_from_meta_record(meta_pair[1])
+        meta_session_id = payload.get("id")
+        return not isinstance(meta_session_id, str) or meta_session_id == session_id
+
     file_paths = await asyncio.to_thread(_list_all_rollout_files_blocking, sessions_root)
     for file_path in file_paths:
         if _extract_uuid_from_rollout_filename(file_path) != session_id:
