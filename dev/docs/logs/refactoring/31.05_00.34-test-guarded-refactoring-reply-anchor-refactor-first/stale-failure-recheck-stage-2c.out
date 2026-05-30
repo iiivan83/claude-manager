@@ -1,0 +1,25 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.13, pytest-9.0.3, pluggy-1.6.0 -- /home/ivan/claude-sandbox/claude_manager/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/ivan/claude-sandbox/claude_manager
+configfile: pyproject.toml
+plugins: anyio-4.13.0, asyncio-1.3.0, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=session, asyncio_default_test_loop_scope=session
+collecting ... collected 14 items
+
+tests/test_all_projects_monitor.py::test_poll_delivers_all_project_message_and_keeps_unread_snapshot PASSED [  7%]
+tests/test_bot.py::TestSendAllProjectsWatcherMessage::test_header_starts_with_project_and_session_command PASSED [ 14%]
+tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[response-True] PASSED [ 21%]
+tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[response-False] PASSED [ 28%]
+tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[watcher-True] PASSED [ 35%]
+tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[watcher-False] PASSED [ 42%]
+tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[all_projects-True] PASSED [ 50%]
+tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[all_projects-False] PASSED [ 57%]
+tests/test_telegram_response_delivery_behavior.py::test_silence_mode_suppresses_only_intermediate_delivery[response-False-0] PASSED [ 64%]
+tests/test_telegram_response_delivery_behavior.py::test_silence_mode_suppresses_only_intermediate_delivery[watcher-False-0] PASSED [ 71%]
+tests/test_telegram_response_delivery_behavior.py::test_silence_mode_suppresses_only_intermediate_delivery[all_projects-False-0] PASSED [ 78%]
+tests/test_telegram_response_delivery_behavior.py::test_silence_mode_suppresses_only_intermediate_delivery[response-True-1] PASSED [ 85%]
+tests/test_telegram_response_delivery_behavior.py::test_all_projects_watcher_header_includes_project_and_session_command[codex-True-\u0413\u043e\u0442\u043e\u0432\u043e-/3s12 budget \u26a1 Codex \u2705 \u0413\u043e\u0442\u043e\u0432\u043e] PASSED [ 92%]
+tests/test_telegram_response_delivery_behavior.py::test_all_projects_watcher_header_includes_project_and_session_command[claude-False-\u0414\u0443\u043c\u0430\u044e-/3s12 budget \U0001f916 Claude \u23f3 <i>\u0414\u0443\u043c\u0430\u044e</i>] PASSED [100%]
+
+============================== 14 passed in 0.27s ==============================

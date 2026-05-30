@@ -4,8 +4,8 @@
 отправка сообщения, обработка промежуточных обновлений (progress, retry),
 разблокировка watcher при тишине stdout (watchdog), обработка финального ответа.
 
-Зависимости от транспортного слоя (bot.py) разрешены через callback-функции:
-bot.py вызывает init_callbacks() при старте, передавая пары (модуль, имя_атрибута).
+Зависимости от Telegram-доставки разрешены через callback-функции:
+bot.py регистрирует delivery-модуль через пары (модуль, имя_атрибута).
 claude_interaction.py НЕ импортирует bot.py.
 """
 
@@ -18,13 +18,19 @@ from claude_manager import (
     config,
     daily_session_registry,
     process_manager,
+    reply_anchor_registry,
     session_manager,
     session_reader,
     session_watcher,
     unread_buffer,
 )
-from claude_manager.coding_agent_backend import BackendName, SessionUnreadState
+from claude_manager.coding_agent_backend import (
+    BackendName,
+    PermanentErrorKind,
+    SessionUnreadState,
+)
 from claude_manager.session_manager import ActiveSession
+from claude_manager.session_summary_generator import generate_session_summary
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +54,40 @@ MONITORING_MODE_MESSAGE = (
     "подключитесь к сессии — нажмите на номер сессии или отправьте /new"
 )
 
+# Максимум ожидания отдельного LLM-вызова, который делает короткое название сессии.
+SESSION_SUMMARY_TIMEOUT_SECONDS = 45
+
+# Человекочитаемые сообщения о постоянных ошибках backend (повтор бессмыслен).
+# Транспортный слой владеет текстом для пользователя — инфраструктура (process_manager)
+# только помечает результат kind'ом, но не знает про Telegram и формулировки.
+PERMANENT_ERROR_MESSAGES = {
+    PermanentErrorKind.CONTEXT_OVERFLOW: (
+        "Сессия переполнилась и больше не может принимать сообщения. "
+        "Начни новую через /new"
+    ),
+    PermanentErrorKind.USAGE_LIMIT: (
+        "Исчерпан лимит запросов к Claude — повтор не поможет. "
+        "Дождись обновления лимита и попробуй снова"
+    ),
+}
+
+
+def _build_permanent_error_message(
+    kind: PermanentErrorKind, display_name: str,
+) -> str:
+    """Человекочитаемое сообщение о постоянной ошибке backend."""
+    base_message = PERMANENT_ERROR_MESSAGES.get(kind)
+    if base_message is None:
+        return f"{display_name}: запрос нельзя повторить"
+    return f"{display_name}: {base_message}"
+
 
 # --- Callback-зависимости от транспортного слоя ---
 # Инициализируются через init_callbacks() при старте бота.
 # До вызова init_callbacks() функции, требующие отправки в Telegram, упадут с RuntimeError.
 #
-# Хранится пара (module, attr_name), а не ссылка на функцию — чтобы unittest.mock.patch
-# на модуле-источнике (bot.send_response) подхватывался при каждом вызове.
+# Хранится пара (module, attr_name), а не ссылка на функцию — чтобы mock.patch
+# на модуле-источнике доставки подхватывался при каждом вызове.
 
 # (module, "send_response") — async (chat_id, text, session_number, is_final, ...) -> None
 _send_response_ref: tuple | None = None
@@ -331,7 +364,10 @@ async def ensure_process_running(chat_id: int, session_id: str) -> bool:
 
 
 async def handle_claude_result(
-    chat_id: int, session_id: str, result: process_manager.SendResult,
+    chat_id: int,
+    session_id: str,
+    result: process_manager.SendResult,
+    reply_to_message_id: int | None = None,
 ) -> str:
     """Обрабатывает результат от Claude: регистрирует сессию и отправляет ответ."""
     # Используем актуальный session_id из результата — callback уже обновил привязки
@@ -345,27 +381,76 @@ async def handle_claude_result(
     )
 
     if result.is_error:
-        error_text = (
-            result.error_text
-            or result.text
-            or f"Неизвестная ошибка {display_name}"
-        )
+        if result.permanent_error_kind is not None:
+            message_text = _build_permanent_error_message(
+                result.permanent_error_kind, display_name,
+            )
+        else:
+            error_text = (
+                result.error_text
+                or result.text
+                or f"Неизвестная ошибка {display_name}"
+            )
+            message_text = f"Ошибка {display_name}: {error_text}"
         await _get_send_telegram_message()(
-            chat_id, f"Ошибка {display_name}: {error_text}", parse_mode=None,
+            chat_id, message_text, parse_mode=None,
         )
     else:
+        send_response_kwargs = {"is_final": True}
+        if reply_to_message_id is not None:
+            send_response_kwargs["reply_to_message_id"] = reply_to_message_id
         await _get_send_response()(
             chat_id,
             result.text,
             day_number,
             backend,
-            is_final=True,
+            **send_response_kwargs,
         )
 
     return actual_session_id
 
 
-async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
+async def _generate_and_store_session_summary(
+    session_id: str,
+    backend: BackendName,
+    user_prompt: str,
+) -> None:
+    """Generates and stores a short summary for a newly-created session."""
+    try:
+        summary = await asyncio.wait_for(
+            generate_session_summary(user_prompt, backend),
+            timeout=SESSION_SUMMARY_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Генерация summary сессии %s (%s) превысила %d секунд",
+            session_id,
+            backend.value,
+            SESSION_SUMMARY_TIMEOUT_SECONDS,
+        )
+        return
+    except Exception:
+        logger.warning(
+            "Генерация summary сессии %s (%s) упала",
+            session_id,
+            backend.value,
+            exc_info=True,
+        )
+        return
+
+    if summary:
+        await daily_session_registry.update_session_summary(
+            session_id,
+            backend,
+            summary,
+        )
+
+
+async def send_to_claude_and_respond(
+    chat_id: int,
+    text: str,
+    reply_to_message_id: int | None = None,
+) -> None:
     """Отправляет сообщение в Claude и обрабатывает ответ."""
     original_project_path = config.WORKING_DIR
     active_session = session_manager.get_active_session(chat_id)
@@ -381,6 +466,7 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
 
     session_id = active_session.session_id
     backend = active_session.backend
+    should_generate_session_summary = session_id.startswith("_new_")
 
     session_watcher.pause_session(session_id, backend)
     start_agent_silence_watchdog(session_id, backend)
@@ -394,12 +480,20 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
             session_id,
             backend,
         )
+        send_response_kwargs = {"is_final": False}
+        anchor_message_id = reply_anchor_registry.get_anchor(
+            original_project_path,
+            backend,
+            session_id,
+        )
+        if anchor_message_id is not None:
+            send_response_kwargs["reply_to_message_id"] = anchor_message_id
         await _get_send_response()(
             chat_id,
             progress_text,
             day_number,
             backend,
-            is_final=False,
+            **send_response_kwargs,
         )
 
     async def _on_retry(session_id: str, attempt: int, max_attempts: int, error_reason: str) -> None:
@@ -431,6 +525,12 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
                 callback_backend.value,
             )
             return
+        reply_anchor_registry.move_anchor(
+            original_project_path,
+            backend,
+            old_id,
+            new_id,
+        )
         if config.WORKING_DIR != original_project_path:
             # Проект сменился — не трогаем watcher и manager нового проекта,
             # но переносим watchdog и обновляем session_id для finally-cleanup
@@ -447,6 +547,13 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
         session_id = new_id
 
     try:
+        if reply_to_message_id is not None:
+            reply_anchor_registry.set_anchor(
+                original_project_path,
+                backend,
+                session_id,
+                reply_to_message_id,
+            )
         result = await process_manager.send_message(
             session_id, text,
             progress_callback=_on_progress, retry_callback=_on_retry,
@@ -460,21 +567,37 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
                 "подавляем доставку: session_id=%s",
                 original_project_path, config.WORKING_DIR, session_id,
             )
-        elif result.is_error or _chat_is_not_viewing_all_projects(chat_id):
-            session_id = await handle_claude_result(chat_id, session_id, result)
         else:
-            session_id = result.session_id
-            _save_last_delivered_message_index_for_later_project_view(
-                session_id,
-                backend,
-            )
-            logger.info(
-                "Чат %d уже в режиме all, обычная доставка подавлена: "
-                "session_id=%s, backend=%s",
-                chat_id,
-                session_id,
-                backend.value,
-            )
+            if result.is_error or _chat_is_not_viewing_all_projects(chat_id):
+                session_id = await handle_claude_result(
+                    chat_id,
+                    session_id,
+                    result,
+                    reply_to_message_id=reply_anchor_registry.get_anchor(
+                        original_project_path,
+                        backend,
+                        result.session_id,
+                    ),
+                )
+            else:
+                session_id = result.session_id
+                _save_last_delivered_message_index_for_later_project_view(
+                    session_id,
+                    backend,
+                )
+                logger.info(
+                    "Чат %d уже в режиме all, обычная доставка подавлена: "
+                    "session_id=%s, backend=%s",
+                    chat_id,
+                    session_id,
+                    backend.value,
+                )
+            if should_generate_session_summary and not result.is_error:
+                await _generate_and_store_session_summary(
+                    session_id,
+                    backend,
+                    text,
+                )
     except process_manager.ProcessStoppedError:
         logger.info("Запрос прерван командой /stop: session_id=%s", session_id)
     except process_manager.ProcessNotFoundError:
@@ -483,6 +606,7 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
             parse_mode=None,
         )
     except process_manager.ProcessManagerError as error:
+        reply_anchor_registry.clear_anchor(original_project_path, backend, session_id)
         logger.warning(
             "Процесс занят (chat_id=%d): %s", chat_id, error,
         )
@@ -504,3 +628,4 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
         cancel_agent_silence_watchdog(session_id, backend)
         if config.WORKING_DIR == original_project_path:
             await session_watcher.resume_session(session_id, backend)
+            session_watcher.clear_handler_owns_final_delivery(session_id, backend)

@@ -1,0 +1,82 @@
+{
+  "status": "completed",
+  "stage_id": 1,
+  "stage_name": "extract-telegram-response-delivery",
+  "files_modified": [
+    "src/claude_manager/bot.py",
+    "src/claude_manager/claude_interaction.py",
+    "tests/test_bot.py",
+    "tests/test_claude_interaction.py",
+    "tests/test_telegram_response_delivery_behavior.py"
+  ],
+  "files_created": [
+    "src/claude_manager/telegram_response_delivery.py"
+  ],
+  "files_deleted": [],
+  "imports_updated": [
+    "src/claude_manager/bot.py: imports telegram_response_delivery and no longer imports message_splitter for response delivery",
+    "tests/test_bot.py: delivery helpers and patch paths now point to claude_manager.telegram_response_delivery",
+    "tests/test_claude_interaction.py: callback fixture and send_response patches now use claude_manager.telegram_response_delivery",
+    "tests/test_telegram_response_delivery_behavior.py: focused tests import telegram_response_delivery directly"
+  ],
+  "summary": "Moved Telegram response, watcher delivery, headers, file-marker processing, silence suppression, and current-session checks out of bot.py into telegram_response_delivery.py without changing behavior.",
+  "validation": [
+    {
+      "command": ".venv/bin/python -m py_compile src/claude_manager/bot.py src/claude_manager/telegram_response_delivery.py src/claude_manager/claude_interaction.py tests/test_bot.py tests/test_claude_interaction.py tests/test_telegram_response_delivery_behavior.py",
+      "status": "passed"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_telegram_response_delivery_behavior.py -v",
+      "status": "passed",
+      "result": "19 passed"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_bot.py tests/test_claude_interaction.py tests/test_telegram_response_delivery_behavior.py -v",
+      "status": "passed",
+      "result": "172 passed"
+    },
+    {
+      "command": "python -m pytest tests/ -v",
+      "status": "failed_before_pytest",
+      "reason": "python command is not available in this shell"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/ -v",
+      "status": "failed_unrelated",
+      "result": "1061 passed, 1 failed, 4 skipped",
+      "reason": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract failed because real Claude CLI returned 401 Invalid authentication credentials"
+    }
+  ],
+  "size_gate": {
+    "src/claude_manager/bot.py": {
+      "before_lines": 1459,
+      "after_lines": 1279,
+      "before_public_functions": 21,
+      "after_public_functions": 18,
+      "status": "still_over_500_and_god_module_but_reduced"
+    },
+    "src/claude_manager/telegram_response_delivery.py": {
+      "after_lines": 253,
+      "after_public_functions": 4,
+      "status": "under_thresholds"
+    },
+    "src/claude_manager/claude_interaction.py": {
+      "after_lines": 543,
+      "after_public_functions": 11,
+      "status": "unchanged_size_but_still_over_500_and_god_module"
+    },
+    "tests/test_bot.py": {
+      "after_lines": 2660,
+      "status": "mechanical_import_and_patch_updates_without_growth"
+    },
+    "tests/test_claude_interaction.py": {
+      "after_lines": 1749,
+      "status": "mechanical_callback_and_patch_updates_without_growth"
+    },
+    "tests/test_telegram_response_delivery_behavior.py": {
+      "after_lines": 278,
+      "after_public_test_functions": 7,
+      "status": "mechanical_import_update_without_growth"
+    }
+  }
+}

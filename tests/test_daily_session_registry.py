@@ -149,6 +149,7 @@ class TestRegisterSession:
         assert saved_data[FAKE_TODAY]["1"] == {
             "session_id": "abc123",
             "backend": "claude",
+            "summary": "",
         }
 
 
@@ -195,6 +196,25 @@ class TestUpdateSessionId:
         assert await lookup_by_number(1) == DailySessionEntry(
             "real-codex-id", BackendName.CODEX
         )
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
+    async def test_update_session_id_preserves_summary(
+        self, _mock_today: object
+    ) -> None:
+        """Replacing a temp id keeps the generated session summary."""
+        daily_session_registry._registry[FAKE_TODAY] = {
+            "1": {
+                "session_id": "_new_codex",
+                "backend": "codex",
+                "summary": "Загрузка отзывов за период",
+            }
+        }
+
+        await update_session_id("_new_codex", "real-codex-id")
+
+        entry = await lookup_by_number(1)
+        assert getattr(entry, "summary", None) == "Загрузка отзывов за период"
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "_get_today_key", return_value=FAKE_TODAY)
@@ -322,7 +342,34 @@ class TestLoadRegistry:
         assert saved_data[FAKE_TODAY]["1"] == {
             "session_id": "old-session",
             "backend": "claude",
+            "summary": "",
         }
+
+    @pytest.mark.asyncio()
+    async def test_load_registry_reads_summary_field(self, tmp_path: Path) -> None:
+        """Existing registry summary values are loaded into DailySessionEntry."""
+        registry_file = tmp_path / REGISTRY_FILENAME
+        registry_file.write_text(
+            json.dumps({
+                FAKE_TODAY: {
+                    "1": {
+                        "session_id": "review-loader",
+                        "backend": "codex",
+                        "summary": "Загрузка отзывов без фотографий",
+                    }
+                }
+            }),
+            "utf-8",
+        )
+
+        with patch.object(
+            daily_session_registry, "_get_today_key", return_value=FAKE_TODAY
+        ), patch.object(
+            daily_session_registry, "_remove_orphan_entries", return_value=0
+        ), patch("claude_manager.config.WORKING_DIR", str(tmp_path)):
+            await load_registry()
+            entry = await lookup_by_number(1)
+            assert getattr(entry, "summary", None) == "Загрузка отзывов без фотографий"
 
     @pytest.mark.asyncio()
     async def test_get_backend_for_session_searches_all_days(self) -> None:
@@ -777,6 +824,51 @@ class TestRemoveOrphanEntries:
 
         assert removed == 0
         assert daily_session_registry._registry[FAKE_TODAY]["1"] == "_new_0001"
+
+    @pytest.mark.asyncio()
+    async def test_orphan_cleanup_checks_files_concurrently(
+        self, tmp_path: Path
+    ) -> None:
+        """Проверка файлов сессий идёт параллельно — иначе переключение проектов тормозит."""
+        entry_count = 8
+
+        in_flight_count = 0
+        peak_in_flight_count = 0
+
+        async def tracking_session_file_exists(
+            session_id: str, project_dir: str
+        ) -> bool:
+            nonlocal in_flight_count, peak_in_flight_count
+            in_flight_count += 1
+            peak_in_flight_count = max(peak_in_flight_count, in_flight_count)
+            try:
+                await asyncio.sleep(0.01)
+                return True
+            finally:
+                in_flight_count -= 1
+
+        backend = AsyncMock()
+        backend.session_file_exists_for_project.side_effect = tracking_session_file_exists
+
+        daily_session_registry._registry = {
+            FAKE_TODAY: {
+                str(index + 1): DailySessionEntry(
+                    f"session-{index}", BackendName.CLAUDE,
+                )
+                for index in range(entry_count)
+            }
+        }
+
+        with patch("claude_manager.config.WORKING_DIR", str(tmp_path)), patch(
+            "claude_manager.daily_session_registry.get_backend",
+            return_value=backend,
+        ):
+            await _remove_orphan_entries()
+
+        assert peak_in_flight_count > 1, (
+            "_remove_orphan_entries проверяет файлы последовательно — "
+            f"переключение проектов тормозит (peak concurrency = {peak_in_flight_count})"
+        )
 
     @pytest.mark.asyncio()
     async def test_load_registry_removes_orphans_and_saves(

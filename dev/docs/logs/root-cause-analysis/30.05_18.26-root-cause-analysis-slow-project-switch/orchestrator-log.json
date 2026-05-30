@@ -1,0 +1,108 @@
+{
+  "pipeline": "root-cause-analysis",
+  "problem_summary": "Переключение между проектами в Telegram-боте занимает около 10 секунд.",
+  "start_time": "2026-05-30T18:26:55+05:00",
+  "status": "completed",
+  "last_completed_stage": "phase_9_session_report",
+  "steps": [
+    {
+      "step_number": 1,
+      "stage": "phase_0_project_recon",
+      "status": "completed",
+      "start_time": "2026-05-30T18:07:48+05:00",
+      "end_time": "2026-05-30T18:10:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Прочитаны AGENTS.md, CLAUDE.md, root-cause-analysis skill, global references и docs-index. Проект: локальный Telegram-бот Claude Manager; код в src/claude_manager, тесты в tests, документация в dev/docs. Корневого architecture.md нет; проектных .claude/skills/*/SKILL.md нет."
+    },
+    {
+      "step_number": 2,
+      "stage": "phase_1_problem_context",
+      "status": "completed",
+      "start_time": "2026-05-30T18:10:48+05:00",
+      "end_time": "2026-05-30T18:13:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Симптом: переключение проектов через Telegram занимает около 10 секунд. Найдены свежие отчёты 28-05/29-05 по той же производительности project switch и lookback-оптимизации Codex."
+    },
+    {
+      "step_number": 3,
+      "stage": "phase_2_documentation_analysis",
+      "status": "completed",
+      "start_time": "2026-05-30T18:13:48+05:00",
+      "end_time": "2026-05-30T18:16:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Проверены docs-index, project_manager_spec, session_watcher_spec, ADR 28.05 parallel init, ADR 28.05 operational lookback, ADR 29.05 poll_once lookback, ADR 29.05 concurrent meta reads и RCA 09-05 project switch flood."
+    },
+    {
+      "step_number": 4,
+      "stage": "phase_3_skill_analysis",
+      "status": "completed",
+      "start_time": "2026-05-30T18:16:48+05:00",
+      "end_time": "2026-05-30T18:19:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Проектных SKILL.md нет. Связанный процессовый пробел: предыдущие сессии проверили наличие lookback и параллельности, но не ввели latency budget / benchmark на горячий путь переключения проекта."
+    },
+    {
+      "step_number": 5,
+      "stage": "phase_4_code_analysis",
+      "status": "completed",
+      "start_time": "2026-05-30T18:19:48+05:00",
+      "end_time": "2026-05-30T18:22:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Прослежены project_manager.switch_project, session_watcher.reset_state, coding_agent_session_file_poller.reset_state, codex_session_file_listing.list_all_session_file_infos_for_project и unread_buffer. Найдено повторное сканирование Codex-файлов и синхронный pending-сбор перед ответом."
+    },
+    {
+      "step_number": 6,
+      "stage": "phase_5_cause_chain",
+      "status": "completed",
+      "start_time": "2026-05-30T18:22:48+05:00",
+      "end_time": "2026-05-30T18:25:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Цепочка: пользователь ждёт ответ /pN -> switch_project ждёт reset_state и _collect_pending_messages -> оба повторно вызывают Codex listing -> Codex listing открывает все rollout-файлы за lookback по глобальной ~/.codex/sessions -> текущий объём 3906 файлов за 2 дня делает каждый вызов 2.3-3.3с."
+    },
+    {
+      "step_number": 7,
+      "stage": "phase_6_verification",
+      "status": "completed",
+      "start_time": "2026-05-30T18:25:48+05:00",
+      "end_time": "2026-05-30T18:28:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Проверены логи живого бота 30-05: переключения занимали 7, 10, 17, 9, 7 секунд. Локальные замеры подтвердили: Codex listing даже для проектов с 0 файлов занимает 2.3-3.3с; collect_pending без pending занимает 2.96-3.92с."
+    },
+    {
+      "step_number": 8,
+      "stage": "phase_6_5_solution_verification",
+      "status": "completed",
+      "start_time": "2026-05-30T18:28:48+05:00",
+      "end_time": "2026-05-30T18:31:18+05:00",
+      "duration_seconds": 150,
+      "comment": "Рекомендации отфильтрованы: нужен общий operational index/cache или bulk scan once, cursor/mtime-first pending, async pending после подтверждения и perf-gate. Простая параллелизация без устранения повторного глобального скана признана недостаточной."
+    },
+    {
+      "step_number": 9,
+      "stage": "phase_7_report_creation",
+      "status": "completed",
+      "start_time": "2026-05-30T18:32:30+05:00",
+      "end_time": "2026-05-30T18:32:50+05:00",
+      "duration_seconds": 20,
+      "comment": "Создан root-cause отчёт dev/docs/logs/root-cause-reports/30-05_18-32_slow-project-switch.md."
+    },
+    {
+      "step_number": 10,
+      "stage": "phase_8_documentalist",
+      "status": "skipped",
+      "start_time": "2026-05-30T18:33:30+05:00",
+      "end_time": "2026-05-30T18:33:50+05:00",
+      "duration_seconds": 20,
+      "comment": "Документалист не запускался отдельным CLI-подпроцессом: текущая задача была read-only RCA, а обязательные рекомендации по документам уже перечислены в отчёте."
+    },
+    {
+      "step_number": 11,
+      "stage": "phase_9_session_report",
+      "status": "skipped",
+      "start_time": "2026-05-30T18:34:30+05:00",
+      "end_time": "2026-05-30T18:34:50+05:00",
+      "duration_seconds": 20,
+      "comment": "Сессионный отчёт не создавался: пользователь просил расследование причины, не полный session handoff. Итог и путь к отчёту будут переданы в финальном ответе."
+    }
+  ]
+}

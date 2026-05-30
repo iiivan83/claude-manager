@@ -19,11 +19,7 @@ from claude_manager.coding_agent_backend import (
 )
 from claude_manager.daily_session_registry import DailySessionEntry
 from claude_manager.session_manager import ActiveSession
-from claude_manager.session_watcher import (
-    _extract_assistant_messages,
-    _extract_message_text,
-    _is_empty_response,
-)
+from claude_manager.session_watcher import _is_empty_response
 
 
 TEST_CHAT_ID = 12345
@@ -38,6 +34,7 @@ class FakeBackend(CodingAgentBackend):
         self.files: list[SessionFileInfo] = []
         self.snapshots: dict[str, SessionFileSnapshot] = {}
         self.list_calls: list[str] = []
+        self.list_lookback_history: list[int | None] = []
         self.snapshot_calls: list[str] = []
 
     @property
@@ -91,8 +88,10 @@ class FakeBackend(CodingAgentBackend):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
         self.list_calls.append(project_dir)
+        self.list_lookback_history.append(lookback_days)
         return list(self.files)
 
     async def session_file_exists_for_project(
@@ -182,35 +181,8 @@ def _reset_watcher_state() -> None:
     session_watcher._get_current_session = None
 
 
-class TestLegacyExtractionHelpers:
-    """Small compatibility checks for raw Claude-message helper functions."""
-
-    def test_extract_text_from_string_content(self) -> None:
-        message = {"type": "assistant", "message": {"content": "Привет"}}
-
-        assert _extract_message_text(message) == "Привет"
-
-    def test_extract_text_from_list_content(self) -> None:
-        message = {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "text", "text": "Первая"},
-                    {"type": "text", "text": "Вторая"},
-                ],
-            },
-        }
-
-        assert _extract_message_text(message) == "Первая Вторая"
-
-    def test_extract_assistant_messages_skips_seen_items(self) -> None:
-        messages = [
-            {"type": "user", "message": {"content": "Q1"}},
-            {"type": "assistant", "message": {"content": "A1"}},
-            {"type": "assistant", "message": {"content": "A2"}},
-        ]
-
-        assert _extract_assistant_messages(messages, already_seen_count=2) == ["A2"]
+class TestEmptyResponseDetection:
+    """Verifies the deliverability filter rejects empty and no-response markers."""
 
     def test_empty_response_markers(self) -> None:
         assert _is_empty_response("") is True
@@ -403,6 +375,40 @@ class TestPollingThroughBackendContract:
 
         assert delivered == ["First"]
 
+    @pytest.mark.asyncio
+    async def test_poll_once_requests_operational_lookback_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """poll_once must scope the backend listing to the operational lookback window.
+
+        Без этого ограничения poll_once видит все codex-сессии за всё время через
+        полный скан ~/.codex/sessions. Сессии за пределами baseline (reset_state с
+        lookback) попадают в poll как «никогда не виденные», last_delivered_idx=-1,
+        и вся их история выливается в Telegram (cold-start flood).
+        """
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CODEX)
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.poll_once(AsyncMock(), AsyncMock(return_value=None))
+
+        assert backend.list_lookback_history, (
+            "poll_once не вызвал list_all_session_files_for_project"
+        )
+        assert (
+            backend.list_lookback_history[-1]
+            == session_watcher.config.OPERATIONAL_SESSION_LOOKBACK_DAYS
+        ), (
+            "poll_once должен ограничивать листинг сессий operational lookback окном, "
+            f"но передал lookback_days={backend.list_lookback_history[-1]}"
+        )
+
 
 class TestBufferAndHold:
     @pytest.mark.asyncio
@@ -562,3 +568,271 @@ class TestResetState:
         assert watcher._states["stale-session"].raw_count == 4
         assert watcher._states["stale-session"].last_delivered_idx == 0
         assert "stale-session" not in watcher._missing_files
+
+    @pytest.mark.asyncio
+    async def test_reset_state_reads_session_snapshots_concurrently(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reset_state должен читать снапшоты сессий параллельно, иначе переключение проекта тормозит."""
+        import asyncio as asyncio_module
+
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        session_count = 8
+        for index in range(session_count):
+            session_id = f"session-{index}"
+            backend.files.append(_file(session_id))
+            backend.snapshots[f"/tmp/{session_id}.jsonl"] = _snapshot(
+                f"Old {index}",
+                raw_count=index + 1,
+            )
+
+        in_flight_count = 0
+        peak_in_flight_count = 0
+        original_read = backend.read_session_file_snapshot
+
+        async def tracking_read(file_path: str) -> SessionFileSnapshot:
+            nonlocal in_flight_count, peak_in_flight_count
+            in_flight_count += 1
+            peak_in_flight_count = max(peak_in_flight_count, in_flight_count)
+            try:
+                await asyncio_module.sleep(0.01)
+                return await original_read(file_path)
+            finally:
+                in_flight_count -= 1
+
+        backend.read_session_file_snapshot = tracking_read  # type: ignore[assignment]
+
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.reset_state()
+
+        assert len(watcher._states) == session_count
+        assert peak_in_flight_count > 1, (
+            "reset_state читает файлы последовательно — переключение проектов будет тормозить "
+            f"при большом числе сессий (peak concurrency = {peak_in_flight_count})"
+        )
+
+    async def test_reset_state_requests_operational_lookback_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """reset_state must scope the backend listing to the operational lookback window.
+
+        Иначе при переключении проекта watcher сканирует всю историю Codex (десятки тысяч
+        файлов), которая полностью не имеет отношения к текущему проекту.
+        """
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        watcher = session_watcher.SessionWatcher(backend)
+
+        with patch.object(
+            session_watcher.daily_session_registry,
+            "get_all_today_sessions",
+            new=AsyncMock(return_value={}),
+        ):
+            await watcher.reset_state()
+
+        assert backend.list_lookback_history, (
+            "reset_state не вызвал list_all_session_files_for_project"
+        )
+        assert (
+            backend.list_lookback_history[-1]
+            == session_watcher.config.OPERATIONAL_SESSION_LOOKBACK_DAYS
+        ), (
+            "reset_state должен ограничивать листинг сессий operational lookback окном, "
+            f"но передал lookback_days={backend.list_lookback_history[-1]}"
+        )
+
+
+class TestHandlerOwnedFinalNotDuplicated:
+    """Watcher не должен доставлять финал сессии, которую обрабатывает обработчик запроса.
+
+    Сценарий дубликата: обработчик берёт сессию на паузу и сам доставит финал. Если
+    stdout молчит дольше таймаута, agent-silence watchdog снимает паузу, чтобы показать
+    промежуточный прогресс. Когда после этого приходит финал, watcher доставляет его как
+    is_final=True — и обработчик тоже доставляет его. Пользователь получает финал дважды.
+    В режиме тишины это особенно заметно: промежуточные подавлены, виден только дубль финала.
+    """
+
+    @pytest.mark.asyncio
+    async def test_watchdog_resume_does_not_let_watcher_deliver_handler_final(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1")]
+        # Снимок на момент срабатывания watchdog: ход активен, один промежуточный блок.
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "thinking...",
+            raw_count=1,
+            is_turn_active=True,
+        )
+        callback = AsyncMock()
+        get_current_session = AsyncMock(return_value=None)
+        watcher = session_watcher.SessionWatcher(backend)
+
+        # Обработчик берёт сессию на паузу (старт send_to_claude_and_respond).
+        watcher.pause_session("session-1")
+        # watchdog снимает паузу после таймаута тишины, чтобы показать прогресс.
+        await watcher.resume_session("session-1")
+
+        # Ход завершился: появился финал, который доставит сам обработчик.
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "thinking...",
+            "FINAL ANSWER",
+            raw_count=2,
+            is_turn_active=False,
+        )
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=5),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, get_current_session)
+
+        final_deliveries = [
+            call for call in callback.await_args_list if call.args[6] is True
+        ]
+        assert not final_deliveries, (
+            "watcher доставил финал сессии, которой владеет обработчик запроса — "
+            "финальный ответ придёт дважды (от обработчика и от watcher)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_handler_owned_session_still_delivers_intermediate_progress(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Даже когда финал принадлежит обработчику, watchdog-resume watcher должен
+        показывать промежуточный прогресс — иначе теряется смысл watchdog."""
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1")]
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "chunk 1",
+            raw_count=1,
+            is_turn_active=True,
+        )
+        callback = AsyncMock()
+        watcher = session_watcher.SessionWatcher(backend)
+        watcher.pause_session("session-1")
+        await watcher.resume_session("session-1")
+
+        # Новые промежуточные блоки, ход ещё активен (финала пока нет).
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "chunk 1",
+            "chunk 2",
+            "chunk 3",
+            raw_count=3,
+            is_turn_active=True,
+        )
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=9),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
+
+        # chunk 2 доставлен как промежуточный; chunk 3 удержан (последний при активном ходе).
+        callback.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "session-1",
+            BackendName.CLAUDE,
+            9,
+            "chunk 2",
+            False,
+            False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_after_clear_ownership_watcher_delivers_final_again(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """После снятия владения (обработчик завершил доставку) watcher снова доставляет
+        финал — например, поздние терминальные обновления или следующий ход."""
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        backend = FakeBackend(BackendName.CLAUDE)
+        backend.files = [_file("session-1")]
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "earlier final",
+            raw_count=1,
+            is_turn_active=True,
+        )
+        callback = AsyncMock()
+        watcher = session_watcher.SessionWatcher(backend)
+        watcher.pause_session("session-1")
+        # Обработчик завершает: finally вызывает resume_session, затем снятие владения.
+        await watcher.resume_session("session-1")
+        watcher.clear_handler_owns_final_delivery("session-1")
+
+        # Появляется новый финал уже без владельца-обработчика.
+        backend.snapshots["/tmp/session-1.jsonl"] = _snapshot(
+            "earlier final",
+            "new terminal final",
+            raw_count=2,
+            is_turn_active=False,
+        )
+
+        with (
+            patch.object(
+                session_watcher.daily_session_registry,
+                "get_all_today_sessions",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(
+                session_watcher.daily_session_registry,
+                "register_session",
+                new=AsyncMock(return_value=11),
+            ),
+            patch.object(
+                session_watcher.session_manager,
+                "find_chat_by_session_id",
+                new=Mock(return_value=TEST_CHAT_ID),
+            ),
+        ):
+            await watcher.poll_once(callback, AsyncMock(return_value=None))
+
+        callback.assert_awaited_once_with(
+            TEST_CHAT_ID,
+            "session-1",
+            BackendName.CLAUDE,
+            11,
+            "new terminal final",
+            False,
+            True,
+        )

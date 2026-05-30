@@ -22,7 +22,8 @@
   - [changelog/22.04_13.57-edeadlk-retry-project-switch.md](changelog/22.04_13.57-edeadlk-retry-project-switch.md) — 22.04.2026: retry OSError (EDEADLK) при загрузке состояния, 5×1 сек с fallback
 - **claude-md-updates/** — лог изменений CLAUDE.md
   - [claude-md-updates/10.04_22.19-file-delivery-rule.md](claude-md-updates/10.04_22.19-file-delivery-rule.md) — 10.04.2026: глобальное правило File Delivery Rule в `~/.claude/CLAUDE.md` — маркеры `[SEND_FILE:path]` для доставки файлов через бот
-  - [claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md](claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md) — 03.05.2026: миграция venv и скрипта запуска из TCC-зоны Desktop — новые принципы изоляции, обновлённые пути
+  - [claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md](claude-md-updates/03.05_10.58-venv-launchd-tcc-migration.md) — 03.05.2026: миграция venv и скрипта запуска из TCC-зоны Desktop — новые принципы изоляции, обновлённые пути (теперь устарело — см. запись от 28.05.2026 ниже про обратную миграцию на Linux)
+  - [claude-md-updates/28.05_19.45-session-change-documenter.md](claude-md-updates/28.05_19.45-session-change-documenter.md) — 28.05.2026: миграция инфраструктуры с macOS на Linux — удалены принципы TCC-изоляции venv и скрипта, retry-обёртка для launchd, буллет про EDEADLK; переписаны принципы verify-before-and-after и запрета самоперезапуска под systemctl; обновлены команды разработки, структура проекта, ОС-линия
 
 ## BRD и пользовательские пути
 
@@ -36,9 +37,9 @@
 
 ## Справочники и руководства (корневой уровень dev/docs/)
 
-- [deployment-guide.md](deployment-guide.md) — пошаговая инструкция по развёртыванию бота: виртуальное окружение, .env, LaunchAgent, логи
+- [deployment-guide.md](deployment-guide.md) — пошаговая инструкция по развёртыванию бота под Linux: виртуальное окружение, .env, systemd user service, логи
 - [bot-handoff-package-guide.md](bot-handoff-package-guide.md) — инструкция для передачи бота другому пользователю: что входит в архив, какие личные данные исключаются, как запустить и где искать код для исправлений
-- [bot-launch-infrastructure.md](bot-launch-infrastructure.md) — карта всех компонентов запуска бота: что где лежит, цепочка launchd → скрипт → Python, почему venv и скрипт вне Desktop, диагностика TCC/provenance проблем
+- [bot-launch-infrastructure.md](bot-launch-infrastructure.md) — карта всех компонентов запуска бота под Linux: что где лежит, systemd user service, цепочка ExecStart → entry point → Python, /restart через отвязанный subprocess, диагностика через journalctl
 - [claude-cli-stream-json-protocol.md](claude-cli-stream-json-protocol.md) — справочник протокола `stream-json`: форматы сообщений, типы событий, известные баги Claude CLI
 - `router-configuration.md` — локальная конфигурация MikroTik L009UiGS: сетевая топология, firewall, DNS, WireGuard VPN, контентная фильтрация, список устройств. Не включается в handoff-архивы для передачи бота другому пользователю
 - [review-checklists.md](review-checklists.md) — чеклисты для ревью кода (качество, безопасность, архитектура, соответствие BRD)
@@ -91,8 +92,11 @@
 - **session-reports/09-04/** — **session-reports/14-04/** — файловая доставка, session_id callback, гонки при переключении проектов, E2E тесты
 - **session-reports/19-04/** — **session-reports/22-04/** — root-cause исправления: ConnectionError, прогресс text-блоков, рестарт бота, watchdog тишины Agent, EDEADLK retry
 - **session-reports/10-05/** — диагностика и исправление бага pending-доставки при возврате в проект: `silence mode` скрывал промежуточные сообщения, а доставка очищала snapshot непрочитанных
-- **session-reports/13-05/** — исправление preview Codex-сессий в `/sessions`: фильтрация bootstrap-блока `AGENTS.md instructions`, извлечение подписи файловой задачи как исходного запроса пользователя, регрессионные тесты, полный pytest-прогон
+- **session-reports/13-05/** — исправление preview Codex-сессий в `/sessions`: фильтрация bootstrap-блока `AGENTS.md instructions`, извлечение подписи файловой задачи как исходного запроса пользователя, регрессионные тесты, полный pytest-прогон; отчёт о баге `/restart` при активных дочерних Codex-задачах
 - **session-reports/14-05/** — реализация и стабилизация глобального режима `/all`: мониторинг всех проектов, кликабельные команды `/3s12`, сохранение pending-доставки и восстановление all-mode после неудачного переключения проекта
+- **session-reports/15-05/** — handoff по ветке `codex-support-spec-implementation-cycle`: состояние уже влитой Codex-support работы, незакоммиченные summary `/sessions` и оптимизация `/all`, план стабилизации и отдельного фикса `/restart`
+- **session-reports/30-05/** — handoff по RCA медленного переключения проектов: причина 7-17 секунд, решение через 4-дневный Codex session index, ограничения по pending и план продолжения; handoff по дизайну reply-якорей для Telegram-ответов, watcher-сообщений, `/all`, `/stop`, переключения проектов и сессий
+- **session-reports/31-05/** — handoff по текущему состоянию подготовки reply-якорей: перенос доставки Telegram-ответов из `bot.py` в `telegram_response_delivery.py`, целевая проверка `172 passed`, size gate для больших файлов и следующие шаги реализации
 
 ## Логи
 

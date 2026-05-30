@@ -78,6 +78,20 @@ def test_build_command_args_resume_session():
     assert args[resume_index + 1] == session_id
 
 
+def test_build_command_args_pins_opus_4_8_model():
+    """Бот фиксирует точную версию модели — Claude Opus 4.8, а не алиас."""
+    args = _build_command_args(session_id=None)
+
+    assert "--model" in args, (
+        "Команда CLI должна явно передавать --model, "
+        "иначе дефолт зависит от подписки и может оказаться не Opus"
+    )
+    model_index = args.index("--model")
+    assert args[model_index + 1] == "claude-opus-4-8", (
+        f"Должна быть точная версия 4.8, а не алиас; получено: {args[model_index + 1]!r}"
+    )
+
+
 # --- Юнит-тесты: backend-aware subprocess wrapper ---
 
 

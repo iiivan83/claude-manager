@@ -37,7 +37,10 @@ MINIMAL_PROMPT = "say hi in one word"
 CLAUDE_PROJECTS_SUBDIR = ".claude/projects"
 
 REAL_CLAUDE_BINARY = Path(
-    os.environ.get("CLAUDE_REAL_BIN", "/Users/ivan/.npm-global/bin/claude")
+    os.environ.get(
+        "CLAUDE_REAL_BIN",
+        os.path.expanduser("~/.npm-global/bin/claude"),
+    )
 )
 CLAUDE_BINARY = (
     str(REAL_CLAUDE_BINARY)
@@ -193,6 +196,18 @@ async def test_claude_backend_stream_json_and_session_file_contract(
             env=child_env,
             check=False,
         )
+        events = [
+            parsed_event
+            for raw_line in completed.stdout.decode("utf-8").splitlines()
+            if (parsed_event := backend.parse_stdout_line_into_event(raw_line))
+        ]
+        if any(
+            event.get("api_error_status") == 401
+            or event.get("error") == "authentication_failed"
+            for event in events
+        ):
+            pytest.skip("Claude CLI установлен, но не авторизован: API 401")
+
         assert completed.returncode == 0, (
             "Claude CLI stream-json contract run failed.\n"
             f"  CLI binary: {REAL_CLAUDE_BINARY}\n"
@@ -200,11 +215,6 @@ async def test_claude_backend_stream_json_and_session_file_contract(
             f"  stderr: {completed.stderr[:500]!r}"
         )
 
-        events = [
-            parsed_event
-            for raw_line in completed.stdout.decode("utf-8").splitlines()
-            if (parsed_event := backend.parse_stdout_line_into_event(raw_line))
-        ]
         assert events, "Claude CLI produced no stream-json events"
         assert any(event.get("type") == "system" for event in events)
         result_events = [

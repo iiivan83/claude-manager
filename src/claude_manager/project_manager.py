@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from claude_manager import (
-    coding_agent_backend,
     config,
     daily_session_registry,
     session_manager,
@@ -30,11 +29,11 @@ from claude_manager import (
 )
 from claude_manager.coding_agent_backend import (
     BackendName,
-    CodingAgentBackend,
-    SessionFileInfo,
-    SessionFileSnapshot,
-    SessionMessage,
     SessionUnreadState,
+)
+from claude_manager.project_pending_delivery import (
+    PendingDeliveryItem,
+    collect_pending_messages,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,18 +66,8 @@ class SwitchResult:
     old_path: str
     new_path: str
     pending_messages_count: int
-    pending_messages: list["PendingDeliveryItem"]
+    pending_messages: list[PendingDeliveryItem]
     error_message: str
-
-
-@dataclass(frozen=True)
-class PendingDeliveryItem:
-    """Непрочитанное сообщение, которое bot.py доставит после возврата в проект."""
-
-    session_id: str
-    backend: BackendName
-    text: str
-    is_final: bool
 
 
 class ProjectSwitchError(Exception):
@@ -267,11 +256,16 @@ def _capture_backend_unread_snapshots(backend: BackendName) -> None:
     snapshot = session_watcher.get_seen_counts_snapshot(backend)
     for session_id, unread_state in snapshot.items():
         try:
+            snapshot_kwargs = {
+                "raw_record_count": unread_state.raw_record_count,
+                "last_delivered_idx": unread_state.last_delivered_idx,
+            }
+            if unread_state.last_modified_at is not None:
+                snapshot_kwargs["last_modified_at"] = unread_state.last_modified_at
             unread_buffer.save_snapshot(
                 session_id,
                 backend,
-                raw_record_count=unread_state.raw_record_count,
-                last_delivered_idx=unread_state.last_delivered_idx,
+                **snapshot_kwargs,
             )
         except Exception:
             logger.warning(
@@ -390,114 +384,11 @@ async def _try_switch_with_rollback(
         session_watcher.resume_all()
 
 
-def _has_new_messages(
-    old_state: SessionUnreadState,
-    snapshot: SessionFileSnapshot,
-) -> bool:
-    """Проверяет, появились ли новые parsed-сообщения после сохранённого cursor-а."""
-    return (
-        snapshot.raw_record_count > old_state.raw_record_count
-        or len(snapshot.messages) > old_state.last_delivered_idx + 1
-    )
-
-
-def _message_is_deliverable(message: SessionMessage) -> bool:
-    """Проверяет, нужно ли отдавать message пользователю как pending."""
-    if message.role != "assistant":
-        return False
-    if message.is_empty_response:
-        return False
-    return bool(message.text.strip())
-
-
-def _build_pending_items_from_delta(
-    session_id: str,
-    backend: BackendName,
-    delta: list[SessionMessage],
-    is_turn_active: bool,
-) -> list[PendingDeliveryItem]:
-    """Создаёт pending items из новых сообщений одной сессии."""
-    deliverable_messages = [
-        message for message in delta if _message_is_deliverable(message)
-    ]
-    return [
-        PendingDeliveryItem(
-            session_id=session_id,
-            backend=backend,
-            text=message.text,
-            is_final=not is_turn_active and index == len(deliverable_messages) - 1,
-        )
-        for index, message in enumerate(deliverable_messages)
-    ]
-
-
-async def _collect_pending_for_session_file(
-    backend_adapter: CodingAgentBackend,
-    file_info: SessionFileInfo,
-) -> list[PendingDeliveryItem]:
-    """Собирает pending items для одного backend-owned файла сессии."""
-    backend = backend_adapter.name
-    old_state = unread_buffer.restore_snapshot(file_info.session_id, backend)
-    if old_state is None:
-        return []
-
-    snapshot = await backend_adapter.read_session_file_snapshot(file_info.file_path)
-    if not _has_new_messages(old_state, snapshot):
-        return []
-
-    delta = snapshot.messages[old_state.last_delivered_idx + 1:]
-    return _build_pending_items_from_delta(
-        file_info.session_id,
-        backend,
-        delta,
-        snapshot.is_turn_active,
-    )
-
-
-async def _collect_pending_for_backend(
-    backend_adapter: CodingAgentBackend,
-    project_path: str,
-) -> list[PendingDeliveryItem]:
-    """Собирает pending items для всех файлов одного backend-а."""
-    backend = backend_adapter.name
-    session_files = await backend_adapter.list_all_session_files_for_project(
-        project_path
-    )
-    pending_items: list[PendingDeliveryItem] = []
-    for file_info in session_files:
-        try:
-            pending_items.extend(
-                await _collect_pending_for_session_file(backend_adapter, file_info)
-            )
-        except Exception:
-            logger.warning(
-                "Не удалось собрать pending delivery: %s (%s)",
-                file_info.session_id,
-                backend.value,
-                exc_info=True,
-            )
-    return pending_items
-
-
-async def _collect_pending_messages(
-    target_path: str,
-) -> tuple[int, list[PendingDeliveryItem]]:
-    """Собирает непрочитанные сообщения для проекта, в который возвращаемся."""
-    pending_items: list[PendingDeliveryItem] = []
-    for backend_adapter in coding_agent_backend.get_all_backends():
-        pending_items.extend(
-            await _collect_pending_for_backend(backend_adapter, target_path)
-        )
-
-    unread_buffer.clear_expired()
-    return len(pending_items), pending_items
-
-
 async def collect_pending_messages_for_project(
     target_path: str,
 ) -> tuple[int, list[PendingDeliveryItem]]:
     """Public wrapper collecting unread messages for an already active project."""
-    return await _collect_pending_messages(target_path)
+    return await collect_pending_messages(target_path)
 
 
 async def _finalize_successful_switch(
@@ -508,7 +399,7 @@ async def _finalize_successful_switch(
     await save_selected_project(target_path)
 
     # Собираем непрочитанные сообщения (если пользователь возвращается в проект)
-    pending_count, pending = await _collect_pending_messages(target_path)
+    pending_count, pending = await collect_pending_messages(target_path)
 
     # Очищаем просроченные снапшоты других проектов
     unread_buffer.cleanup_expired()

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from claude_manager.coding_agent_backend import BackendName
+from claude_manager.coding_agent_backend import BackendName, PermanentErrorKind
 from claude_manager.claude_runner import (
     BackendSubprocess,
     BackendSubprocessStartError,
@@ -449,6 +449,79 @@ class TestBackendAwareProcessState:
         assert result.was_running is True
         codex_process.process.send_signal.assert_called()
         assert codex_process.process.send_signal.call_args[0][0] == 2
+
+
+class TestOrphanProcessPrevention:
+    """Защита от orphan-процессов в backend-aware пути.
+
+    Каждый turn в backend-aware пути запускает новый subprocess через
+    _restart_process. Если subprocess от предыдущего turn'а не успел
+    умереть сам (медленный shutdown, зависший pipe, ошибка cleanup
+    внутри CLI), ссылка на него остаётся в _processes. _restart_process
+    обязан остановить старый процесс до перезаписи реестра — иначе
+    старый PID становится orphan'ом, невидимым для stop_process.
+    """
+
+    async def test_restart_kills_living_process_from_previous_turn(self) -> None:
+        """Если процесс из предыдущего turn'а ещё жив — новый turn останавливает его."""
+        session_id = "orphan-test-session"
+
+        successful_events = [
+            {"type": "thread.started", "thread_id": session_id},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "первый"},
+            },
+            {"type": "turn.completed"},
+        ]
+        first_process = _make_backend_subprocess(pid=10001, events=successful_events)
+        second_events = [
+            {"type": "thread.started", "thread_id": session_id},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "второй"},
+            },
+            {"type": "turn.completed"},
+        ]
+        second_process = _make_backend_subprocess(pid=10002, events=second_events)
+
+        with patch(
+            "claude_manager.process_manager.start_subprocess_for_backend",
+            new_callable=AsyncMock,
+            create=True,
+        ) as mock_start:
+            mock_start.side_effect = [first_process, second_process]
+
+            result_first = await send_message(
+                session_id,
+                "первое сообщение",
+                backend=BackendName.CODEX,
+                cwd="/tmp/orphan-test",
+            )
+
+            # Мок не имитирует завершение subprocess (returncode остаётся None) —
+            # это симулирует CLI, зависший на shutdown. is_running() = True.
+            assert first_process.is_running() is True
+            assert (session_id, BackendName.CODEX) in pm_module._processes
+            assert pm_module._processes[(session_id, BackendName.CODEX)] is first_process
+
+            result_second = await send_message(
+                session_id,
+                "второе сообщение",
+                backend=BackendName.CODEX,
+                cwd="/tmp/orphan-test",
+            )
+
+        assert result_first.is_error is False
+        assert result_second.is_error is False
+
+        # Главное утверждение: к первому процессу применили stop strategy
+        # (для Codex strategy первый шаг — SIGINT, signum=2).
+        first_process.process.send_signal.assert_called()
+        assert first_process.process.send_signal.call_args[0][0] == 2
+
+        # Реестр обновился на второй процесс.
+        assert pm_module._processes[(session_id, BackendName.CODEX)] is second_process
 
 
 @patch("claude_manager.process_manager.start_process")
@@ -1062,6 +1135,203 @@ async def test_stop_interrupts_retry_loop(mock_start):
     with patch.object(pm_module, "_wait_with_stop_check", side_effect=fake_wait):
         with pytest.raises(ProcessStoppedError):
             await send_message(session_id, "Привет")
+
+
+@patch(
+    "claude_manager.process_manager.start_subprocess_for_backend",
+    new_callable=AsyncMock,
+    create=True,
+)
+async def test_claude_session_resumes_after_stop_during_retry(mock_start):
+    """После /stop во время ретрая следующее сообщение в ту же сессию должно ожить.
+
+    Воспроизводит инцидент 29-05: пользователь остановил backend-aware Claude
+    turn командой /stop во время цикла ретраев, а следующее сообщение в ту же
+    сессию молча умирает с ProcessStoppedError вместо нормального ответа.
+
+    Ключевой ингредиент — смена session_id внутри turn-а (Claude на --resume
+    вернул другой UUID). update_session_id для Claude перекладывает состояние
+    под СТРОКОВЫЙ ключ (_make_process_key возвращает голую строку для CLAUDE),
+    а _send_message_backend_aware ставит и чистит TUPLE-ключи. Из-за этого
+    выставленный stop_event остаётся висеть под строковым ключом и убивает
+    следующий turn.
+    """
+    requested_session_id = "c5b058e8-fa04-4c78-8e48-24f64d00ba6b"
+    resumed_session_id = "d4e5f6a7-1111-2222-3333-444455556666"
+
+    # Turn 1: Claude на --resume вернул ДРУГОЙ session_id, затем ошибку → retry.
+    turn1_error = _make_backend_subprocess(
+        pid=734768,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": resumed_session_id},
+            {
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "result": "Error",
+                "session_id": resumed_session_id,
+            },
+        ],
+    )
+    # Turn 2: новая попытка после /stop — должна успешно ответить.
+    turn2_success = _make_backend_subprocess(
+        pid=734859,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": resumed_session_id},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "Ответ после стопа",
+                "session_id": resumed_session_id,
+            },
+        ],
+    )
+    mock_start.side_effect = [turn1_error, turn2_success]
+
+    # /stop приходит во время ожидания ретрая (как в реальном инциденте):
+    # сначала stop_process ставит флаг отмены, затем wait это видит и бросает.
+    async def stop_during_retry_wait(
+        sid, duration, backend=BackendName.CLAUDE,
+    ):
+        await stop_process(sid, BackendName.CLAUDE)
+        raise ProcessStoppedError("Ожидание ретрая прервано командой /stop")
+
+    with patch.object(
+        pm_module, "_wait_with_stop_check", side_effect=stop_during_retry_wait,
+    ):
+        with pytest.raises(ProcessStoppedError):
+            await send_message(
+                requested_session_id, "первое сообщение",
+                backend=BackendName.CLAUDE, cwd="/tmp/p",
+            )
+
+    # После /stop не должно остаться висящих stop_event ни под каким ключом —
+    # ни tuple (resumed, CLAUDE), ни голым строковым resumed.
+    assert pm_module._stop_events == {}, (
+        "stop_event протёк после /stop — следующий turn умрёт от него"
+    )
+
+    # Turn 2: то же сообщение в ту же сессию — должно ожить, а не умереть молча.
+    result = await send_message(
+        resumed_session_id, "Компромисс давай",
+        backend=BackendName.CLAUDE, cwd="/tmp/p",
+    )
+
+    assert result.is_error is False, (
+        "Сессия не ожила после /stop — следующее сообщение умерло"
+    )
+    assert result.text == "Ответ после стопа"
+
+
+@patch(
+    "claude_manager.process_manager.start_subprocess_for_backend",
+    new_callable=AsyncMock,
+    create=True,
+)
+async def test_permanent_overflow_error_skips_retries(mock_start):
+    """Переполнение контекста («Prompt is too long») не уходит в 10 повторов.
+
+    Воспроизводит инцидент 29-05: сессия #9 переполнилась, и retry-цикл
+    ~11 минут бессмысленно повторял постоянную ошибку. Повтор обречён —
+    --resume каждый раз грузит ту же переполненную историю. Бот обязан
+    распознать постоянную ошибку, не запускать повторы и вернуть результат
+    с пометкой kind, чтобы транспортный слой показал понятное сообщение.
+    """
+    session_id = "ac6207af-1111-2222-3333-444455556666"
+    overflow_turn = _make_backend_subprocess(
+        pid=900001,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "result": "Prompt is too long",
+                "session_id": session_id,
+            },
+        ],
+    )
+    # Второй subprocess — успешный. Если фикс сломан и повтор всё же
+    # случится, тест это поймает: вернётся успех вместо постоянной ошибки.
+    success_turn = _make_backend_subprocess(
+        pid=900002,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "не должно дойти до повтора",
+                "session_id": session_id,
+            },
+        ],
+    )
+    mock_start.side_effect = [overflow_turn, success_turn]
+    retry_callback = AsyncMock()
+
+    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+        result = await send_message(
+            session_id, "прочитай файл",
+            retry_callback=retry_callback,
+            backend=BackendName.CLAUDE, cwd="/tmp/p",
+        )
+
+    assert result.is_error is True
+    assert result.retries_used == 0, "Постоянная ошибка не должна повторяться"
+    assert result.permanent_error_kind == PermanentErrorKind.CONTEXT_OVERFLOW
+    assert mock_start.call_count == 1, (
+        "Повтор запускался — постоянная ошибка не распознана"
+    )
+    retry_callback.assert_not_awaited()
+
+
+@patch(
+    "claude_manager.process_manager.start_subprocess_for_backend",
+    new_callable=AsyncMock,
+    create=True,
+)
+async def test_transient_error_still_retries_backend_aware(mock_start):
+    """Временная ошибка по-прежнему уходит в повтор — классификация не сломала retry."""
+    session_id = "bbbb1111-2222-3333-4444-555566667777"
+    transient_turn = _make_backend_subprocess(
+        pid=910001,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "result": "Error: service unavailable",
+                "session_id": session_id,
+            },
+        ],
+    )
+    success_turn = _make_backend_subprocess(
+        pid=910002,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "Ответ после ретрая",
+                "session_id": session_id,
+            },
+        ],
+    )
+    mock_start.side_effect = [transient_turn, success_turn]
+
+    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+        result = await send_message(
+            session_id, "привет",
+            backend=BackendName.CLAUDE, cwd="/tmp/p",
+        )
+
+    assert result.is_error is False
+    assert result.text == "Ответ после ретрая"
+    assert result.retries_used == 1
+    assert result.permanent_error_kind is None
 
 
 @patch("claude_manager.process_manager.start_process")
@@ -1824,3 +2094,115 @@ async def test_execute_send_passes_remapped_session_id_to_retry_loop():
     assert retry_session_id == real_id, (
         f"_retry_loop получил {retry_session_id!r}, ожидался {real_id!r}"
     )
+
+
+# --- Тесты look-ahead для устранения дубля progress+final (Bug 1) ---
+
+
+async def test_progress_not_duplicated_when_assistant_text_equals_final_result():
+    """Look-ahead: assistant-текст, который станет финалом, не шлётся как progress."""
+    session_id = "session-no-duplicate"
+    final_text = "Похоже, ты не ответил на вопрос — иду разумным дефолтом"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": final_text}],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": final_text,
+            "session_id": session_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+    progress_callback = AsyncMock()
+
+    result = await _process_events(
+        claude_process, session_id, progress_callback=progress_callback,
+    )
+
+    assert result.text == final_text
+    assert result.is_error is False
+    progress_texts = [call.args[1] for call in progress_callback.await_args_list]
+    assert final_text not in progress_texts, (
+        "Финальный текст не должен дублироваться как progress "
+        f"(было отправлено: {progress_texts!r})"
+    )
+
+
+async def test_intermediate_assistant_text_still_sent_as_progress():
+    """Look-ahead: промежуточный текст до tool_use всё ещё доставляется как progress."""
+    session_id = "session-with-intermediate-step"
+    intermediate_text = "Сейчас проверю файл"
+    final_text = "Готово, файл проверен"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": intermediate_text},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-read-1",
+                        "name": "Read",
+                        "input": {"file_path": "/tmp/x"},
+                    },
+                ],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "tool_use_id": "tool-read-1",
+                        "type": "tool_result",
+                        "content": "file content",
+                    }
+                ],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": final_text}],
+            },
+            "session_id": session_id,
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": final_text,
+            "session_id": session_id,
+        },
+    ]
+    claude_process = _make_claude_process(events=events)
+    progress_callback = AsyncMock()
+
+    result = await _process_events(
+        claude_process, session_id, progress_callback=progress_callback,
+    )
+
+    progress_texts = [call.args[1] for call in progress_callback.await_args_list]
+    assert intermediate_text in progress_texts, (
+        f"Промежуточный текст должен быть отправлен (отправлено: {progress_texts!r})"
+    )
+    assert final_text not in progress_texts, (
+        f"Финальный текст не должен дублироваться (отправлено: {progress_texts!r})"
+    )
+    assert result.text == final_text
+    assert result.is_error is False

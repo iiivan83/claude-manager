@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TypeAlias
 
@@ -36,6 +36,7 @@ class SessionMessage:
     text: str
     timestamp: float | None
     is_empty_response: bool
+    raw_record_index: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class SessionUnreadState:
 
     raw_record_count: int
     last_delivered_idx: int
+    last_modified_at: float | None = None
 
 
 class TerminalStatus(str, Enum):
@@ -61,6 +63,18 @@ class TerminalStatus(str, Enum):
 
     SUCCESS = "success"
     FAILED = "failed"
+
+
+class PermanentErrorKind(str, Enum):
+    """Reason a backend error must not be retried — a retry cannot succeed.
+
+    A permanent error keeps failing on every retry because re-sending the same
+    request reloads the same failing state (an overflowed session history, an
+    exhausted usage limit). The retry loop must stop and tell the user instead.
+    """
+
+    CONTEXT_OVERFLOW = "context_overflow"
+    USAGE_LIMIT = "usage_limit"
 
 
 @dataclass(frozen=True)
@@ -167,8 +181,24 @@ class CodingAgentBackend(ABC):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
-        """Return all known project session files for operational flows."""
+        """Return known project session files for operational flows.
+
+        lookback_days=None preserves the full scan (compat default).
+        A positive value restricts the scan to that many recent days, used by
+        latency-sensitive callers (watcher reset, pending collection).
+        """
+
+    async def list_all_session_files_for_projects(
+        self,
+        project_dirs: list[str],
+    ) -> dict[str, list[SessionFileInfo]]:
+        """Return operational session files grouped by project path."""
+        return {
+            project_dir: await self.list_all_session_files_for_project(project_dir)
+            for project_dir in project_dirs
+        }
 
     @abstractmethod
     async def session_file_exists_for_project(
@@ -204,6 +234,13 @@ class CodingAgentBackend(ABC):
     ) -> SessionFileSnapshot:
         """Read a complete backend-neutral snapshot of a session file."""
 
+    async def read_session_file_cursor(
+        self,
+        file_path: str,
+    ) -> SessionFileSnapshot:
+        """Read lightweight cursor state for one backend session file."""
+        return await self.read_session_file_snapshot(file_path)
+
     @abstractmethod
     def is_error_event(self, event: UnifiedEvent) -> bool:
         """Return whether a stdout event represents a failed turn."""
@@ -211,6 +248,21 @@ class CodingAgentBackend(ABC):
     @abstractmethod
     def read_error_text_from_event(self, event: UnifiedEvent) -> str | None:
         """Extract backend error text from a stdout event when present."""
+
+    def classify_permanent_error(
+        self,
+        error_text: str | None,
+    ) -> PermanentErrorKind | None:
+        """Classify a CLI error as permanently non-retryable.
+
+        Returns the permanent-error kind when retrying the same request cannot
+        succeed (context overflow, usage limit, ...), or None when the error
+        may be transient and a retry could help. Default: every error is
+        retryable. Each backend overrides this with the error formats of its
+        own engine, because only the backend knows how its CLI reports errors.
+        """
+        del error_text
+        return None
 
     @abstractmethod
     def read_terminal_status_from_event(

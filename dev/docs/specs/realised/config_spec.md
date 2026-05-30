@@ -37,6 +37,7 @@
 - `BOT_TOKEN: str` — токен Telegram-бота (значение TELEGRAM_BOT_TOKEN из `.env`)
 - `ALLOWED_USER_IDS: set[int]` — множество Telegram-ID пользователей, которым разрешён доступ к боту (значение ALLOWED_USER_IDS из `.env`, разобранное из строки через запятую)
 - `WORKING_DIR: str` — абсолютный путь к рабочей директории проекта (значение CLAUDE_WORKING_DIR из `.env`, или текущая директория если не указано)
+- `OPERATIONAL_SESSION_LOOKBACK_DAYS: int = 4` — окно последних дней для горячих operational-путей: watcher reset/poll и pending-сбор при `/pN`. Для Codex это окно обслуживается in-memory operational index, поэтому повторные обращения не перечитывают всю глобальную историю `~/.codex/sessions`.
 
 ## Внутренние функции
 

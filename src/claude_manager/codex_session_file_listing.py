@@ -6,10 +6,11 @@ import asyncio
 import json
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
+from claude_manager import codex_session_index
 from claude_manager.codex_session_file_reader import (
     LOOKBACK_DAYS_FOR_SESSION_LISTING,
     MAX_LINES_FOR_PREVIEW,
@@ -30,6 +31,38 @@ logger = logging.getLogger(__name__)
 
 CODEX_BOOTSTRAP_AGENTS_PREFIX = "# AGENTS.md instructions for "
 CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER = "<INSTRUCTIONS>"
+MAX_CONCURRENT_FILE_READS = 16
+UUID_V7_TIMESTAMP_HEX_LENGTH = 12
+MILLISECONDS_PER_SECOND = 1000
+
+
+async def _gather_optional_results_with_concurrency_limit(
+    awaitables: list,
+) -> list:
+    """Run awaitables with a concurrency cap and drop None results."""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_FILE_READS)
+
+    async def with_semaphore(awaitable):
+        should_close = True
+        try:
+            async with semaphore:
+                should_close = False
+                return await awaitable
+        finally:
+            if should_close:
+                close = getattr(awaitable, "close", None)
+                if close is not None:
+                    close()
+
+    tasks = [asyncio.create_task(with_semaphore(awaitable)) for awaitable in awaitables]
+    try:
+        results = await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    return [result for result in results if result is not None]
 
 
 def _iter_session_dirs_in_lookback_window(
@@ -136,6 +169,45 @@ def _list_all_rollout_files_blocking(sessions_root: str) -> list[str]:
     return rollout_file_paths
 
 
+def _candidate_paths_from_uuid_v7(sessions_root: str, session_id: str) -> list[str]:
+    """Return likely exact rollout paths encoded in a UUIDv7 session id."""
+    normalized_session_id = session_id.replace("-", "")
+    if len(normalized_session_id) < UUID_V7_TIMESTAMP_HEX_LENGTH:
+        return []
+    try:
+        timestamp = (
+            int(normalized_session_id[:UUID_V7_TIMESTAMP_HEX_LENGTH], 16)
+            / MILLISECONDS_PER_SECOND
+        )
+    except ValueError:
+        return []
+
+    return [
+        os.path.join(
+            sessions_root,
+            f"{candidate:%Y}",
+            f"{candidate:%m}",
+            f"{candidate:%d}",
+            f"rollout-{candidate:%Y-%m-%dT%H-%M-%S}-{session_id}.jsonl",
+        )
+        for candidate in (
+            datetime.fromtimestamp(timestamp),
+            datetime.fromtimestamp(timestamp, timezone.utc),
+        )
+    ]
+
+
+def _find_rollout_file_by_uuid_date_blocking(
+    sessions_root: str,
+    session_id: str,
+) -> str | None:
+    """Find a rollout file by checking likely UUIDv7 date directories first."""
+    for file_path in _candidate_paths_from_uuid_v7(sessions_root, session_id):
+        if os.path.isfile(file_path):
+            return file_path
+    return None
+
+
 def _sort_paths_by_mtime_descending(file_paths: list[str]) -> list[str]:
     """Sort file paths from newest to oldest by modification time."""
     return sorted(file_paths, key=os.path.getmtime, reverse=True)
@@ -196,17 +268,34 @@ async def _build_session_file_info(
     return SessionFileInfo(session_id, file_path, last_modified_at, preview)
 
 
+async def _build_operational_session_file_info(
+    file_path: str,
+    meta_record: dict[str, object],
+) -> SessionFileInfo | None:
+    """Build lightweight metadata for watcher and all-project scans."""
+    payload = _payload_from_meta_record(meta_record)
+    raw_session_id = payload.get("id")
+    session_id = raw_session_id if isinstance(raw_session_id, str) else None
+    session_id = session_id or _extract_uuid_from_rollout_filename(file_path)
+    if session_id is None:
+        return None
+    try:
+        last_modified_at = await asyncio.to_thread(os.path.getmtime, file_path)
+    except OSError as error:
+        logger.warning("Could not stat Codex session file %s: %s", file_path, error)
+        return None
+    return SessionFileInfo(session_id, file_path, last_modified_at, preview="")
+
+
 async def _list_session_file_infos_from_paths(
     file_paths: list[str],
     project_dir: str,
     max_results: int | None,
 ) -> list[SessionFileInfo]:
     """Filter rollout files by project and convert them to metadata."""
-    meta_pairs: list[tuple[str, dict[str, object]]] = []
-    for file_path in file_paths:
-        meta_pair = await _read_project_meta_pair(file_path, project_dir)
-        if meta_pair is not None:
-            meta_pairs.append(meta_pair)
+    meta_pairs = await _gather_optional_results_with_concurrency_limit(
+        [_read_project_meta_pair(file_path, project_dir) for file_path in file_paths]
+    )
 
     sorted_paths = await asyncio.to_thread(
         _sort_paths_by_mtime_descending,
@@ -216,15 +305,81 @@ async def _list_session_file_infos_from_paths(
     if max_results is not None:
         sorted_paths = sorted_paths[:max_results]
 
-    session_file_infos: list[SessionFileInfo] = []
-    for file_path in sorted_paths:
-        session_file_info = await _build_session_file_info(
-            file_path,
-            meta_by_path[file_path],
+    return await _gather_optional_results_with_concurrency_limit(
+        [
+            _build_session_file_info(file_path, meta_by_path[file_path])
+            for file_path in sorted_paths
+        ]
+    )
+
+
+async def _list_operational_session_file_infos_from_paths(
+    file_paths: list[str],
+    project_dir: str,
+) -> list[SessionFileInfo]:
+    """Filter rollout files by project and return lightweight metadata."""
+    meta_pairs = await _gather_optional_results_with_concurrency_limit(
+        [_read_project_meta_pair(file_path, project_dir) for file_path in file_paths]
+    )
+
+    sorted_paths = await asyncio.to_thread(
+        _sort_paths_by_mtime_descending,
+        [file_path for file_path, _meta_record in meta_pairs],
+    )
+    meta_by_path = {file_path: meta_record for file_path, meta_record in meta_pairs}
+    return await _gather_optional_results_with_concurrency_limit(
+        [
+            _build_operational_session_file_info(file_path, meta_by_path[file_path])
+            for file_path in sorted_paths
+        ]
+    )
+
+
+async def _read_project_meta_pair_for_known_projects(
+    file_path: str,
+    project_dirs: set[str],
+) -> tuple[str, str, dict[str, object]] | None:
+    """Return project/file/meta when a rollout belongs to one known project."""
+    try:
+        meta_record = await asyncio.to_thread(_read_session_meta_record_blocking, file_path)
+    except PermissionError:
+        logger.error("No permission to read Codex session file: %s", file_path)
+        return None
+    except OSError as error:
+        logger.warning("Could not read Codex session file %s: %s", file_path, error)
+        return None
+    if meta_record is None:
+        logger.debug("Codex session_meta not found in %s", file_path)
+        return None
+
+    raw_project_dir = _payload_from_meta_record(meta_record).get("cwd")
+    if not isinstance(raw_project_dir, str) or raw_project_dir not in project_dirs:
+        return None
+    return raw_project_dir, file_path, meta_record
+
+
+async def _build_operational_infos_by_project(
+    meta_pairs_by_project: dict[str, list[tuple[str, dict[str, object]]]],
+) -> dict[str, list[SessionFileInfo]]:
+    """Convert grouped Codex metadata records into sorted lightweight infos."""
+    result: dict[str, list[SessionFileInfo]] = {}
+    for project_dir, meta_pairs in meta_pairs_by_project.items():
+        sorted_paths = await asyncio.to_thread(
+            _sort_paths_by_mtime_descending,
+            [file_path for file_path, _meta_record in meta_pairs],
         )
-        if session_file_info is not None:
-            session_file_infos.append(session_file_info)
-    return session_file_infos
+        meta_by_path = {
+            file_path: meta_record for file_path, meta_record in meta_pairs
+        }
+        result[project_dir] = await _gather_optional_results_with_concurrency_limit(
+            [
+                _build_operational_session_file_info(
+                    file_path, meta_by_path[file_path]
+                )
+                for file_path in sorted_paths
+            ]
+        )
+    return result
 
 
 async def list_session_file_infos_for_project(
@@ -251,13 +406,56 @@ async def list_session_file_infos_for_project(
 async def list_all_session_file_infos_for_project(
     sessions_root: str,
     project_dir: str,
+    lookback_days: int | None = None,
 ) -> list[SessionFileInfo]:
-    """Return all Codex rollout metadata for one project."""
+    """Return Codex rollout metadata for one project.
+
+    With lookback_days set the scan touches only the recent N day directories,
+    which avoids walking the global ~/.codex/sessions root that can hold tens
+    of thousands of unrelated files. lookback_days=None keeps the legacy full
+    scan for compat.
+    """
     if not await asyncio.to_thread(os.path.exists, sessions_root):
         logger.info("Codex sessions directory not found: %s", sessions_root)
         return []
+    if lookback_days is None:
+        file_paths = await asyncio.to_thread(
+            _list_all_rollout_files_blocking, sessions_root,
+        )
+        return await _list_operational_session_file_infos_from_paths(file_paths, project_dir)
+    return await codex_session_index.list_project_session_file_infos(
+        sessions_root, project_dir, lookback_days,
+    )
+
+
+async def list_all_session_file_infos_by_project(
+    sessions_root: str,
+    project_dirs: list[str],
+) -> dict[str, list[SessionFileInfo]]:
+    """Return all Codex rollout metadata grouped by exact project path."""
+    result: dict[str, list[SessionFileInfo]] = {
+        project_dir: [] for project_dir in project_dirs
+    }
+    if not await asyncio.to_thread(os.path.exists, sessions_root):
+        logger.info("Codex sessions directory not found: %s", sessions_root)
+        return result
+
     file_paths = await asyncio.to_thread(_list_all_rollout_files_blocking, sessions_root)
-    return await _list_session_file_infos_from_paths(file_paths, project_dir, None)
+    project_dir_set = set(project_dirs)
+    matched_triples = await _gather_optional_results_with_concurrency_limit(
+        [
+            _read_project_meta_pair_for_known_projects(file_path, project_dir_set)
+            for file_path in file_paths
+        ]
+    )
+    meta_pairs_by_project: dict[str, list[tuple[str, dict[str, object]]]] = {
+        project_dir: [] for project_dir in project_dirs
+    }
+    for project_dir, matched_file_path, meta_record in matched_triples:
+        meta_pairs_by_project[project_dir].append((matched_file_path, meta_record))
+
+    result.update(await _build_operational_infos_by_project(meta_pairs_by_project))
+    return result
 
 
 async def session_file_exists_for_project(
@@ -268,6 +466,19 @@ async def session_file_exists_for_project(
     """Return whether an exact Codex rollout belongs to one project."""
     if not await asyncio.to_thread(os.path.exists, sessions_root):
         return False
+    likely_file_path = await asyncio.to_thread(
+        _find_rollout_file_by_uuid_date_blocking,
+        sessions_root,
+        session_id,
+    )
+    if likely_file_path is not None:
+        meta_pair = await _read_project_meta_pair(likely_file_path, project_dir)
+        if meta_pair is None:
+            return False
+        payload = _payload_from_meta_record(meta_pair[1])
+        meta_session_id = payload.get("id")
+        return not isinstance(meta_session_id, str) or meta_session_id == session_id
+
     file_paths = await asyncio.to_thread(_list_all_rollout_files_blocking, sessions_root)
     for file_path in file_paths:
         if _extract_uuid_from_rollout_filename(file_path) != session_id:

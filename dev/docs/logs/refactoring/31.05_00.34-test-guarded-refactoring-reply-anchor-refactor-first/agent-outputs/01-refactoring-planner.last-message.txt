@@ -1,0 +1,11 @@
+План рефакторинга готов и сохранён в нужном формате.
+Это значит, что следующий этап пайплайна, то есть цепочки агентских шагов, может брать план и писать защитные тесты перед изменениями кода.
+
+Созданы только два JSON-артефакта, продуктовый код и тесты не менял:
+
+- [refactoring-plan.json](/home/ivan/claude-sandbox/claude_manager/dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/refactoring-plan.json:1)
+- [01-refactoring-planner.json](/home/ivan/claude-sandbox/claude_manager/dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/agent-outputs/01-refactoring-planner.json:1)
+
+План разбит на 10 этапов: сначала `bot.py`, потом `claude_interaction.py`, затем `all_projects_monitor.py` и `media_group_handler.py`. Учитывает size gate: это проектное ограничение на размер файла; `bot.py` и `claude_interaction.py` также отмечены как god-модули, то есть файлы с слишком большим числом публичных ответственностей.
+
+Проверил JSON через `jq`: файлы существуют, `total_stages = 10`, длина `stages` совпадает, обязательные поля этапов на месте, отчёт агента помечен как `completed`. Pytest не запускал, потому что этот этап только аналитический и код не менялся.

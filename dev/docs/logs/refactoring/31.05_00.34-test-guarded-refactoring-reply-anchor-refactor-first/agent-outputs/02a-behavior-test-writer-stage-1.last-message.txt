@@ -1,0 +1,15 @@
+Защитные тесты для текущей доставки Telegram-ответов добавлены, продуктовый код я не менял.
+Это значит, что следующий агент сможет выносить доставку из `bot.py` в новый модуль и сразу увидеть, если сломает формат сообщений, режим тишины, файловые маркеры или callback-доставку.
+
+Что добавлено:
+- `tests/test_telegram_response_delivery_behavior.py` — 19 pytest-кейсов.
+- `dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/agent-outputs/02a-behavior-test-writer-stage-1.json` — отчёт Stage 2a.
+
+Проверки:
+- `.venv/bin/python -m pytest tests/test_telegram_response_delivery_behavior.py -v` → 19 passed.
+- `.venv/bin/python -m pytest tests/ -v` → 1061 passed, 4 skipped, 1 failed.
+- Единственное падение в полном прогоне не из новых тестов: реальный Claude CLI вернул `401 Invalid authentication credentials` в `tests/integration/test_claude_cli_contract.py`.
+
+Size gate:
+- Новый тестовый файл: 278 строк, 7 публичных test-функций.
+- До warning-порога 300 строк осталось 22 строки, поэтому дальше лучше не раздувать этот файл, а при новых сценариях завести второй focused-файл.

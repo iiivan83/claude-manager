@@ -68,13 +68,6 @@
       "transform_policy": "self-path-rewrite-v1"
     },
     {
-      "name": "human-in-the-loop-spec-reviewer",
-      "kind": "shared",
-      "claude_source": "../../../shared-skills/human-in-the-loop-spec-reviewer",
-      "codex_target": "human-in-the-loop-spec-reviewer",
-      "transform_policy": "self-path-rewrite-v1"
-    },
-    {
       "name": "module-brd-generator",
       "kind": "shared",
       "claude_source": "../../../shared-skills/module-brd-generator",
@@ -100,6 +93,13 @@
       "kind": "shared",
       "claude_source": "../../../shared-skills/pipeline-implementer",
       "codex_target": "pipeline-implementer",
+      "transform_policy": "self-path-rewrite-v1"
+    },
+    {
+      "name": "report-ui-redesign-orchestrator",
+      "kind": "shared",
+      "claude_source": "../../../shared-skills/report-ui-redesign-orchestrator",
+      "codex_target": "report-ui-redesign-orchestrator",
       "transform_policy": "self-path-rewrite-v1"
     },
     {
@@ -145,6 +145,13 @@
       "transform_policy": "self-path-rewrite-v1"
     },
     {
+      "name": "superpowers-implementation-orchestrator",
+      "kind": "shared",
+      "claude_source": "../../../shared-skills/superpowers-implementation-orchestrator",
+      "codex_target": "superpowers-implementation-orchestrator",
+      "transform_policy": "self-path-rewrite-v1"
+    },
+    {
       "name": "test-guarded-refactoring",
       "kind": "shared",
       "claude_source": "../../../shared-skills/test-guarded-refactoring",
@@ -163,13 +170,6 @@
       "kind": "shared",
       "claude_source": "../../../shared-skills/universal-skill",
       "codex_target": "universal-skill",
-      "transform_policy": "self-path-rewrite-v1"
-    },
-    {
-      "name": "update-docs",
-      "kind": "shared",
-      "claude_source": "../../../shared-skills/update-docs",
-      "codex_target": "update-docs",
       "transform_policy": "self-path-rewrite-v1"
     },
     {

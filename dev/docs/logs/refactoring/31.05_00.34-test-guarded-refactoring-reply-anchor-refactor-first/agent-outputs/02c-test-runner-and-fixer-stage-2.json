@@ -1,0 +1,140 @@
+{
+  "status": "all_passed",
+  "stage_id": 2,
+  "stage_name": "extract-project-pending-delivery",
+  "attempts": 2,
+  "attempt_details": [
+    {
+      "attempt": 1,
+      "command": ".venv/bin/python -m pytest tests/ -v",
+      "tests_run": 1090,
+      "tests_passed": 1078,
+      "tests_failed": 8,
+      "tests_skipped": 4,
+      "classification": "stale_run_plus_known_external_environment_failure",
+      "failures": [
+        {
+          "test_name": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract",
+          "error_type": "external_environment_failure",
+          "traceback_summary": "Real Claude CLI returned API Error: 401 Invalid authentication credentials and exited with return code 1.",
+          "fix_applied": "No project code fix applied; this is the known external Claude CLI authentication blocker.",
+          "fix_file": null
+        },
+        {
+          "test_name": "tests/test_all_projects_monitor.py::test_poll_delivers_all_project_message_and_keeps_unread_snapshot",
+          "error_type": "assertion_error",
+          "traceback_summary": "The first full run saw stale callback arguments: expected call[4] project_path, but got session_id.",
+          "fix_applied": "No code fix applied. The same test passed in stale-failure recheck on the current workspace.",
+          "fix_file": null
+        },
+        {
+          "test_name": "tests/test_bot.py::TestSendAllProjectsWatcherMessage::test_header_starts_with_project_and_session_command",
+          "error_type": "type_error",
+          "traceback_summary": "The first full run saw send_all_projects_watcher_message requiring project_path.",
+          "fix_applied": "No code fix applied. The current function signature has project_path defaulting to None, and the same test passed in recheck.",
+          "fix_file": null
+        },
+        {
+          "test_name": "tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[all_projects-True]",
+          "error_type": "type_error",
+          "traceback_summary": "The first full run saw send_all_projects_watcher_message requiring project_path.",
+          "fix_applied": "No code fix applied. The same parameterized case passed in recheck on the current workspace.",
+          "fix_file": null
+        },
+        {
+          "test_name": "tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages[all_projects-False]",
+          "error_type": "type_error",
+          "traceback_summary": "The first full run saw send_all_projects_watcher_message requiring project_path.",
+          "fix_applied": "No code fix applied. The same parameterized case passed in recheck on the current workspace.",
+          "fix_file": null
+        },
+        {
+          "test_name": "tests/test_telegram_response_delivery_behavior.py::test_silence_mode_suppresses_only_intermediate_delivery[all_projects-False-0]",
+          "error_type": "type_error",
+          "traceback_summary": "The first full run saw send_all_projects_watcher_message requiring project_path.",
+          "fix_applied": "No code fix applied. The same parameterized case passed in recheck on the current workspace.",
+          "fix_file": null
+        },
+        {
+          "test_name": "tests/test_telegram_response_delivery_behavior.py::test_all_projects_watcher_header_includes_project_and_session_command[codex-True]",
+          "error_type": "type_error",
+          "traceback_summary": "The first full run saw send_all_projects_watcher_message requiring project_path.",
+          "fix_applied": "No code fix applied. The same parameterized case passed in recheck on the current workspace.",
+          "fix_file": null
+        },
+        {
+          "test_name": "tests/test_telegram_response_delivery_behavior.py::test_all_projects_watcher_header_includes_project_and_session_command[claude-False]",
+          "error_type": "type_error",
+          "traceback_summary": "The first full run saw send_all_projects_watcher_message requiring project_path.",
+          "fix_applied": "No code fix applied. The same parameterized case passed in recheck on the current workspace.",
+          "fix_file": null
+        }
+      ]
+    },
+    {
+      "attempt": 2,
+      "command": ".venv/bin/python -m pytest tests/ -v",
+      "tests_run": 1090,
+      "tests_passed": 1085,
+      "tests_failed": 1,
+      "tests_skipped": 4,
+      "classification": "known_external_environment_failure_only",
+      "failures": [
+        {
+          "test_name": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract",
+          "error_type": "external_environment_failure",
+          "traceback_summary": "Real Claude CLI returned API Error: 401 Invalid authentication credentials and exited with return code 1.",
+          "fix_applied": "No project code fix applied; authentication for the real Claude CLI is outside the project code.",
+          "fix_file": null
+        }
+      ]
+    }
+  ],
+  "final_test_result": {
+    "total": 126,
+    "passed": 126,
+    "failed": 0,
+    "skipped": 0
+  },
+  "full_suite_result": {
+    "command": ".venv/bin/python -m pytest tests/ -v",
+    "status": "failed_due_to_known_external_environment_failure",
+    "total": 1090,
+    "passed": 1085,
+    "failed": 1,
+    "skipped": 4,
+    "warnings": 3,
+    "output_file": "dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/full-suite-stage-2c-attempt2.out"
+  },
+  "actionable_subset_result": {
+    "command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py tests/test_bot.py tests/test_telegram_response_delivery_behavior.py -v",
+    "status": "passed",
+    "total": 126,
+    "passed": 126,
+    "failed": 0,
+    "skipped": 0,
+    "output_file": "dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/actionable-subset-stage-2c-attempt1.out"
+  },
+  "stale_failure_recheck": {
+    "command": ".venv/bin/python -m pytest tests/test_all_projects_monitor.py::test_poll_delivers_all_project_message_and_keeps_unread_snapshot tests/test_bot.py::TestSendAllProjectsWatcherMessage::test_header_starts_with_project_and_session_command tests/test_telegram_response_delivery_behavior.py::test_file_markers_are_processed_only_for_final_messages tests/test_telegram_response_delivery_behavior.py::test_silence_mode_suppresses_only_intermediate_delivery tests/test_telegram_response_delivery_behavior.py::test_all_projects_watcher_header_includes_project_and_session_command -v",
+    "status": "passed",
+    "total": 14,
+    "passed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "output_file": "dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/stale-failure-recheck-stage-2c.out"
+  },
+  "external_environment_failures": [
+    {
+      "test_name": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract",
+      "reason": "The real Claude CLI binary at /home/ivan/.npm-global/bin/claude returned 401 Invalid authentication credentials during the stream-json contract run.",
+      "classification": "external_environment_failure"
+    }
+  ],
+  "unresolved_failures": [],
+  "code_changes_applied": [],
+  "size_gate": {
+    "production_code_changed": false,
+    "note": "No code files were edited during Stage 2c."
+  }
+}

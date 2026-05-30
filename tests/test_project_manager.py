@@ -80,12 +80,15 @@ class FakeProjectBackend:
         self.name = name
         self.session_files = session_files or []
         self.snapshots = snapshots or {}
+        self.list_lookback_history: list[int | None] = []
 
     async def list_all_session_files_for_project(
         self,
         _project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
         """Возвращает заранее заданные файлы сессий."""
+        self.list_lookback_history.append(lookback_days)
         return self.session_files
 
     async def read_session_file_snapshot(
@@ -444,6 +447,44 @@ class TestSwitchProject:
         assert result.pending_messages[0].is_final is False
         assert result.pending_messages[1].text == "final pending"
         assert result.pending_messages[1].is_final is True
+
+    @pytest.mark.asyncio()
+    async def test_collect_pending_messages_requests_operational_lookback_window(
+        self,
+        projects_root: Path,
+        last_project_file: Path,
+    ) -> None:
+        """Pending-сбор ограничивает листинг бэкенда operational lookback окном.
+
+        Без этого ограничения сбор pending при возврате в проект сканирует всю
+        историю Codex (~10k файлов в ~/.codex/sessions), что блокирует ответ
+        пользователю на /pN на несколько секунд.
+        """
+        target = projects_root / "project_alpha"
+        fake_backend = FakeProjectBackend(
+            BackendName.CLAUDE,
+            session_files=[],
+            snapshots={},
+        )
+
+        patches = _patch_config_paths(projects_root, target, last_project_file)
+        with patches[0], patches[1], patches[2], patch.object(
+            coding_agent_backend,
+            "get_all_backends",
+            return_value=[fake_backend],
+        ):
+            await project_manager.collect_pending_messages_for_project(str(target))
+
+        assert fake_backend.list_lookback_history, (
+            "collect_pending_messages не вызвал list_all_session_files_for_project"
+        )
+        assert (
+            fake_backend.list_lookback_history[-1]
+            == project_manager.config.OPERATIONAL_SESSION_LOOKBACK_DAYS
+        ), (
+            "Сбор pending должен ограничивать листинг operational lookback окном, "
+            f"но передал lookback_days={fake_backend.list_lookback_history[-1]}"
+        )
 
     @pytest.mark.asyncio()
     async def test_collect_pending_messages_for_active_project_uses_existing_collector(

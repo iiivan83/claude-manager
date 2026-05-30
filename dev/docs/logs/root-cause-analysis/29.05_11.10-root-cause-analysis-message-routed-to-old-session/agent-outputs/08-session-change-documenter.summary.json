@@ -1,0 +1,62 @@
+{
+  "agent": "session-change-documenter",
+  "status": "completed",
+  "result_file": "dev/docs/logs/root-cause-analysis/29.05_11.10-root-cause-analysis-message-routed-to-old-session/agent-outputs/08-session-change-documenter.result.md",
+  "decisions": [
+    {
+      "trigger": "session-report",
+      "result": "created",
+      "file": "dev/docs/session-reports/29-05/11-26_session-overflow-retry-spam-rca.md",
+      "reason": "RCA-пайплайн создал RCA-отчёт и orchestrator-log, провёл исследование, зафиксировал решения и одобренные рекомендации — все три условия из триггера 'Сессионный отчёт' выполнены"
+    },
+    {
+      "trigger": "adr",
+      "result": "skipped",
+      "reason": "В рамках сессии не было принято и применено архитектурное решение. RCA сформулировал [ARCHITECTURE] рекомендацию принципа классификации ошибок backend, но это рекомендация, а не решение к реализации; код и архитектура проекта не изменялись"
+    },
+    {
+      "trigger": "claude-md-update-log",
+      "result": "skipped",
+      "reason": "CLAUDE.md в сессии не изменялся; RCA содержит рекомендацию обсудить вставку нового принципа, но сама вставка не выполнялась"
+    },
+    {
+      "trigger": "brd",
+      "result": "skipped",
+      "reason": "Пользовательские сценарии (CJM) не менялись — проблема в retry-механизме на инфраструктурном слое, видимый для пользователя UX-исход не переопределялся"
+    },
+    {
+      "trigger": "docs-index",
+      "result": "skipped",
+      "reason": "Структура папок проекта не менялась. Папка dev/docs/logs/root-cause-analysis/ существовала ранее; пайплайн создал внутри неё лишь новую подпапку конкретного запуска, что не является изменением назначения папки"
+    },
+    {
+      "trigger": "architecture-md",
+      "result": "skipped",
+      "reason": "Файл architecture.md в проекте отсутствует. RCA рекомендует ввести новый архитектурный принцип ('Классификация ошибок backend по повторяемости') и предлагает место вставки, но в этой сессии принцип НЕ установлен — он лишь рекомендован к внедрению. Создавать architecture.md по факту рекомендации без явного применения нельзя"
+    }
+  ],
+  "files_created": [
+    "dev/docs/session-reports/29-05/11-26_session-overflow-retry-spam-rca.md"
+  ],
+  "files_updated": [],
+  "files_unchanged_by_design": [
+    "CLAUDE.md",
+    "dev/docs/docs-index.md",
+    "dev/docs/brd/brd-user-journeys.md",
+    "dev/docs/adr/",
+    "dev/docs/claude-md-updates/",
+    "architecture.md"
+  ],
+  "code_changes": "none",
+  "next_step_input": {
+    "summary": "RCA-пайплайн закрыт документально. Корень и рекомендации зафиксированы в RCA-отчёте, сессионный отчёт создан. Для применения рекомендаций к коду нужен отдельный запуск apply-root-cause-fixes или ручной фикс.",
+    "open_recommendations": [
+      "[ARCHITECTURE] Добавить принцип 'Классификация ошибок backend по повторяемости' в architecture.md (либо в раздел 'Архитектурные принципы' CLAUDE.md, если architecture.md остаётся отсутствующим) — после принципа 'Привязка рабочей директории к запросу'",
+      "[DOC] Обновить dev/docs/specs/realised/process_manager_spec.md рядом со строкой 338: перечислить известные постоянные ошибки и описать поведение 'постоянная ошибка → повтор не запускается'",
+      "[CODE] Добавить is_permanent_error_text в src/claude_manager/coding_agent_backend.py, реализовать в claude_code_backend.py и codex_backend.py через именованные константы, поставить гард перед повтором в process_manager.py (_send_message_backend_aware строка 1011 и _retry_loop строки 593–646), при постоянной ошибке возвращать пользователю понятное сообщение",
+      "[CODE, вторично] Обсудить отдельно: /new останавливает зависший запрос прошлой сессии; /stop бьёт по фоновым сессиям",
+      "[SKILL] В скиллах-пайплайнах реализации/проверки добавить шаг 'свериться, что внедрены ВСЕ одобренные рекомендации RCA'"
+    ],
+    "session_report_path": "dev/docs/session-reports/29-05/11-26_session-overflow-retry-spam-rca.md"
+  }
+}

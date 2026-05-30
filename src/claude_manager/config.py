@@ -19,10 +19,6 @@ _ENV_WORKING_DIR = "CLAUDE_WORKING_DIR"
 _ENV_PROJECTS_ROOT = "PROJECTS_ROOT_DIR"
 _ENV_E2E_TEST_USER_ID = "E2E_TEST_USER_ID"
 
-# Значение PROJECTS_ROOT_DIR по умолчанию — папка, где у пользователя лежат проекты.
-# Используется, если переменная окружения не задана. Бот ищет проекты здесь для команды /projects.
-DEFAULT_PROJECTS_ROOT = "/Users/ivan/Desktop/claude-sandbox"
-
 # Имя файла, в котором бот запоминает последний выбранный проект.
 # Файл лежит в домашней папке пользователя — не зависит от рабочей директории.
 # Используется для восстановления выбранного проекта после перезапуска бота.
@@ -39,6 +35,13 @@ CURRENT_BACKEND_FILE: Path = Path.home() / ".claude-manager-current-backend"
 # Максимальное время хранения снапшота непрочитанных сообщений (часы).
 # Сообщения старше этого возраста не доставляются при возврате в проект.
 UNREAD_BUFFER_TTL_HOURS: int = 3
+
+# Окно (в днях) для оперативного листинга файлов сессий — применяется и в reset_state
+# при переключении проекта, и в каждом poll_once watcher'а, и при сборе pending-сообщений.
+# Codex использует in-memory operational index для этого окна, поэтому повторные
+# обращения не перечитывают глобальную историю rollout-файлов на горячем пути /pN.
+# Значение 4 = сегодня и три предыдущих дня.
+OPERATIONAL_SESSION_LOOKBACK_DAYS: int = 4
 
 # Константы модуля — заполняются после вызова load_config()
 BOT_TOKEN: str = ""
@@ -93,10 +96,14 @@ def _resolve_working_dir(raw_value: str | None) -> str:
 
 def _resolve_projects_root(raw_value: str | None) -> str:
     """Определяет абсолютный путь к корневой папке со всеми проектами."""
-    # Пустое значение трактуется как «не задано» — используем значение по умолчанию
-    path_to_resolve = raw_value if raw_value else DEFAULT_PROJECTS_ROOT
+    # Пустое значение — ошибка: PROJECTS_ROOT_DIR обязателен.
+    if not raw_value:
+        raise ConfigError(
+            f"{_ENV_PROJECTS_ROOT} не задан. "
+            "Укажите путь к корневой папке проектов в файле .env"
+        )
 
-    resolved_path = os.path.abspath(path_to_resolve)
+    resolved_path = os.path.abspath(raw_value)
 
     if not os.path.isdir(resolved_path):
         raise ConfigError(

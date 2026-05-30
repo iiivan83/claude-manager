@@ -10,6 +10,7 @@ import pytest
 from claude_manager.coding_agent_backend import (
     BackendName,
     BackendProtocolError,
+    PermanentErrorKind,
     SessionFileInfo,
     SessionFileSnapshot,
     SessionMessage,
@@ -88,6 +89,84 @@ def test_compose_args_for_resume_session_appends_resume(
     )
 
     assert command_args[-2:] == ["--resume", session_id]
+
+
+def test_compose_args_pins_opus_4_8_model(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot pins the exact Opus 4.8 version instead of the rolling 'opus' alias."""
+    monkeypatch.setattr(
+        "claude_manager.claude_code_backend._resolve_claude_binary_path",
+        lambda: "/bin/claude",
+    )
+
+    command_args = backend.compose_subprocess_command_args(
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        [],
+    )
+
+    assert "--model" in command_args, (
+        "Backend must pass --model so the bot does not depend on subscription default"
+    )
+    model_index = command_args.index("--model")
+    assert command_args[model_index + 1] == "claude-opus-4-8", (
+        f"Must pin the exact 4.8 version, not the rolling alias "
+        f"(got: {command_args[model_index + 1]!r})"
+    )
+
+
+def test_compose_args_disallow_ask_user_question_tool(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot mode must explicitly disable AskUserQuestion so questions arrive as text."""
+    monkeypatch.setattr(
+        "claude_manager.claude_code_backend._resolve_claude_binary_path",
+        lambda: "/bin/claude",
+    )
+
+    command_args = backend.compose_subprocess_command_args(
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        [],
+    )
+
+    assert "--disallowedTools" in command_args, (
+        "Bot must pass --disallowedTools to disable interactive UI tools"
+    )
+    disallow_value = command_args[command_args.index("--disallowedTools") + 1]
+    disallowed_tool_names = disallow_value.replace(",", " ").split()
+    assert "AskUserQuestion" in disallowed_tool_names, (
+        f"AskUserQuestion must be disallowed (got: {disallow_value!r})"
+    )
+
+
+def test_compose_args_append_system_prompt_explains_text_only_questions(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot mode appends a system prompt telling Claude to ask via plain text."""
+    monkeypatch.setattr(
+        "claude_manager.claude_code_backend._resolve_claude_binary_path",
+        lambda: "/bin/claude",
+    )
+
+    command_args = backend.compose_subprocess_command_args(
+        "_new_abc123def456",
+        "/tmp/project",
+        "hello",
+        [],
+    )
+
+    assert "--append-system-prompt" in command_args, (
+        "Bot must pass --append-system-prompt to instruct Claude on text-only questions"
+    )
+    appended_prompt = command_args[command_args.index("--append-system-prompt") + 1]
+    lowered_prompt = appended_prompt.lower()
+    assert "telegram" in lowered_prompt, (
+        f"System prompt must mention Telegram context (got: {appended_prompt!r})"
+    )
 
 
 def test_compose_args_ignore_prompt_text_and_image_paths(
@@ -184,6 +263,34 @@ def test_stdout_event_extractors(backend: ClaudeCodeBackend) -> None:
     assert backend.read_terminal_status_from_event(result_event) == TerminalStatus.SUCCESS
     assert backend.read_terminal_status_from_event(error_event) == TerminalStatus.FAILED
     assert backend.read_terminal_status_from_event({"type": "assistant"}) is None
+
+
+def test_classify_permanent_error_recognizes_overflow_and_limit(
+    backend: ClaudeCodeBackend,
+) -> None:
+    """Постоянные ошибки Claude распознаются по тексту, временные — нет."""
+    # Переполнение контекста сессии (инцидент 29-05) — повтор бессмыслен.
+    assert (
+        backend.classify_permanent_error("Prompt is too long")
+        == PermanentErrorKind.CONTEXT_OVERFLOW
+    )
+    # Регистр не важен: Claude не гарантирует капитализацию текста ошибки.
+    assert (
+        backend.classify_permanent_error("PROMPT IS TOO LONG")
+        == PermanentErrorKind.CONTEXT_OVERFLOW
+    )
+    # Исчерпан лимит запросов (инцидент 13-04) — тоже постоянная ошибка.
+    assert (
+        backend.classify_permanent_error(
+            "Claude AI usage limit reached — you've hit your limit"
+        )
+        == PermanentErrorKind.USAGE_LIMIT
+    )
+    # Временная ошибка остаётся повторяемой.
+    assert backend.classify_permanent_error("Error: service unavailable") is None
+    # Пустой текст ошибки считаем повторяемым (поведение как раньше).
+    assert backend.classify_permanent_error(None) is None
+    assert backend.classify_permanent_error("") is None
 
 
 def test_read_progress_text_prefers_text_over_thinking(
@@ -386,6 +493,103 @@ async def test_read_session_file_snapshot_marks_assistant_last_as_active(
     write_jsonl_file(session_file, [{"type": "assistant", "message": {"content": ""}}])
 
     snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert snapshot.is_turn_active is True
+
+
+async def test_read_session_file_snapshot_turn_active_after_tool_result(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """A user tool_result after assistant text means Claude is still processing.
+
+    Регрессионная защита: до фикса is_turn_active определялся по типу последнего
+    record (BUSY_EVENT_TYPES = {assistant, progress, queue-operation}), и после
+    user-tool_result turn ошибочно считался закрытым. Это приводило к тому, что
+    watcher помечал промежуточный assistant text как is_final=True, и в Telegram
+    приходил «финал» посреди работы Claude (особенно заметно в silence mode).
+    Корректный критерий: turn закрыт только когда в файле есть result-event
+    позже последнего assistant.
+    """
+    session_file = tmp_path / "after_tool_result.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {"type": "user", "message": {"content": "do something"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Sure, checking"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_01",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_01",
+                            "content": "file.txt",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert snapshot.is_turn_active is True
+
+
+async def test_read_session_file_cursor_turn_active_after_tool_result(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """Cursor reader uses the same is_turn_active rule as the full snapshot."""
+    session_file = tmp_path / "cursor_after_tool_result.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {"type": "user", "message": {"content": "do something"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Sure"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_02",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
+                    ],
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_02",
+                            "content": "ok",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    snapshot = await backend.read_session_file_cursor(str(session_file))
 
     assert snapshot.is_turn_active is True
 

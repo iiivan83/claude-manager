@@ -11,6 +11,7 @@ import shutil
 from collections.abc import AsyncGenerator
 
 from claude_manager import config
+from claude_manager.claude_code_backend import CLAUDE_OPUS_MODEL_ID
 from claude_manager.coding_agent_backend import CodingAgentBackend
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ def _build_command_args(session_id: str | None) -> list[str]:
         "--verbose",
         "--input-format", STREAM_JSON_INPUT_FORMAT,
         "--dangerously-skip-permissions",
+        "--model", CLAUDE_OPUS_MODEL_ID,
         "--effort", "max",
     ]
 

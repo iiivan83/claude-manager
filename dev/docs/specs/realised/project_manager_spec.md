@@ -1,18 +1,18 @@
 # Спецификация модуля: project_manager
 
 Дата: 06-05-2026
-Слой: 4 (зависит от слоёв 0-3: `config`, `coding_agent_backend`, `unread_buffer`, `current_backend_registry`, `session_manager`, `daily_session_registry`, `session_watcher`)
-Файл: `src/claude_manager/project_manager.py`
+Слой: 4 (зависит от слоёв 0-3: `config`, `coding_agent_backend`, `unread_buffer`, `current_backend_registry`, `session_manager`, `daily_session_registry`, `session_watcher`; pending-сбор вынесен в `project_pending_delivery`)
+Файл: `src/claude_manager/project_manager.py`, вспомогательный модуль `src/claude_manager/project_pending_delivery.py`
 
 **Связанные спеки:**
 
 - `coding_agent_backend_spec.md` — абстрактный интерфейс CLI-бэкенда. Источник `BackendName`, `SessionFileInfo`, `SessionFileSnapshot`. Используется для operational-перечисления всех сессий нового проекта (`backend.list_all_session_files_for_project`) и для дельта-чтения JSONL (`backend.read_session_file_snapshot`). UI-метод `list_session_files_for_project` остаётся для `/sessions`.
 - `claude_code_backend_spec.md`, `codex_backend_spec.md` — конкретные реализации, выбираются через `get_backend(BackendName)` для backend-aware доставки непрочитанных.
 - `current_backend_registry_spec.md` — глобальный реестр выбранного бэкенда. **НЕ сбрасывается** при переключении проекта (явное архитектурное решение, см. раздел «Однопользовательский инвариант и неизменяемость глобальных модулей»).
-- `unread_buffer_spec.md` — тонкое in-memory хранилище счётчиков непрочитанных. Новый API: `save_snapshot(session_id, backend, raw_record_count)`, `restore_snapshot(session_id, backend) -> int | None`, `clear_expired()`. Все старые функции (`has_pending`, `get_pending_messages`, `clear_snapshot` по `project_path`) отброшены.
+- `unread_buffer_spec.md` — тонкое in-memory хранилище cursor-состояния непрочитанных. API: `save_snapshot(session_id, backend, raw_record_count, last_delivered_idx, last_modified_at=None)`, `restore_snapshot(session_id, backend) -> SessionUnreadState | None`, `clear_expired()`. Старые функции (`has_pending`, `get_pending_messages`, `clear_snapshot` по `project_path`) сохранены только как compatibility no-op.
 - `session_manager_spec.md` — backend-aware привязки `chat_id ↔ ActiveSession(session_id, backend)`, `reset_state` (async).
 - `daily_session_registry_spec.md` — backend-aware дневной реестр `DailySessionEntry(session_id, backend)`, `reset_state` (async, внутри запускает orphan cleanup).
-- `session_watcher_spec.md` — две независимые инстанции (по одной на каждый `BackendName`). `pause_all()` / `resume_all()` — **синхронные**, паузят/возобновляют обе инстанции. `reset_state()` — async. `get_seen_counts_snapshot(backend)` — sync, отдаёт `dict[session_id, raw_count]` для одного бэкенда.
+- `session_watcher_spec.md` — две независимые инстанции (по одной на каждый `BackendName`). `pause_all()` / `resume_all()` — **синхронные**, паузят/возобновляют обе инстанции. `reset_state()` — async. `get_seen_counts_snapshot(backend)` — sync, отдаёт `dict[session_id, SessionUnreadState]` для одного бэкенда, включая `last_modified_at`.
 - `process_manager_spec.md` — composite key `(session_id, BackendName)`. Процессы при переключении проекта **не останавливаются** — это явное решение, продолжают работать в фоне.
 - `dev/docs/specs/realised/project_manager_spec.md` (после реализации backend-абстракции) — старая Claude-only версия, сохраняется в `realised/` для трейсабельности.
 
@@ -27,6 +27,20 @@
 Модуль не знает о Telegram API — он только работает с файловой системой, координирует state-модули и возвращает структурированный результат `SwitchResult`. Верхний слой (`bot.py`) превращает результат в Telegram-сообщения и доставляет непрочитанные пользователю.
 
 **Контракт «не убиваем процессы».** При переключении проекта `process_manager._processes` НЕ модифицируется. Уже запущенные subprocess'ы Claude/Codex продолжают писать ответы в JSONL-файлы своего исходного проекта. При возврате в проект эти ответы становятся «непрочитанными» и доставляются через дельту по `unread_buffer`. Это согласовано с CLAUDE.md → «Переключение проектов» и с `process_manager_spec.md` → «Контракт ключей и захват backend» (захваченный backend и cwd держатся до завершения turn-а независимо от глобальных мутаций).
+
+## Актуализация 30-05-2026: быстрый pending без изменения UX `/pN`
+
+Переключение проекта по-прежнему отвечает пользователю только после штатной pending-проверки. UX не менялся: бот не отправляет раннее «переключено» и не досылает pending фоном.
+
+Изменилась внутренняя стоимость проверки. `project_manager.py` больше не содержит саму логику чтения pending: она вынесена в `project_pending_delivery.py`, чтобы основной модуль оставался координатором переключения и не рос обратно в god-модуль. Новый pending-алгоритм работает так:
+
+1. В `unread_buffer` хранится `SessionUnreadState` с `raw_record_count`, `last_delivered_idx` и `last_modified_at` файла, который видел watcher.
+2. Если текущий `SessionFileInfo.last_modified_at` не больше сохранённого `last_modified_at`, файл не читается вообще.
+3. Если `mtime` изменился, сначала читается лёгкий cursor через `backend.read_session_file_cursor(file_path)`.
+4. Полный `read_session_file_snapshot(file_path)` вызывается только когда raw-count вырос.
+5. Проверки нескольких изменившихся файлов идут параллельно с лимитом 16; ошибка одного файла логируется и не отменяет pending для остальных.
+
+Практический смысл: чистый возврат в проект больше не перечитывает полные JSONL snapshot-ы сессий, где ничего не изменилось. Это сохраняет порядок сообщений `/pN`, но убирает лишнюю I/O-стоимость.
 
 ## Расхождение с Claude-only версией спеки (10-04-2026)
 

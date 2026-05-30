@@ -18,6 +18,7 @@ from claude_manager.coding_agent_backend import (
     BackendName,
     BackendProtocolError,
     CodingAgentBackend,
+    PermanentErrorKind,
     StopStrategy,
     TerminalStatus,
     UnifiedEvent,
@@ -103,6 +104,9 @@ class SendResult:
     retries_used: int
     backend: BackendName = BackendName.CLAUDE
     error_text: str | None = None
+    # Заполняется, если ошибка постоянная (повтор бессмыслен): транспортный
+    # слой по этому полю показывает понятное сообщение вместо «повтор N/10».
+    permanent_error_kind: PermanentErrorKind | None = None
 
 
 @dataclass(frozen=True)
@@ -361,6 +365,12 @@ async def _process_events(
     terminal_event: UnifiedEvent | None = None
     callback_fired = False
     effective_backend = backend_obj or get_backend(backend_name)
+    # Look-ahead против дубля «промежуточное+финальное»: текст из assistant-события
+    # сначала кладётся в pending, а уходит к пользователю как progress только если
+    # позже мы убедились, что он НЕ совпадает с финальным result.result.
+    # Совпадает → подавляем (финал уйдёт один раз через SendResult).
+    # Не совпадает → это был thinking или промежуточный текст до tool_use → flush.
+    pending_progress_text: str | None = None
 
     async for event in _iter_events_from_managed_process(
         claude_process, effective_backend,
@@ -369,6 +379,14 @@ async def _process_events(
             _check_stop_requested(final_session_id, backend_name)
         else:
             _check_stop_requested(final_session_id)
+
+        is_terminal_event = effective_backend.is_turn_complete_event(event)
+
+        if pending_progress_text is not None and not is_terminal_event:
+            if progress_callback and _should_send_progress(last_progress_time):
+                await progress_callback(final_session_id, pending_progress_text)
+                last_progress_time = time.monotonic()
+            pending_progress_text = None
 
         event_session_id = effective_backend.read_session_id_from_event(event)
         if event_session_id is not None and event_session_id != final_session_id:
@@ -395,21 +413,27 @@ async def _process_events(
                     )
 
         progress_text = effective_backend.read_progress_text_from_event(event)
-        if (
-            progress_text
-            and progress_callback
-            and _should_send_progress(last_progress_time)
-        ):
-            await progress_callback(final_session_id, progress_text)
-            last_progress_time = time.monotonic()
+        if progress_text:
+            pending_progress_text = progress_text
 
         assistant_text = effective_backend.read_assistant_text_from_event(event)
         if assistant_text is not None:
             last_assistant_text = assistant_text
 
-        if effective_backend.is_turn_complete_event(event):
+        if is_terminal_event:
             terminal_event = event
             terminal_status = effective_backend.read_terminal_status_from_event(event)
+            # Если pending не совпадает с финалом — это был thinking/промежуточный
+            # текст, его надо доставить пользователю как progress.
+            if (
+                pending_progress_text is not None
+                and pending_progress_text != last_assistant_text
+                and progress_callback
+                and _should_send_progress(last_progress_time)
+            ):
+                await progress_callback(final_session_id, pending_progress_text)
+                last_progress_time = time.monotonic()
+            pending_progress_text = None
             break
 
     if terminal_status is None:
@@ -554,6 +578,38 @@ def _build_exhausted_result(
     )
 
 
+def _classify_permanent_error_result(
+    error_result: SendResult,
+    backend_name: BackendName,
+) -> SendResult | None:
+    """Возвращает готовый результат, если повторять ошибку бессмысленно.
+
+    Спрашивает у backend-контракта, постоянная ли это ошибка (переполнение
+    контекста, исчерпанный лимит). Если да — повтор не нужен: собираем финальный
+    результат с пометкой permanent_error_kind, чтобы транспортный слой показал
+    пользователю понятное сообщение вместо «повтор N/10». None — ошибка может
+    быть временной, повтор имеет смысл.
+    """
+    permanent_error_kind = get_backend(backend_name).classify_permanent_error(
+        error_result.error_text or error_result.text
+    )
+    if permanent_error_kind is None:
+        return None
+    logger.warning(
+        "Постоянная ошибка backend=%s session_id=%s kind=%s — повтор пропущен",
+        backend_name.value, error_result.session_id, permanent_error_kind.value,
+    )
+    return SendResult(
+        text=error_result.text,
+        session_id=error_result.session_id,
+        is_error=True,
+        retries_used=0,
+        backend=backend_name,
+        error_text=error_result.error_text,
+        permanent_error_kind=permanent_error_kind,
+    )
+
+
 async def _retry_loop(
     session_id: str,
     text: str,
@@ -612,6 +668,9 @@ async def _retry_loop(
                 is_error=False, retries_used=attempt,
                 backend=backend_name, error_text=None,
             )
+        permanent_result = _classify_permanent_error_result(result, backend_name)
+        if permanent_result is not None:
+            return permanent_result
         logger.warning(
             "Ретрай %d вернул ошибку (сессия %s): %s",
             attempt, session_id, (result.error_text or result.text)[:200],
@@ -690,14 +749,39 @@ async def _restart_process(
     # Без этого перезапущенный процесс неуправляем: повторный /stop
     # не найдёт stop_event, is_busy() не увидит busy_flag.
     should_abort_restart = False
+    orphan_to_kill: ManagedProcess | None = None
     async with _busy_lock:
         stop_event = _stop_events.get(process_key)
         if stop_event is not None and stop_event.is_set():
             should_abort_restart = True
         else:
+            # Защита от orphan: subprocess из предыдущего turn'а
+            # мог не умереть сам после result event (медленный shutdown,
+            # зависший pipe, ошибка cleanup внутри CLI). Если ссылка
+            # на него ещё в _processes — остановим его до перезаписи.
+            # Без этого старый PID становится orphan'ом: stop_process
+            # будет видеть только новую ссылку.
+            previous_process = _processes.get(process_key)
+            if previous_process is not None and previous_process.is_running():
+                orphan_to_kill = previous_process
             _processes[process_key] = claude_process
             _busy_flags[process_key] = True
             _stop_events[process_key] = stop_event or asyncio.Event()
+
+    if orphan_to_kill is not None:
+        logger.warning(
+            "Обнаружен orphan-процесс при перезапуске: "
+            "session_id=%s backend=%s old_pid=%d new_pid=%d",
+            session_id, backend_name.value,
+            orphan_to_kill.process.pid, claude_process.process.pid,
+        )
+        try:
+            await _apply_backend_stop_strategy(orphan_to_kill, backend_name)
+        except (ProcessLookupError, OSError) as stop_error:
+            logger.warning(
+                "Ошибка при остановке orphan-процесса PID=%d: %s",
+                orphan_to_kill.process.pid, stop_error,
+            )
 
     if should_abort_restart:
         if claude_process.is_running():
@@ -964,6 +1048,11 @@ async def _send_message_backend_aware(
             )
 
         if result.is_error:
+            permanent_result = _classify_permanent_error_result(
+                result, effective_backend,
+            )
+            if permanent_result is not None:
+                return permanent_result
             error_reason = (
                 (result.error_text or result.text)[:200]
                 if (result.error_text or result.text)
@@ -1046,6 +1135,11 @@ async def _execute_send(
         )
 
     if result.is_error:
+        permanent_result = _classify_permanent_error_result(
+            result, BackendName.CLAUDE,
+        )
+        if permanent_result is not None:
+            return permanent_result
         logger.warning(
             "Claude вернул ошибку (сессия %s): %s",
             current_session_id, result.text[:200],
@@ -1206,7 +1300,16 @@ async def update_session_id(
     async with _busy_lock:
         old_key = _prefer_existing_process_key_unlocked(old_session_id, backend)
         old_session_id, resolved_backend = _split_process_key(old_key)
-        new_key = _make_process_key(new_session_id, resolved_backend)
+        # Сохраняем форму ключа: если состояние лежит под tuple-ключом
+        # (backend-aware путь), новый ключ тоже обязан быть tuple. Иначе
+        # _make_process_key схлопнет его в голую строку для CLAUDE,
+        # состояние переедет под строковый ключ, а finally backend-aware
+        # пути чистит только tuple-ключи — выставленный stop_event останется
+        # висеть и убьёт следующий turn (сессия «не оживает» после /stop).
+        if isinstance(old_key, tuple):
+            new_key = _make_backend_process_key(new_session_id, resolved_backend)
+        else:
+            new_key = _make_process_key(new_session_id, resolved_backend)
         new_key = _session_id_aliases.get(new_key, new_key)
         new_session_id, _new_backend = _split_process_key(new_key)
         if old_key == new_key:

@@ -15,7 +15,9 @@ from claude_manager.claude_code_session_file_reader import (
     EVENT_TYPE_ASSISTANT,
     EVENT_TYPE_RESULT,
     MAX_RECENT_SESSIONS,
+    list_all_session_file_infos_for_project,
     list_session_file_infos_for_project,
+    read_session_file_cursor as read_claude_session_file_cursor,
     read_session_file_snapshot as read_claude_session_file_snapshot,
     session_file_exists_for_project as claude_session_file_exists_for_project,
 )
@@ -25,6 +27,7 @@ from claude_manager.coding_agent_backend import (
     BackendName,
     BackendProtocolError,
     CodingAgentBackend,
+    PermanentErrorKind,
     SessionFileInfo,
     SessionFileSnapshot,
     SessionMessage,
@@ -37,6 +40,11 @@ from claude_manager.coding_agent_backend import (
 BACKEND_DISPLAY_NAME_CLAUDE = "🤖 Claude"
 CLAUDE_CLI_DEFAULT_PATH = "/usr/local/bin/claude"
 
+# Точное имя API-модели Claude Opus 4.8 (вышла 28.05.2026). Фиксируем версию,
+# а не алиас "opus" — чтобы при выходе следующей модели бот не уехал на неё
+# автоматически и поведение оставалось воспроизводимым.
+CLAUDE_OPUS_MODEL_ID = "claude-opus-4-8"
+
 STREAM_JSON_INPUT_FORMAT = "stream-json"
 STREAM_JSON_OUTPUT_FORMAT = "stream-json"
 STREAM_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
@@ -45,12 +53,35 @@ TERMINATE_TIMEOUT_SECONDS = 5
 
 CONTENT_BLOCK_THINKING = "thinking"
 
+# В bot-режиме Claude общается с пользователем через Telegram, а не через TUI Claude Code.
+# Инструмент AskUserQuestion в Telegram не работает: его «плашка» с вариантами никуда
+# не доставляется, и Claude получает пустой ответ → уходит в «разумный дефолт».
+# Отключаем инструмент и просим Claude задавать вопросы обычным текстом.
+DISALLOWED_TOOLS_IN_BOT_MODE = "AskUserQuestion"
+BOT_MODE_SYSTEM_PROMPT_APPENDIX = (
+    "You are running inside a Telegram bot, not the interactive Claude Code TUI. "
+    "The user cannot see interactive pickers or option menus. "
+    "If you need to ask the user a question, write the question as plain text "
+    "in your response (with numbered options when appropriate) and wait for the "
+    "user's next text message. Never rely on UI-based question tools."
+)
+
 CLAUDE_CODE_STOP_STRATEGY = StopStrategy(
     steps=(
         StopSignalStep(signal.SIGTERM, float(TERMINATE_TIMEOUT_SECONDS)),
         StopSignalStep(signal.SIGKILL, 0.0),
     )
 )
+
+# Подстроки финального result-события Claude (is_error=true), при которых
+# повтор бессмыслен: --resume каждый раз грузит то же самое состояние,
+# поэтому каждая из 10 попыток обречена падать снова. Источник строк —
+# реальные инциденты в логах бота (dev/docs/logs/root-cause-reports):
+#   29-05 "Prompt is too long"   → история сессии не помещается в модель
+#   13-04 "You've hit your limit" → исчерпан лимит запросов к Claude
+# Сравнение регистронезависимое — Claude присылает текст без гарантий капитализации.
+CLAUDE_CONTEXT_OVERFLOW_ERROR_MARKERS = ("prompt is too long",)
+CLAUDE_USAGE_LIMIT_ERROR_MARKERS = ("hit your limit",)
 
 
 def _resolve_claude_binary_path() -> str:
@@ -97,8 +128,14 @@ class ClaudeCodeBackend(CodingAgentBackend):
             "--input-format",
             STREAM_JSON_INPUT_FORMAT,
             "--dangerously-skip-permissions",
+            "--model",
+            CLAUDE_OPUS_MODEL_ID,
             "--effort",
             "max",
+            "--disallowedTools",
+            DISALLOWED_TOOLS_IN_BOT_MODE,
+            "--append-system-prompt",
+            BOT_MODE_SYSTEM_PROMPT_APPENDIX,
         ]
         if not session_id.startswith("_new_"):
             command_args.extend(["--resume", session_id])
@@ -190,9 +227,18 @@ class ClaudeCodeBackend(CodingAgentBackend):
     async def list_all_session_files_for_project(
         self,
         project_dir: str,
+        lookback_days: int | None = None,
     ) -> list[SessionFileInfo]:
-        """Return all Claude session files for operational flows."""
-        return await list_session_file_infos_for_project(project_dir)
+        """Return Claude session files for operational flows.
+
+        Claude sessions live in a per-project directory, so listing is already
+        cheap. lookback_days, when set, filters the result by file mtime so
+        callers get the same recency semantics across backends.
+        """
+        return await list_all_session_file_infos_for_project(
+            project_dir,
+            lookback_days=lookback_days,
+        )
 
     async def session_file_exists_for_project(
         self,
@@ -228,6 +274,13 @@ class ClaudeCodeBackend(CodingAgentBackend):
         """Read messages and watcher cursor state from one Claude JSONL file."""
         return await read_claude_session_file_snapshot(file_path)
 
+    async def read_session_file_cursor(
+        self,
+        file_path: str,
+    ) -> SessionFileSnapshot:
+        """Read lightweight cursor state from one Claude JSONL file."""
+        return await read_claude_session_file_cursor(file_path)
+
     def is_error_event(self, event: UnifiedEvent) -> bool:
         """Return whether a Claude stdout event is an error result."""
         return event.get("type") == EVENT_TYPE_RESULT and bool(event.get("is_error"))
@@ -238,6 +291,26 @@ class ClaudeCodeBackend(CodingAgentBackend):
             return None
         error_text = event.get("result")
         return error_text if isinstance(error_text, str) and error_text else None
+
+    def classify_permanent_error(
+        self,
+        error_text: str | None,
+    ) -> PermanentErrorKind | None:
+        """Recognize Claude error texts that must not be retried."""
+        if not error_text:
+            return None
+        normalized_error_text = error_text.lower()
+        if any(
+            marker in normalized_error_text
+            for marker in CLAUDE_CONTEXT_OVERFLOW_ERROR_MARKERS
+        ):
+            return PermanentErrorKind.CONTEXT_OVERFLOW
+        if any(
+            marker in normalized_error_text
+            for marker in CLAUDE_USAGE_LIMIT_ERROR_MARKERS
+        ):
+            return PermanentErrorKind.USAGE_LIMIT
+        return None
 
     def read_terminal_status_from_event(
         self,

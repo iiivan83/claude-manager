@@ -37,9 +37,10 @@ POLL_INTERVAL_SECONDS = session_watcher.POLL_INTERVAL_SECONDS
 ERROR_RETRY_DELAY_SECONDS = session_watcher.ERROR_RETRY_DELAY_SECONDS
 REGISTRY_FILENAME = "daily_sessions.json"
 DATE_FORMAT = "%Y-%m-%d"
+MAX_CONCURRENT_BASELINE_READS = 16
 
 AllProjectsMessageCallback = Callable[
-    [int, int, int, str, str, BackendName, str, bool],
+    [int, int, int, str, str, str, BackendName, str, bool],
     Awaitable[None],
 ]
 
@@ -76,6 +77,7 @@ class _AllMonitorState:
     parsed_message_count: int = 0
     last_delivered_idx: int = -1
     is_turn_active: bool = False
+    last_modified_at: float = 0.0
 
 
 _enabled_chat_ids: set[int] = set()
@@ -219,29 +221,74 @@ def _assign_session_numbers(
     return result
 
 
+async def _collect_backend_sessions_individually(
+    backend: CodingAgentBackend,
+    projects: list[project_manager.ProjectInfo],
+) -> dict[str, list[SessionFileInfo]]:
+    """Collect backend session files one project at a time as a fallback."""
+    files_by_project: dict[str, list[SessionFileInfo]] = {}
+    for project in projects:
+        try:
+            files_by_project[project.absolute_path] = (
+                await backend.list_all_session_files_for_project(
+                    project.absolute_path
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Failed to read sessions for project %s (%s)",
+                project.absolute_path,
+                backend.name.value,
+                exc_info=True,
+            )
+            files_by_project[project.absolute_path] = []
+    return files_by_project
+
+
+async def _collect_backend_sessions_by_project(
+    backend: CodingAgentBackend,
+    projects: list[project_manager.ProjectInfo],
+) -> dict[str, list[SessionFileInfo]]:
+    """Collect backend session files for all projects in one backend call."""
+    project_paths = [project.absolute_path for project in projects]
+    bulk_lister = getattr(backend, "list_all_session_files_for_projects", None)
+    if bulk_lister is None:
+        return await _collect_backend_sessions_individually(backend, projects)
+
+    try:
+        files_by_project = await bulk_lister(project_paths)
+    except Exception:
+        logger.warning(
+            "Failed to bulk-read sessions for backend %s",
+            backend.name.value,
+            exc_info=True,
+        )
+        return await _collect_backend_sessions_individually(backend, projects)
+
+    return {
+        project_path: files_by_project.get(project_path, [])
+        for project_path in project_paths
+    }
+
+
 async def _collect_project_sessions() -> list[_ProjectSession]:
     """Collect numbered session files across every visible project."""
     projects = await project_manager.scan_available_projects()
     project_sessions: list[_ProjectSession] = []
     links: dict[tuple[int, int], AllProjectSessionLink] = {}
+    backend_files_by_project = [
+        (
+            backend,
+            await _collect_backend_sessions_by_project(backend, projects),
+        )
+        for backend in coding_agent_backend.get_all_backends()
+    ]
 
     for project_number, project in enumerate(projects, start=1):
         sessions_with_backend: list[tuple[SessionFileInfo, CodingAgentBackend]] = []
 
-        for backend in coding_agent_backend.get_all_backends():
-            try:
-                files = await backend.list_all_session_files_for_project(
-                    project.absolute_path
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to read sessions for project %s (%s)",
-                    project.absolute_path,
-                    backend.name.value,
-                    exc_info=True,
-                )
-                continue
-
+        for backend, files_by_project in backend_files_by_project:
+            files = files_by_project.get(project.absolute_path, [])
             sessions_with_backend.extend(
                 (file_info, backend) for file_info in files
             )
@@ -277,6 +324,77 @@ async def _collect_project_sessions() -> list[_ProjectSession]:
     return project_sessions
 
 
+def _watcher_state_for_project_session(
+    project_session: _ProjectSession,
+    current_project_path: str,
+    current_watcher_states: dict[BackendName, dict[str, object]],
+) -> object | None:
+    """Return normal watcher state when all mode enters from the active project."""
+    if project_session.project_path != current_project_path:
+        return None
+    return current_watcher_states[project_session.backend.name].get(
+        project_session.file_info.session_id
+    )
+
+
+def _baseline_state_from_snapshot(
+    project_session: _ProjectSession,
+    snapshot: SessionFileSnapshot,
+    watcher_state: object | None,
+) -> _AllMonitorState:
+    """Build an all-mode baseline cursor from one session-file snapshot."""
+    if watcher_state is None:
+        last_delivered_idx = len(snapshot.messages) - 1
+        raw_record_count = snapshot.raw_record_count
+    else:
+        last_delivered_idx = getattr(watcher_state, "last_delivered_idx")
+        raw_record_count = getattr(watcher_state, "raw_record_count")
+
+    return _AllMonitorState(
+        raw_record_count=raw_record_count,
+        parsed_message_count=len(snapshot.messages),
+        last_delivered_idx=last_delivered_idx,
+        is_turn_active=snapshot.is_turn_active,
+        last_modified_at=project_session.file_info.last_modified_at,
+    )
+
+
+async def _read_baseline_state(
+    project_session: _ProjectSession,
+    current_project_path: str,
+    current_watcher_states: dict[BackendName, dict[str, object]],
+    semaphore: asyncio.Semaphore,
+) -> tuple[tuple[str, str, BackendName], _AllMonitorState] | None:
+    """Read one session baseline under a concurrency limit."""
+    file_info = project_session.file_info
+    backend = project_session.backend
+    try:
+        async with semaphore:
+            snapshot = await backend.read_session_file_cursor(file_info.file_path)
+    except Exception:
+        logger.warning(
+            "Failed to read all-mode baseline for session %s (%s)",
+            file_info.session_id,
+            backend.name.value,
+            exc_info=True,
+        )
+        return None
+
+    watcher_state = _watcher_state_for_project_session(
+        project_session,
+        current_project_path,
+        current_watcher_states,
+    )
+    return (
+        _state_key(
+            project_session.project_path,
+            file_info.session_id,
+            backend.name,
+        ),
+        _baseline_state_from_snapshot(project_session, snapshot, watcher_state),
+    )
+
+
 async def _build_baseline_states(
     project_sessions: list[_ProjectSession],
 ) -> dict[tuple[str, str, BackendName], _AllMonitorState]:
@@ -286,49 +404,24 @@ async def _build_baseline_states(
         backend: session_watcher.get_seen_counts_snapshot(backend)
         for backend in BackendName
     }
-    states: dict[tuple[str, str, BackendName], _AllMonitorState] = {}
-
-    for project_session in project_sessions:
-        file_info = project_session.file_info
-        backend = project_session.backend
-        try:
-            snapshot = await backend.read_session_file_snapshot(file_info.file_path)
-        except Exception:
-            logger.warning(
-                "Failed to read all-mode baseline for session %s (%s)",
-                file_info.session_id,
-                backend.name.value,
-                exc_info=True,
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_BASELINE_READS)
+    baseline_results = await asyncio.gather(
+        *[
+            _read_baseline_state(
+                project_session,
+                current_project_path,
+                current_watcher_states,
+                semaphore,
             )
-            continue
-
-        watcher_state = None
-        if project_session.project_path == current_project_path:
-            watcher_state = current_watcher_states[backend.name].get(
-                file_info.session_id
-            )
-
-        if watcher_state is None:
-            last_delivered_idx = len(snapshot.messages) - 1
-            raw_record_count = snapshot.raw_record_count
-        else:
-            last_delivered_idx = watcher_state.last_delivered_idx
-            raw_record_count = watcher_state.raw_record_count
-
-        states[
-            _state_key(
-                project_session.project_path,
-                file_info.session_id,
-                backend.name,
-            )
-        ] = _AllMonitorState(
-            raw_record_count=raw_record_count,
-            parsed_message_count=len(snapshot.messages),
-            last_delivered_idx=last_delivered_idx,
-            is_turn_active=snapshot.is_turn_active,
-        )
-
-    return states
+            for project_session in project_sessions
+        ]
+    )
+    return {
+        key: state
+        for result in baseline_results
+        if result is not None
+        for key, state in [result]
+    }
 
 
 async def enable_for_chat(chat_id: int) -> None:
@@ -353,7 +446,21 @@ def _candidate_indices(
     snapshot: SessionFileSnapshot,
 ) -> list[int]:
     """Return message indices eligible for delivery in this poll."""
-    indices = list(range(previous.last_delivered_idx + 1, len(snapshot.messages)))
+    raw_index_candidates = [
+        index
+        for index, message in enumerate(snapshot.messages)
+        if (
+            message.raw_record_index is not None
+            and message.raw_record_index > previous.raw_record_count
+        )
+    ]
+    messages_have_raw_indices = any(
+        message.raw_record_index is not None for message in snapshot.messages
+    )
+    if messages_have_raw_indices:
+        indices = raw_index_candidates
+    else:
+        indices = list(range(previous.last_delivered_idx + 1, len(snapshot.messages)))
     if snapshot.is_turn_active and indices:
         last_idx = len(snapshot.messages) - 1
         indices = [index for index in indices if index < last_idx]
@@ -380,6 +487,7 @@ def _ensure_unread_snapshot(
 def _next_state_from_snapshot(
     previous: _AllMonitorState,
     snapshot: SessionFileSnapshot,
+    last_modified_at: float,
 ) -> _AllMonitorState:
     """Build the next all-mode cursor after a snapshot was processed."""
     if snapshot.is_turn_active and snapshot.messages:
@@ -395,6 +503,7 @@ def _next_state_from_snapshot(
         parsed_message_count=len(snapshot.messages),
         last_delivered_idx=last_delivered_idx,
         is_turn_active=snapshot.is_turn_active,
+        last_modified_at=last_modified_at,
     )
 
 
@@ -426,6 +535,7 @@ async def _deliver_project_session_delta(
                 project_session.project_number,
                 project_session.session_number,
                 project_session.project_name,
+                project_session.project_path,
                 file_info.session_id,
                 backend_name,
                 message.text,
@@ -443,6 +553,8 @@ async def _check_project_session(
     backend = project_session.backend
     key = _state_key(project_session.project_path, file_info.session_id, backend.name)
     previous = _states.get(key, _AllMonitorState())
+    if previous.last_modified_at >= file_info.last_modified_at:
+        return
 
     snapshot = await backend.read_session_file_snapshot(file_info.file_path)
     if snapshot.raw_record_count == 0:
@@ -462,7 +574,11 @@ async def _check_project_session(
         previous,
         callback,
     )
-    _states[key] = _next_state_from_snapshot(previous, snapshot)
+    _states[key] = _next_state_from_snapshot(
+        previous,
+        snapshot,
+        file_info.last_modified_at,
+    )
 
 
 async def poll_once(callback: AllProjectsMessageCallback) -> None:

@@ -1,0 +1,56 @@
+{
+  "pipeline": "spec-creator",
+  "created_at": "2026-05-30T18:54:00+05:00",
+  "task_type": "code_change",
+  "task_description": "Specification for fixing slow project switching through a Codex operational session index",
+  "log_dir": "dev/docs/logs/spec-creator/30.05_18.54-spec-creator-slow-project-switch-codex-index",
+  "spec_path": "dev/docs/specs/30.05_18.54-slow-project-switch-codex-index-spec.md",
+  "runtime_adaptation": "Codex runtime adaptation: the specification was produced directly in this session without spawning separate agents.",
+  "steps": [
+    {
+      "step": "0",
+      "name": "init",
+      "start_time": "2026-05-30T18:54:00+05:00",
+      "end_time": "2026-05-30T18:54:10+05:00",
+      "duration_seconds": 10,
+      "success": true,
+      "comment": "Initialized spec-creator log directory and selected task type code_change."
+    },
+    {
+      "step": "1",
+      "name": "project-context-research",
+      "start_time": "2026-05-30T18:54:10+05:00",
+      "end_time": "2026-05-30T18:57:30+05:00",
+      "duration_seconds": 200,
+      "success": true,
+      "comment": "Read CLAUDE.md, RCA handoff, root-cause report, relevant code modules, tests, specs, and ADRs."
+    },
+    {
+      "step": "2",
+      "name": "requirements-analysis",
+      "start_time": "2026-05-30T18:57:30+05:00",
+      "end_time": "2026-05-30T18:59:20+05:00",
+      "duration_seconds": 110,
+      "success": true,
+      "comment": "Resolved requirements from the RCA handoff: no early switch confirmation, 4-day Codex index, mtime/cursor-first pending, and size-threshold guard."
+    },
+    {
+      "step": "3",
+      "name": "spec-authoring",
+      "start_time": "2026-05-30T18:59:20+05:00",
+      "end_time": "2026-05-30T19:03:00+05:00",
+      "duration_seconds": 220,
+      "success": true,
+      "comment": "Created final implementation specification in dev/docs/specs."
+    },
+    {
+      "step": "4",
+      "name": "self-review",
+      "start_time": "2026-05-30T19:03:00+05:00",
+      "end_time": "2026-05-30T19:04:00+05:00",
+      "duration_seconds": 60,
+      "success": true,
+      "comment": "Checked specification against RCA constraints, project architecture, no-table rule, and implementation readiness."
+    }
+  ]
+}

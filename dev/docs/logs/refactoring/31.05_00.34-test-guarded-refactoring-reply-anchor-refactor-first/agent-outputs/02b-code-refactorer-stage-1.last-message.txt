@@ -1,0 +1,20 @@
+Этап переноса доставки ответов выполнен: обычные ответы и сообщения фонового наблюдателя за сессиями вынесены из бота без добавления Reply Anchor.
+Практически это значит, что следующий этап сможет добавлять metadata для reply-anchor уже в отдельный delivery-модуль, не раздувая обработчики Telegram-команд.
+
+Что изменено:
+- [telegram_response_delivery.py](/home/ivan/claude-sandbox/claude_manager/src/claude_manager/telegram_response_delivery.py) создан: `send_response`, watcher-доставка, заголовки, file markers, silence mode и проверка текущей сессии теперь там.
+- [bot.py](/home/ivan/claude-sandbox/claude_manager/src/claude_manager/bot.py) теперь вызывает delivery-модуль и инжектит callbacks в `claude_interaction` из него.
+- Тестовые import/patch paths обновлены на новый модуль.
+- Обязательный отчёт записан: [02b-code-refactorer-stage-1.json](/home/ivan/claude-sandbox/claude_manager/dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/agent-outputs/02b-code-refactorer-stage-1.json).
+
+Проверка:
+- `py_compile` прошёл.
+- Focused delivery tests: 19 passed.
+- Связанные тесты `test_bot`, `test_claude_interaction`, `test_telegram_response_delivery_behavior`: 172 passed.
+- Полный прогон через venv: 1061 passed, 1 failed, 4 skipped. Единственный fail — внешний интеграционный контракт с реальным Claude CLI: `401 Invalid authentication credentials`.
+- Команда `python -m pytest tests/ -v` не стартует в shell, потому что `python` не найден; рабочая команда здесь — `.venv/bin/python`.
+
+Size gate:
+- `bot.py` уменьшен с 1459 до 1279 строк и с 21 до 18 публичных функций, но всё ещё выше 500 строк и остаётся god-модулем.
+- Новый `telegram_response_delivery.py` — 253 строки, 4 публичные функции; до порога 300 осталось 47 строк.
+- `claude_interaction.py` не вырос, но всё ещё 543 строки и 11 публичных функций.

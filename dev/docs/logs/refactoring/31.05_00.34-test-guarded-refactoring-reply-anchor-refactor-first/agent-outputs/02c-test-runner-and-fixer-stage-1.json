@@ -1,0 +1,55 @@
+{
+  "status": "all_passed",
+  "stage_id": 1,
+  "stage_name": "extract-telegram-response-delivery",
+  "attempts": 1,
+  "attempt_details": [
+    {
+      "attempt": 1,
+      "command": ".venv/bin/python -m pytest tests/ -v",
+      "tests_run": 1066,
+      "tests_passed": 1061,
+      "tests_failed": 1,
+      "tests_skipped": 4,
+      "failures": [
+        {
+          "test_name": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract",
+          "error_type": "external_environment_failure",
+          "traceback_summary": "Real Claude CLI returned 401 Invalid authentication credentials during the stream-json contract run. The process emitted an authentication_failed result and exited with return code 1.",
+          "fix_applied": "No project code fix applied. This is the known external Claude CLI authentication blocker from the Stage 2c input.",
+          "fix_file": null
+        }
+      ]
+    }
+  ],
+  "final_test_result": {
+    "total": 172,
+    "passed": 172,
+    "failed": 0,
+    "skipped": 0
+  },
+  "full_suite_result": {
+    "command": ".venv/bin/python -m pytest tests/ -v",
+    "total": 1066,
+    "passed": 1061,
+    "failed": 1,
+    "skipped": 4,
+    "warnings": 3
+  },
+  "actionable_subset_result": {
+    "command": ".venv/bin/python -m pytest tests/test_bot.py tests/test_claude_interaction.py tests/test_telegram_response_delivery_behavior.py -v",
+    "total": 172,
+    "passed": 172,
+    "failed": 0,
+    "skipped": 0
+  },
+  "external_environment_failures": [
+    {
+      "test_name": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract",
+      "reason": "The real Claude CLI binary at /home/ivan/.npm-global/bin/claude returned 401 Invalid authentication credentials. This requires fixing external Claude CLI authentication, not project code.",
+      "classification": "external_environment_failure"
+    }
+  ],
+  "unresolved_failures": [],
+  "code_changes_applied": []
+}

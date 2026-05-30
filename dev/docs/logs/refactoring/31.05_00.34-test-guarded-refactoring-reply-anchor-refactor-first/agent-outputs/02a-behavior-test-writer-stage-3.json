@@ -1,0 +1,105 @@
+{
+  "status": "completed",
+  "stage_id": 3,
+  "stage_name": "extract-project-switch-handlers",
+  "test_files_created": [
+    "tests/test_project_switch_handlers_behavior.py"
+  ],
+  "tests_written": 10,
+  "tests_passed": 136,
+  "tests_failed": 0,
+  "failed_tests": [],
+  "functions_covered": [
+    "claude_manager.bot.handle_projects",
+    "claude_manager.bot.handle_switch_project",
+    "claude_manager.bot.handle_switch_project_session",
+    "claude_manager.bot._format_project_line",
+    "claude_manager.bot._resolve_project_by_number",
+    "claude_manager.bot._format_switch_result_message",
+    "claude_manager.bot._restore_all_projects_mode_after_failed_project_switch",
+    "claude_manager.bot._parse_project_session_command",
+    "claude_manager.project_pending_delivery.count_visible_pending_messages",
+    "claude_manager.project_pending_delivery.deliver_pending_messages"
+  ],
+  "functions_not_covered": [
+    "src/claude_manager/telegram_project_handlers.py does not exist before Stage 3 refactor, so there are no public functions to cover yet.",
+    "claude_manager.bot._register_handlers is not duplicated in the new behavior file because existing tests/test_bot.py already covers handler registration."
+  ],
+  "test_run_command": ".venv/bin/python -m pytest tests/test_project_switch_handlers_behavior.py tests/test_project_pending_delivery_behavior.py tests/test_bot.py tests/test_telegram_response_delivery_behavior.py -q",
+  "validation": {
+    "new_file_first_attempt": {
+      "command": ".venv/bin/python -m pytest tests/test_project_switch_handlers_behavior.py -v",
+      "exit_code": 1,
+      "result": "9 passed, 1 failed",
+      "note": "The failed assertion hard-coded the old Codex emoji. The test expectation was corrected to verify project name, session number, and Codex backend without depending on the decorative icon."
+    },
+    "new_file_final": {
+      "command": ".venv/bin/python -m pytest tests/test_project_switch_handlers_behavior.py -v",
+      "exit_code": 0,
+      "result": "10 passed in 0.28s"
+    },
+    "focused_subset": {
+      "command": ".venv/bin/python -m pytest tests/test_project_switch_handlers_behavior.py tests/test_project_pending_delivery_behavior.py tests/test_bot.py tests/test_telegram_response_delivery_behavior.py -q",
+      "exit_code": 0,
+      "result": "136 passed in 1.13s"
+    },
+    "full_suite": {
+      "run": false,
+      "reason": "Not run by this behavior-test-writer stage. The known external full-suite blocker is tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract failing against real Claude CLI with 401 Invalid authentication credentials."
+    }
+  },
+  "size_gate": {
+    "checks": [
+      {
+        "path": "tests/test_project_switch_handlers_behavior.py",
+        "edited": true,
+        "before_lines": 0,
+        "after_lines": 206,
+        "before_public_functions": 0,
+        "after_public_functions": 6,
+        "status": "ok",
+        "remaining_lines_to_300_warning": 94
+      },
+      {
+        "path": "src/claude_manager/bot.py",
+        "edited": false,
+        "before_lines": 1238,
+        "after_lines": 1238,
+        "before_public_functions": 18,
+        "after_public_functions": 18,
+        "status": "pre_existing_error",
+        "note": "Already over 500 lines and over 10 public top-level functions before this stage; this subprocess did not edit it."
+      },
+      {
+        "path": "src/claude_manager/project_pending_delivery.py",
+        "edited": false,
+        "before_lines": 267,
+        "after_lines": 267,
+        "before_public_functions": 4,
+        "after_public_functions": 4,
+        "status": "pre_existing_near_warning",
+        "note": "Already above 250 lines and 33 lines below the 300-line warning threshold; this subprocess did not edit it."
+      },
+      {
+        "path": "src/claude_manager/telegram_project_handlers.py",
+        "edited": false,
+        "before_lines": 0,
+        "after_lines": 0,
+        "before_public_functions": 0,
+        "after_public_functions": 0,
+        "status": "missing_before_refactor",
+        "note": "Target module is expected to be created by the refactorer stage, not by this behavior-test-writer stage."
+      },
+      {
+        "path": "tests/test_bot.py",
+        "edited": false,
+        "before_lines": 2660,
+        "after_lines": 2660,
+        "before_public_functions": 0,
+        "after_public_functions": 0,
+        "status": "pre_existing_large_file",
+        "note": "Large existing test file intentionally left untouched; new tests were placed in a separate file."
+      }
+    ]
+  }
+}

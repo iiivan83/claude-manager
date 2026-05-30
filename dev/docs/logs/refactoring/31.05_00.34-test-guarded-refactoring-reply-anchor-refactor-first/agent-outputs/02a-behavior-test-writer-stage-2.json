@@ -1,0 +1,96 @@
+{
+  "status": "completed",
+  "stage_id": 2,
+  "stage_name": "extract-project-pending-delivery",
+  "test_files_created": [
+    "tests/test_project_pending_delivery_behavior.py"
+  ],
+  "tests_written": 5,
+  "tests_passed": 5,
+  "tests_failed": 0,
+  "failed_tests": [],
+  "test_cases": [
+    "test_hidden_intermediate_pending_is_not_counted_or_delivered",
+    "test_visible_pending_count_falls_back_to_result_count",
+    "test_pending_delivery_uses_telegram_response_delivery_send_response",
+    "test_unread_snapshot_cleanup_waits_for_successful_delivery",
+    "test_leaving_all_mode_into_active_project_collects_pending_messages"
+  ],
+  "functions_covered": [
+    "handle_switch_project",
+    "_format_switch_result_message",
+    "_count_visible_pending_messages",
+    "_get_visible_pending_messages",
+    "_deliver_pending_messages",
+    "_include_pending_for_all_mode_same_project"
+  ],
+  "functions_not_covered": [
+    "handle_switch_project_session: existing focused coverage stays in tests/test_bot.py; Stage 2a adds /pN coverage to avoid growing that file",
+    "project_pending_delivery.collect_pending_messages: not directly exercised here because this Stage 2a focus is bot.py pending filtering/delivery behavior before helper extraction"
+  ],
+  "commands_run": [
+    {
+      "command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py -v",
+      "status": "passed",
+      "tests_passed": 5,
+      "tests_failed": 0
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py tests/test_bot.py -v",
+      "status": "passed",
+      "tests_passed": 107,
+      "tests_failed": 0
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_telegram_response_delivery_behavior.py -v",
+      "status": "passed",
+      "tests_passed": 19,
+      "tests_failed": 0
+    },
+    {
+      "command": "jq . dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/agent-outputs/02a-behavior-test-writer-stage-2.json >/dev/null",
+      "status": "passed"
+    },
+    {
+      "command": "wc -l tests/test_project_pending_delivery_behavior.py && rg -n \"^(async )?def test_\" tests/test_project_pending_delivery_behavior.py",
+      "status": "passed",
+      "lines_after": 248,
+      "public_test_functions": 5
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py -v",
+      "status": "passed",
+      "tests_passed": 5,
+      "tests_failed": 0,
+      "purpose": "final focused verification after report write"
+    }
+  ],
+  "test_run_command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py tests/test_bot.py -v",
+  "full_project_command": ".venv/bin/python -m pytest tests/ -v",
+  "full_project_command_run": false,
+  "known_environment_blocker": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract can fail with 401 Invalid authentication credentials from the real Claude CLI; no production-code fix attempted.",
+  "size_gate": {
+    "status": "passed",
+    "production_code_changed": false,
+    "existing_large_files_untouched": [
+      {
+        "path": "tests/test_bot.py",
+        "lines": 2660,
+        "action": "not edited"
+      },
+      {
+        "path": "tests/test_telegram_response_delivery_behavior.py",
+        "lines": 278,
+        "action": "not edited"
+      }
+    ],
+    "new_test_file": {
+      "path": "tests/test_project_pending_delivery_behavior.py",
+      "lines_before": 0,
+      "lines_after": 248,
+      "public_test_functions": 5,
+      "line_threshold": 300,
+      "public_function_threshold": 10
+    }
+  }
+}

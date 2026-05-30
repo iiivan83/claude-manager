@@ -8,6 +8,14 @@
 
 Мониторит файлы сессий Claude Code на диске в реальном времени (каждые 2 секунды), обнаруживает новые сообщения Claude в любой сессии текущего проекта и передаёт их в callback-функцию для отправки пользователю. Координируется с обработчиком сообщений (handle_message в bot.py) через механизм паузы, чтобы один и тот же ответ Claude не приходил пользователю дважды.
 
+## Актуализация 30-05-2026: `last_modified_at` в watcher state
+
+Фактическая реализация сейчас backend-aware: `session_watcher.py` — фасад, а состояние каждого backend-а ведёт `coding_agent_session_file_poller.SessionWatcher`. Для pending-доставки при переключении проекта watcher хранит не только cursor (`raw_count`, `last_delivered_idx`), но и `last_modified_at` файла из `SessionFileInfo`.
+
+Это поле нужно для дешёвого no-op: если при возврате в проект файл сессии не менялся с момента сохранения cursor-а, pending-сбор не читает ни лёгкий cursor, ни полный snapshot. `last_modified_at` обновляется в `reset_state`, `poll_once` после успешного чтения snapshot и `resume_session`. `get_seen_counts_snapshot(backend)` возвращает `SessionUnreadState` с этим полем.
+
+Operational lookback теперь берётся из `config.OPERATIONAL_SESSION_LOOKBACK_DAYS` и равен 4 дням. Для Codex этот список файлов приходит из in-memory operational index, поэтому watcher не запускает повторный global scan истории Codex на каждом горячем вызове.
+
 ## Обслуживаемые сценарии
 
 - **CJM-02: Отправка текстового сообщения** — когда бот сам отправил сообщение в Claude и ждёт ответ, watcher координируется с обработчиком через механизм паузы (счётчик active_requests), чтобы не дублировать ответ. Для сообщений из других сессий watcher продолжает работать без паузы
