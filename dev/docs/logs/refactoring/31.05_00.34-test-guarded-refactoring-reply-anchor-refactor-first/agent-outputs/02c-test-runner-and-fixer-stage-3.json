@@ -1,0 +1,91 @@
+{
+  "status": "all_passed",
+  "stage_id": 3,
+  "stage_name": "extract-project-switch-handlers",
+  "attempts": 1,
+  "attempt_details": [
+    {
+      "attempt": 1,
+      "command": ".venv/bin/python -m pytest tests/ -v",
+      "output_file": "dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/full-suite-stage-3c.out",
+      "tests_run": 1100,
+      "tests_passed": 1095,
+      "tests_failed": 0,
+      "tests_skipped": 5,
+      "warnings": 3,
+      "failures": []
+    }
+  ],
+  "final_test_result": {
+    "total": 1100,
+    "passed": 1095,
+    "failed": 0,
+    "skipped": 5,
+    "warnings": 3,
+    "duration_seconds": 40.07
+  },
+  "unresolved_failures": [],
+  "full_suite_result": {
+    "status": "passed",
+    "command": ".venv/bin/python -m pytest tests/ -v",
+    "output_file": "dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/full-suite-stage-3c.out",
+    "summary": "1095 passed, 5 skipped, 3 warnings in 40.07s",
+    "total": 1100,
+    "passed": 1095,
+    "failed": 0,
+    "skipped": 5,
+    "warnings": 3,
+    "duration_seconds": 40.07
+  },
+  "focused_subset_result": {
+    "status": "passed",
+    "command": ".venv/bin/python -m pytest tests/test_project_switch_handlers_behavior.py tests/test_project_pending_delivery_behavior.py tests/test_bot.py tests/test_telegram_response_delivery_behavior.py -q",
+    "output_file": "dev/docs/logs/refactoring/31.05_00.34-test-guarded-refactoring-reply-anchor-refactor-first/focused-subset-stage-3c.out",
+    "summary": "136 passed in 0.92s",
+    "total": 136,
+    "passed": 136,
+    "failed": 0,
+    "skipped": 0,
+    "duration_seconds": 0.92
+  },
+  "external_environment_failures": [],
+  "code_changes_applied": {
+    "applied": false,
+    "reason": "Full suite and focused refactor-related subset passed, so no code fix was needed.",
+    "files_modified_by_agent": []
+  },
+  "size_gate": {
+    "checked": true,
+    "code_files_edited_by_agent": false,
+    "reason": "No Python code was edited during Stage 3c; counts were recorded for the refactor-modified files.",
+    "files": [
+      {
+        "path": "src/claude_manager/bot.py",
+        "lines": 979,
+        "public_top_level_functions": 15,
+        "status": "pre_existing_error",
+        "thresholds_exceeded": [
+          "lines_gt_500",
+          "public_functions_gt_10"
+        ],
+        "agent_changed": false
+      },
+      {
+        "path": "src/claude_manager/telegram_project_handlers.py",
+        "lines": 285,
+        "public_top_level_functions": 4,
+        "status": "within_limit_near_300_warning",
+        "remaining_lines_to_300_warning": 15,
+        "agent_changed": false
+      },
+      {
+        "path": "src/claude_manager/project_pending_delivery.py",
+        "lines": 267,
+        "public_top_level_functions": 4,
+        "status": "within_limit",
+        "remaining_lines_to_300_warning": 33,
+        "agent_changed": false
+      }
+    ]
+  }
+}

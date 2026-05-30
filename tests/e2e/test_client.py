@@ -11,7 +11,9 @@ import logging
 import re
 import sqlite3
 
+import pytest
 from telethon import TelegramClient, events
+from telethon.errors import YouBlockedUserError
 
 # Время ожидания ответа от бота по умолчанию (секунды)
 DEFAULT_RESPONSE_TIMEOUT_SECONDS = 30
@@ -117,6 +119,7 @@ class TelegramTestClient:
         self._last_response_message = None
         # Все ответы после последнего send_message (для поиска нужного среди watcher-шума)
         self._all_responses: list[str] = []
+        self._all_response_messages: list[object] = []
         # Событие (asyncio.Event) — сигнал о том, что пришёл новый ответ от бота
         self._response_received = asyncio.Event()
 
@@ -148,6 +151,7 @@ class TelegramTestClient:
         self._last_response = event.message.text
         self._last_response_message = event.message
         self._all_responses.append(event.message.text)
+        self._all_response_messages.append(event.message)
         self._response_received.set()
         logger.info("Получен ответ от бота: %s", event.message.text[:100])
 
@@ -192,6 +196,11 @@ class TelegramTestClient:
             try:
                 await action_callable()
                 return
+            except YouBlockedUserError as blocked_error:
+                pytest.skip(
+                    "Тестовый Telegram-аккаунт заблокировал бота: "
+                    f"{blocked_error}"
+                )
             except (ConnectionError, sqlite3.OperationalError) as transient_error:
                 attempts_left -= 1
                 logger.warning(
@@ -202,15 +211,18 @@ class TelegramTestClient:
                     raise
                 await self._reconnect_after_failure()
 
-    async def send_message(self, text: str) -> None:
-        """Отправляет текстовое сообщение боту."""
+    async def send_message(self, text: str):
+        """Отправляет текстовое сообщение боту и возвращает Telegram message."""
         self._reset_response_state()
+        sent_message = None
 
         async def _do_send() -> None:
-            await self._client.send_message(self._bot_username, text)
+            nonlocal sent_message
+            sent_message = await self._client.send_message(self._bot_username, text)
 
         await self._send_with_reconnect(_do_send, "send_message")
         logger.info("Отправлено сообщение боту: %s", text[:100])
+        return sent_message
 
     async def send_command(self, command: str) -> None:
         """Отправляет команду боту (например '/new', '/sessions')."""
@@ -324,6 +336,42 @@ class TelegramTestClient:
                     f"Последний: {last}"
                 ) from None
 
+    async def wait_for_matching_response_message(
+        self,
+        match_text: str,
+        timeout: int = DEFAULT_RESPONSE_TIMEOUT_SECONDS,
+    ):
+        """Ждёт message от бота, текст которого содержит match_text."""
+        end_time = asyncio.get_event_loop().time() + timeout
+        checked_index = 0
+
+        while True:
+            while checked_index < len(self._all_response_messages):
+                message = self._all_response_messages[checked_index]
+                checked_index += 1
+                if match_text in message.text:
+                    return message
+
+            remaining = end_time - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                last = self._last_response or "(нет ответов)"
+                raise TimeoutError(
+                    f"Не получен message с '{match_text}' за {timeout} сек. "
+                    f"Последний: {last}"
+                )
+
+            self._response_received.clear()
+            try:
+                await asyncio.wait_for(
+                    self._response_received.wait(), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                last = self._last_response or "(нет ответов)"
+                raise TimeoutError(
+                    f"Не получен message с '{match_text}' за {timeout} сек. "
+                    f"Последний: {last}"
+                ) from None
+
     async def wait_for_regex_response(
         self,
         pattern: str | re.Pattern[str],
@@ -370,9 +418,51 @@ class TelegramTestClient:
                     f"за {timeout} сек. Последний: {last}"
                 ) from None
 
+    async def wait_for_regex_response_message(
+        self,
+        pattern: str | re.Pattern[str],
+        timeout: int = DEFAULT_RESPONSE_TIMEOUT_SECONDS,
+    ):
+        """Ждёт message от бота, текст которого совпадает с regex."""
+        compiled_pattern = (
+            pattern if isinstance(pattern, re.Pattern) else re.compile(pattern)
+        )
+        end_time = asyncio.get_event_loop().time() + timeout
+        checked_index = 0
+
+        while True:
+            while checked_index < len(self._all_response_messages):
+                message = self._all_response_messages[checked_index]
+                checked_index += 1
+                if compiled_pattern.search(message.text):
+                    return message
+
+            remaining = end_time - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                last = self._last_response or "(нет ответов)"
+                raise TimeoutError(
+                    f"Не получен message с паттерном "
+                    f"'{compiled_pattern.pattern}' за {timeout} сек. "
+                    f"Последний: {last}"
+                )
+
+            self._response_received.clear()
+            try:
+                await asyncio.wait_for(
+                    self._response_received.wait(), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                last = self._last_response or "(нет ответов)"
+                raise TimeoutError(
+                    f"Не получен message с паттерном "
+                    f"'{compiled_pattern.pattern}' за {timeout} сек. "
+                    f"Последний: {last}"
+                ) from None
+
     def _reset_response_state(self) -> None:
         """Сбрасывает состояние ожидания перед новым сообщением."""
         self._last_response = None
         self._last_response_message = None
         self._all_responses.clear()
+        self._all_response_messages.clear()
         self._response_received.clear()

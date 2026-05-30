@@ -1,0 +1,19 @@
+{
+  "status": "completed",
+  "plan_file": "refactoring-plan.json",
+  "total_stages": 10,
+  "stage_names": [
+    "extract-telegram-response-delivery",
+    "extract-project-pending-delivery",
+    "extract-project-switch-handlers",
+    "extract-session-command-handlers",
+    "extract-input-and-lifecycle-handlers",
+    "extract-claude-callbacks-and-file-tasks",
+    "extract-claude-watchdog-and-result-helpers",
+    "extract-all-projects-session-discovery",
+    "extract-all-projects-cursors-and-delivery",
+    "extract-media-group-aggregator"
+  ],
+  "critical_problems": 2,
+  "notes": "Plan preserves behavior first and does not implement Reply Anchor v1. It reduces bot.py before claude_interaction.py, then splits all_projects_monitor.py and media_group_handler.py. Active tests should be updated to import extracted modules directly; archived pipeline-workspace tests under dev/docs/logs are noted as historical importers but not planned as active consumers."
+}

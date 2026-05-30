@@ -1,0 +1,60 @@
+{
+  "status": "completed",
+  "stage_id": 1,
+  "stage_name": "extract-telegram-response-delivery",
+  "test_files_created": [
+    "tests/test_telegram_response_delivery_behavior.py"
+  ],
+  "tests_written": 19,
+  "tests_passed": 19,
+  "tests_failed": 0,
+  "failed_tests": [],
+  "functions_covered": [
+    "claude_manager.bot.send_response",
+    "claude_manager.bot.send_watcher_message",
+    "claude_manager.bot.send_all_projects_watcher_message",
+    "claude_manager.claude_interaction.init_callbacks",
+    "claude_manager.claude_interaction.handle_claude_result"
+  ],
+  "functions_not_covered": [
+    {
+      "function": "claude_manager.bot.setup_bot",
+      "reason": "Not directly covered in the new focused file because existing tests already cover callback registration; this stage focuses on delivery behavior and dynamic callback resolution."
+    },
+    {
+      "function": "claude_manager.claude_interaction.send_to_claude_and_respond",
+      "reason": "Not directly covered in the new focused file because existing tests already cover progress/final callback use; this stage adds a smaller callback-resolution guard through handle_claude_result."
+    }
+  ],
+  "test_run_command": ".venv/bin/python -m pytest tests/test_telegram_response_delivery_behavior.py -v",
+  "additional_validation": [
+    {
+      "command": "python -m pytest tests/test_telegram_response_delivery_behavior.py -v",
+      "status": "failed_before_pytest",
+      "reason": "/bin/bash: line 1: python: command not found"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/ -v",
+      "status": "failed_unrelated",
+      "tests_passed": 1061,
+      "tests_failed": 1,
+      "tests_skipped": 4,
+      "reason": "tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract failed because the real Claude CLI returned 401 Invalid authentication credentials."
+    }
+  ],
+  "size_gate": {
+    "new_test_file_lines": 278,
+    "new_test_file_public_test_functions": 7,
+    "threshold_status": "ok",
+    "not_modified_due_to_size": [
+      {
+        "file": "tests/test_bot.py",
+        "lines": 2660
+      },
+      {
+        "file": "tests/test_claude_interaction.py",
+        "lines": 1749
+      }
+    ]
+  }
+}

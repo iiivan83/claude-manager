@@ -1,0 +1,390 @@
+{
+  "code_analysis": {
+    "total_lines": 3010,
+    "total_functions": 112,
+    "total_public_symbols": 47,
+    "size_gate": {
+      "warning_threshold_lines": 300,
+      "error_threshold_lines": 500,
+      "god_module_public_functions_threshold": 10,
+      "target_file_metrics": [
+        {
+          "file": "src/claude_manager/bot.py",
+          "lines": 1459,
+          "functions": 52,
+          "public_symbols": 21,
+          "gate": "error_and_god_module"
+        },
+        {
+          "file": "src/claude_manager/claude_interaction.py",
+          "lines": 543,
+          "functions": 25,
+          "public_symbols": 12,
+          "gate": "error_and_god_module"
+        },
+        {
+          "file": "src/claude_manager/all_projects_monitor.py",
+          "lines": 632,
+          "functions": 24,
+          "public_symbols": 9,
+          "gate": "error"
+        },
+        {
+          "file": "src/claude_manager/media_group_handler.py",
+          "lines": 376,
+          "functions": 11,
+          "public_symbols": 5,
+          "gate": "warning"
+        }
+      ]
+    },
+    "active_importers": [
+      "src/claude_manager/main.py",
+      "src/claude_manager/bot.py",
+      "src/claude_manager/media_group_handler.py",
+      "tests/test_bot.py",
+      "tests/test_claude_interaction.py",
+      "tests/test_all_projects_monitor.py",
+      "tests/test_media_group_handler.py",
+      "tests/test_stop_triggers_retry_whitebox.py",
+      "tests/integration/test_file_handling.py"
+    ],
+    "archived_importers_not_planned_for_active_refactor": [
+      "dev/docs/logs/bugfix/*/pipeline-workspace/tests/*.py"
+    ],
+    "dynamic_import_risks": [
+      "src/claude_manager/bot.py imports claude_manager.bot inside setup_bot to pass callback module attributes to claude_interaction.",
+      "src/claude_manager/media_group_handler.py lazy-imports claude_manager.bot in _get_bot and claude_manager.claude_interaction.MONITORING_MODE_MESSAGE inside finalize_photo_group."
+    ],
+    "problems_found": [
+      {
+        "type": "god_module",
+        "description": "bot.py combines Telegram Application setup, access checks, response delivery, watcher delivery, command handlers, project switching, pending-message delivery, text/photo/document routing, restart handling, and callback injection. This makes Reply Anchor wiring risky because every new delivery parameter would touch many unrelated paths.",
+        "affected_files": [
+          "src/claude_manager/bot.py",
+          "tests/test_bot.py",
+          "tests/test_stop_triggers_retry_whitebox.py",
+          "src/claude_manager/main.py"
+        ],
+        "severity": "critical"
+      },
+      {
+        "type": "god_module",
+        "description": "claude_interaction.py combines transport callback registry, file task text building, busy checks, watchdog state, result delivery, session summary generation, and the main send orchestration. It is above both the line-count error gate and the public API god-module gate.",
+        "affected_files": [
+          "src/claude_manager/claude_interaction.py",
+          "tests/test_claude_interaction.py",
+          "tests/integration/test_file_handling.py",
+          "src/claude_manager/bot.py",
+          "src/claude_manager/media_group_handler.py"
+        ],
+        "severity": "critical"
+      },
+      {
+        "type": "oversized_module",
+        "description": "all_projects_monitor.py mixes all-mode state, displayed link registry, project/session discovery, registry-number loading, baseline cursor creation, unread snapshot preservation, delta delivery, and the polling loop.",
+        "affected_files": [
+          "src/claude_manager/all_projects_monitor.py",
+          "tests/test_all_projects_monitor.py",
+          "src/claude_manager/bot.py"
+        ],
+        "severity": "high"
+      },
+      {
+        "type": "oversized_module",
+        "description": "media_group_handler.py is only one warning-sized file today, but it already combines callback injection, album task formatting, aggregation state, parallel download, lazy bot access, and finalization. Reply Anchor will likely add delivery context here unless the aggregation code is separated first.",
+        "affected_files": [
+          "src/claude_manager/media_group_handler.py",
+          "tests/test_media_group_handler.py",
+          "src/claude_manager/bot.py"
+        ],
+        "severity": "medium"
+      },
+      {
+        "type": "missing_contracts",
+        "description": "Callback dependencies between bot.py, claude_interaction.py, and media_group_handler.py are module attributes or untyped callables. This preserves import boundaries, but does not give a clear contract for future delivery metadata such as reply anchors.",
+        "affected_files": [
+          "src/claude_manager/bot.py",
+          "src/claude_manager/claude_interaction.py",
+          "src/claude_manager/media_group_handler.py"
+        ],
+        "severity": "high"
+      },
+      {
+        "type": "test_coupling",
+        "description": "Tests import many private helpers from bot.py and patch claude_manager.bot.* as callback targets. Extraction must update tests to import new modules directly instead of relying on bot.py as a facade.",
+        "affected_files": [
+          "tests/test_bot.py",
+          "tests/test_claude_interaction.py",
+          "tests/test_media_group_handler.py",
+          "tests/integration/test_file_handling.py"
+        ],
+        "severity": "high"
+      },
+      {
+        "type": "hardcoded_values",
+        "description": "Telegram-facing command text, project-switch text, monitoring-mode warnings, header formatting, and restart marker behavior are colocated in bot.py. This increases unrelated churn when changing delivery behavior.",
+        "affected_files": [
+          "src/claude_manager/bot.py"
+        ],
+        "severity": "medium"
+      },
+      {
+        "type": "cyclic_dependency_risk",
+        "description": "media_group_handler.py avoids import-time cycles with lazy imports, but still reaches into bot._application.bot at runtime. This should be replaced by explicit callback or bot-provider injection before Reply Anchor adds more transport context.",
+        "affected_files": [
+          "src/claude_manager/media_group_handler.py",
+          "src/claude_manager/bot.py"
+        ],
+        "severity": "medium"
+      }
+    ],
+    "final_state_targets": [
+      "src/claude_manager/bot.py <= 300 lines and <= 10 public symbols, keeping only Telegram Application assembly, handler registration, lifecycle wiring, and error-handler glue.",
+      "src/claude_manager/claude_interaction.py <= 300 lines and <= 10 public symbols, keeping the main Claude request orchestration and importing small helper modules.",
+      "src/claude_manager/all_projects_monitor.py <= 300 lines, keeping only all-mode enable/disable state and the polling loop.",
+      "src/claude_manager/media_group_handler.py <= 300 lines, keeping album finalization and delegating aggregation state to a small module.",
+      "Existing behavior is preserved; no Reply Anchor behavior is implemented in this refactor-first pipeline.",
+      "Tests import extracted modules directly rather than through compatibility re-exports from bot.py or claude_interaction.py."
+    ]
+  },
+  "total_stages": 10,
+  "stages": [
+    {
+      "id": 1,
+      "name": "extract-telegram-response-delivery",
+      "description": "Move Telegram response and watcher delivery from bot.py into a dedicated delivery module that can later accept reply-anchor metadata.",
+      "target_files": [
+        "src/claude_manager/bot.py",
+        "src/claude_manager/telegram_response_delivery.py",
+        "tests/test_bot.py",
+        "tests/test_claude_interaction.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/claude_interaction.py",
+        "tests/test_bot.py",
+        "tests/test_claude_interaction.py"
+      ],
+      "expected_result": "send_response, send_watcher_message, send_all_projects_watcher_message, session-header formatting, file-marker delivery, silence-mode suppression, and current-session detection live outside bot.py; setup_bot injects claude_interaction callbacks from the new delivery module instead of bot.py.",
+      "test_focus": "Cover final and intermediate response formatting, file marker handling only on final messages, silence-mode suppression, current-vs-other session watcher headers, all-project watcher headers, empty response replacement, and claude_interaction callback resolution through the new module.",
+      "risk_assessment": "The highest risk is breaking tests and mocks that patch claude_manager.bot.send_response. Stage tests must prove the new import path is used directly and that no behavior changes in Telegram message formatting."
+    },
+    {
+      "id": 2,
+      "name": "extract-project-pending-delivery",
+      "description": "Move pending-message filtering and delivery helpers out of bot.py before extracting project-switch handlers.",
+      "target_files": [
+        "src/claude_manager/bot.py",
+        "src/claude_manager/project_pending_delivery.py",
+        "tests/test_bot.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/bot.py",
+        "tests/test_bot.py"
+      ],
+      "expected_result": "Visible pending filtering, silence-mode handling for pending messages, daily-session registration, Telegram response delivery, unread snapshot cleanup, and all-mode same-project pending collection are isolated in a small helper module.",
+      "test_focus": "Cover hidden intermediate pending messages in silence mode, visible pending count, pending delivery through telegram_response_delivery.send_response, unread snapshot cleanup only after delivered messages, and collection of pending messages when leaving all mode into the already active project.",
+      "risk_assessment": "Pending delivery is coupled to project switching and unread_buffer snapshots. The stage must keep switch results immutable from the caller's point of view and avoid clearing snapshots for messages hidden by silence mode."
+    },
+    {
+      "id": 3,
+      "name": "extract-project-switch-handlers",
+      "description": "Move /projects, /pN, and /<project>s<session> handlers into a project transport module that uses the pending helper.",
+      "target_files": [
+        "src/claude_manager/bot.py",
+        "src/claude_manager/telegram_project_handlers.py",
+        "src/claude_manager/project_pending_delivery.py",
+        "tests/test_bot.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/bot.py",
+        "tests/test_bot.py"
+      ],
+      "expected_result": "Project-list formatting, project lookup by number, switch-result text, all-mode restore after failed switch, /pN switching, and /<project>s<session> binding live outside bot.py; bot.py only registers these handlers.",
+      "test_focus": "Cover /projects output including /all line and current marker, invalid project numbers, successful and failed /pN switches, all-mode restoration on failure, pending delivery after switch, exact link resolution for /<project>s<session>, and session binding for link targets.",
+      "risk_assessment": "The risk is losing the careful pause/resume behavior when leaving all-project mode. Tests must verify resume_all is not called when all mode is restored after failure and is called only when all-mode monitoring is fully disabled."
+    },
+    {
+      "id": 4,
+      "name": "extract-session-command-handlers",
+      "description": "Move session and backend command handlers from bot.py into a command-handler module.",
+      "target_files": [
+        "src/claude_manager/bot.py",
+        "src/claude_manager/telegram_session_handlers.py",
+        "tests/test_bot.py",
+        "tests/test_stop_triggers_retry_whitebox.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/bot.py",
+        "tests/test_bot.py",
+        "tests/test_stop_triggers_retry_whitebox.py"
+      ],
+      "expected_result": "Access checks, /new, /sessions, /agent, /agent callback, /stop, /all, and /N session switching are outside bot.py; bot.py imports and registers handlers from the new module.",
+      "test_focus": "Cover access checks including E2E user allowance, /new in normal and all mode, merged /sessions output across backends, /agent keyboard and callback edge cases, /stop during running and retry states, /all enabling global monitoring, and /N session switching.",
+      "risk_assessment": "The /stop retry behavior has a regression test outside tests/test_bot.py. The extraction must keep process_manager.has_process and is_busy checks identical and update whitebox imports to the new handler location."
+    },
+    {
+      "id": 5,
+      "name": "extract-input-and-lifecycle-handlers",
+      "description": "Move text/photo/document input handlers and startup/restart lifecycle glue out of bot.py, leaving bot.py as a small Application assembly module.",
+      "target_files": [
+        "src/claude_manager/bot.py",
+        "src/claude_manager/telegram_input_handlers.py",
+        "src/claude_manager/telegram_lifecycle.py",
+        "tests/test_bot.py",
+        "tests/test_media_group_handler.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/main.py",
+        "src/claude_manager/media_group_handler.py",
+        "tests/test_bot.py",
+        "tests/test_media_group_handler.py"
+      ],
+      "expected_result": "handle_message, handle_photo, handle_document, silence text commands, single-photo download, /silence_on, /silence_off, /restart, post_init, watcher callbacks, and media-group callback wiring are in small modules; bot.py stays below 300 lines and only builds Application, registers handlers, injects dependencies, and installs the error handler.",
+      "test_focus": "Cover text routing to Claude, all-mode input blocking, silence text commands before monitoring check, typing indicator best-effort behavior, single photo and document download behavior, media-group routing, restart marker/subprocess behavior, post_init state loading, watcher task startup, and setup_bot handler registration.",
+      "risk_assessment": "The stage touches the broadest Telegram surface. Keep public handler names in the new modules, update handler registration in one place, and avoid compatibility re-exports from bot.py so tests prove the new module boundaries."
+    },
+    {
+      "id": 6,
+      "name": "extract-claude-callbacks-and-file-tasks",
+      "description": "Move transport callback registry and file-task text builders out of claude_interaction.py.",
+      "target_files": [
+        "src/claude_manager/claude_interaction.py",
+        "src/claude_manager/claude_delivery_callbacks.py",
+        "src/claude_manager/claude_file_tasks.py",
+        "src/claude_manager/telegram_input_handlers.py",
+        "tests/test_claude_interaction.py",
+        "tests/integration/test_file_handling.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/telegram_input_handlers.py",
+        "src/claude_manager/bot.py",
+        "tests/test_claude_interaction.py",
+        "tests/integration/test_file_handling.py"
+      ],
+      "expected_result": "init_callbacks, callback resolution, and build_file_task live in small modules; claude_interaction imports get_send_response/get_send_telegram_message and file-task builders instead of owning these contracts.",
+      "test_focus": "Cover callback initialization failure before init, callback lookup through module attributes for mock.patch compatibility, file-task text for captioned files, uncaptioned images, uncaptioned documents, and integration tests importing build_file_task directly from claude_file_tasks.",
+      "risk_assessment": "Changing callback storage can silently break mock.patch-based tests. Preserve the module-attribute lookup behavior while moving it, and do not change public callback signatures during this refactor stage."
+    },
+    {
+      "id": 7,
+      "name": "extract-claude-watchdog-and-result-helpers",
+      "description": "Move watchdog state and result/summary helpers out of claude_interaction.py while keeping the main send orchestration in place.",
+      "target_files": [
+        "src/claude_manager/claude_interaction.py",
+        "src/claude_manager/claude_watchdog.py",
+        "src/claude_manager/claude_result_delivery.py",
+        "tests/test_claude_interaction.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/claude_interaction.py",
+        "tests/test_claude_interaction.py"
+      ],
+      "expected_result": "WatchdogTaskRegistry, watchdog_tasks, start/cancel/reset watchdog functions, permanent-error message mapping, handle_claude_result, and session-summary generation live outside claude_interaction.py; claude_interaction.py falls below 300 lines and keeps send_to_claude_and_respond plus busy-check orchestration.",
+      "test_focus": "Cover watchdog task creation, replacement, cancellation, backend-aware keys, reset on progress, resume on silence timeout, successful result delivery, permanent error messages, unknown error messages, actual result session_id use, and summary generation for new sessions.",
+      "risk_assessment": "The main risk is mishandling session_id changes and finally cleanup. Tests must keep coverage for project-switch suppression, callback session_id update, resume with updated id, and watchdog transfer from old id to new id."
+    },
+    {
+      "id": 8,
+      "name": "extract-all-projects-session-discovery",
+      "description": "Move project/session discovery, daily number loading, displayed link creation, and backend listing out of all_projects_monitor.py.",
+      "target_files": [
+        "src/claude_manager/all_projects_monitor.py",
+        "src/claude_manager/all_projects_discovery.py",
+        "tests/test_all_projects_monitor.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/all_projects_monitor.py",
+        "src/claude_manager/telegram_project_handlers.py",
+        "tests/test_all_projects_monitor.py"
+      ],
+      "expected_result": "AllProjectSessionLink, ProjectSession discovery records, project registry number loading, backend bulk-list fallback, session numbering, link registry update, and resolve_link support are moved to a discovery module with a small explicit API.",
+      "test_focus": "Cover bulk backend listing once per backend, individual fallback when bulk listing fails or is unavailable, today registry parsing for string and dict entries, fallback numbering without collisions, link resolution for /<project>s<session>, and continued polling when one backend scan fails.",
+      "risk_assessment": "Link resolution is user-visible and must stay stable across polls. The extraction must keep link keys based on displayed project/session numbers and must not mutate daily_session_registry for other projects."
+    },
+    {
+      "id": 9,
+      "name": "extract-all-projects-cursors-and-delivery",
+      "description": "Move all-project baseline cursor state, unread snapshot preservation, candidate selection, and delta delivery out of all_projects_monitor.py.",
+      "target_files": [
+        "src/claude_manager/all_projects_monitor.py",
+        "src/claude_manager/all_projects_cursors.py",
+        "tests/test_all_projects_monitor.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/all_projects_monitor.py",
+        "tests/test_all_projects_monitor.py"
+      ],
+      "expected_result": "All-mode state cursors, baseline creation from watcher snapshots, raw-record candidate selection, final-message determination, unread snapshot save/restore rules, and project-session delta delivery live in a cursor/delivery module; all_projects_monitor.py falls below 300 lines and keeps enable/disable/poll/start orchestration.",
+      "test_focus": "Cover baseline cursor reads through read_session_file_cursor, concurrent baseline reads under a semaphore, mtime skip behavior, raw_record_index candidate selection, no fallback redelivery when raw indices exist, unread snapshot preservation without overwrite, final vs non-final delivery during active turns, and stale state cleanup.",
+      "risk_assessment": "The risk is duplicate or missing all-mode messages. Tests must assert that normal project watcher cursors are not advanced, unread snapshots remain available for later project switch, and unchanged files are not reread."
+    },
+    {
+      "id": 10,
+      "name": "extract-media-group-aggregator",
+      "description": "Move media group aggregation state and debounce behavior out of media_group_handler.py.",
+      "target_files": [
+        "src/claude_manager/media_group_handler.py",
+        "src/claude_manager/media_group_aggregator.py",
+        "src/claude_manager/telegram_input_handlers.py",
+        "tests/test_media_group_handler.py",
+        "tests/test_bot.py"
+      ],
+      "consumer_files": [
+        "src/claude_manager/telegram_input_handlers.py",
+        "tests/test_media_group_handler.py",
+        "tests/test_bot.py"
+      ],
+      "expected_result": "MediaGroupAggregator, debounce constants, max-size protection, shared media_group_aggregator instance, and shutdown behavior live in media_group_aggregator.py; media_group_handler.py falls below 300 lines and owns only callbacks, task building, parallel download, and finalization.",
+      "test_focus": "Cover group accumulation, group isolation, first caption wins, max size protection, debounce timer replacement, finalize callback after debounce, atomic pop_group cleanup, shutdown cancellation, bot photo routing to the new aggregator module, and finalize_photo_group behavior for monitoring mode, busy mode, partial downloads, all downloads failed, and busy-after-download.",
+      "risk_assessment": "The main risk is leaving a facade export in media_group_handler that hides the new boundary. Update bot/input handler and tests to import the aggregator module directly, while keeping finalize_photo_group in media_group_handler as the callback target."
+    }
+  ],
+  "dependencies_between_stages": [
+    {
+      "stage": 2,
+      "depends_on": 1,
+      "reason": "Pending delivery should use the extracted telegram_response_delivery module instead of calling bot.send_response."
+    },
+    {
+      "stage": 3,
+      "depends_on": 2,
+      "reason": "Project-switch handlers rely on pending-message helpers for visible counts, delivery, and all-mode same-project behavior."
+    },
+    {
+      "stage": 4,
+      "depends_on": 3,
+      "reason": "bot.py must first lose the project-switch handlers so the session-command extraction stays small and independently reviewable."
+    },
+    {
+      "stage": 5,
+      "depends_on": 4,
+      "reason": "Input and lifecycle extraction should happen after command handlers are separated, leaving bot.py ready to become the setup-only module."
+    },
+    {
+      "stage": 6,
+      "depends_on": 5,
+      "reason": "The input handler extraction should already import file-task builders through a stable boundary before build_file_task moves out of claude_interaction.py."
+    },
+    {
+      "stage": 7,
+      "depends_on": 6,
+      "reason": "Result delivery uses the extracted callback registry from stage 6."
+    },
+    {
+      "stage": 8,
+      "depends_on": 5,
+      "reason": "Project command handlers should be outside bot.py before all-project link resolution and discovery contracts move."
+    },
+    {
+      "stage": 9,
+      "depends_on": 8,
+      "reason": "Cursor and delivery extraction depends on the ProjectSession and link/discovery records created in stage 8."
+    },
+    {
+      "stage": 10,
+      "depends_on": 5,
+      "reason": "Photo routing should already live outside bot.py so the media-group aggregator can be imported directly by the input handler module."
+    }
+  ]
+}

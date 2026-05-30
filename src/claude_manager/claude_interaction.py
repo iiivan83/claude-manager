@@ -4,8 +4,8 @@
 отправка сообщения, обработка промежуточных обновлений (progress, retry),
 разблокировка watcher при тишине stdout (watchdog), обработка финального ответа.
 
-Зависимости от транспортного слоя (bot.py) разрешены через callback-функции:
-bot.py вызывает init_callbacks() при старте, передавая пары (модуль, имя_атрибута).
+Зависимости от Telegram-доставки разрешены через callback-функции:
+bot.py регистрирует delivery-модуль через пары (модуль, имя_атрибута).
 claude_interaction.py НЕ импортирует bot.py.
 """
 
@@ -17,6 +17,7 @@ from claude_manager import (
     config,
     daily_session_registry,
     process_manager,
+    reply_anchor_registry,
     session_manager,
     session_reader,
     session_watcher,
@@ -79,8 +80,8 @@ def _build_permanent_error_message(
 # Инициализируются через init_callbacks() при старте бота.
 # До вызова init_callbacks() функции, требующие отправки в Telegram, упадут с RuntimeError.
 #
-# Хранится пара (module, attr_name), а не ссылка на функцию — чтобы unittest.mock.patch
-# на модуле-источнике (bot.send_response) подхватывался при каждом вызове.
+# Хранится пара (module, attr_name), а не ссылка на функцию — чтобы mock.patch
+# на модуле-источнике доставки подхватывался при каждом вызове.
 
 # (module, "send_response") — async (chat_id, text, session_number, is_final, ...) -> None
 _send_response_ref: tuple | None = None
@@ -331,7 +332,10 @@ async def ensure_process_running(chat_id: int, session_id: str) -> bool:
 
 
 async def handle_claude_result(
-    chat_id: int, session_id: str, result: process_manager.SendResult,
+    chat_id: int,
+    session_id: str,
+    result: process_manager.SendResult,
+    reply_to_message_id: int | None = None,
 ) -> str:
     """Обрабатывает результат от Claude: регистрирует сессию и отправляет ответ."""
     # Используем актуальный session_id из результата — callback уже обновил привязки
@@ -360,12 +364,15 @@ async def handle_claude_result(
             chat_id, message_text, parse_mode=None,
         )
     else:
+        send_response_kwargs = {"is_final": True}
+        if reply_to_message_id is not None:
+            send_response_kwargs["reply_to_message_id"] = reply_to_message_id
         await _get_send_response()(
             chat_id,
             result.text,
             day_number,
             backend,
-            is_final=True,
+            **send_response_kwargs,
         )
 
     return actual_session_id
@@ -407,7 +414,11 @@ async def _generate_and_store_session_summary(
         )
 
 
-async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
+async def send_to_claude_and_respond(
+    chat_id: int,
+    text: str,
+    reply_to_message_id: int | None = None,
+) -> None:
     """Отправляет сообщение в Claude и обрабатывает ответ."""
     original_project_path = config.WORKING_DIR
     active_session = session_manager.get_active_session(chat_id)
@@ -437,12 +448,20 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
             session_id,
             backend,
         )
+        send_response_kwargs = {"is_final": False}
+        anchor_message_id = reply_anchor_registry.get_anchor(
+            original_project_path,
+            backend,
+            session_id,
+        )
+        if anchor_message_id is not None:
+            send_response_kwargs["reply_to_message_id"] = anchor_message_id
         await _get_send_response()(
             chat_id,
             progress_text,
             day_number,
             backend,
-            is_final=False,
+            **send_response_kwargs,
         )
 
     async def _on_retry(session_id: str, attempt: int, max_attempts: int, error_reason: str) -> None:
@@ -474,6 +493,12 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
                 callback_backend.value,
             )
             return
+        reply_anchor_registry.move_anchor(
+            original_project_path,
+            backend,
+            old_id,
+            new_id,
+        )
         if config.WORKING_DIR != original_project_path:
             # Проект сменился — не трогаем watcher и manager нового проекта,
             # но переносим watchdog и обновляем session_id для finally-cleanup
@@ -490,6 +515,13 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
         session_id = new_id
 
     try:
+        if reply_to_message_id is not None:
+            reply_anchor_registry.set_anchor(
+                original_project_path,
+                backend,
+                session_id,
+                reply_to_message_id,
+            )
         result = await process_manager.send_message(
             session_id, text,
             progress_callback=_on_progress, retry_callback=_on_retry,
@@ -504,7 +536,16 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
                 original_project_path, config.WORKING_DIR, session_id,
             )
         else:
-            session_id = await handle_claude_result(chat_id, session_id, result)
+            session_id = await handle_claude_result(
+                chat_id,
+                session_id,
+                result,
+                reply_to_message_id=reply_anchor_registry.get_anchor(
+                    original_project_path,
+                    backend,
+                    result.session_id,
+                ),
+            )
             if should_generate_session_summary and not result.is_error:
                 await _generate_and_store_session_summary(
                     session_id,
@@ -519,6 +560,7 @@ async def send_to_claude_and_respond(chat_id: int, text: str) -> None:
             parse_mode=None,
         )
     except process_manager.ProcessManagerError as error:
+        reply_anchor_registry.clear_anchor(original_project_path, backend, session_id)
         logger.warning(
             "Процесс занят (chat_id=%d): %s", chat_id, error,
         )

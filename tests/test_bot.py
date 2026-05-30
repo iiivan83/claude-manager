@@ -32,9 +32,6 @@ from claude_manager.bot import (
     PROJECT_SWITCH_ERROR_TEMPLATE,
     PROJECT_SWITCH_SUCCESS_TEMPLATE,
     _check_access,
-    _format_clickable_session_number,
-    _format_session_header,
-    _is_current_session,
     handle_all,
     handle_document,
     handle_message,
@@ -48,20 +45,23 @@ from claude_manager.bot import (
     handle_switch_project_session,
     handle_switch_session,
     post_init,
-    send_all_projects_watcher_message,
-    send_response,
-    send_watcher_message,
     setup_bot,
+)
+from claude_manager.telegram_response_delivery import (
+    _format_clickable_session_number,
+    _format_session_header, _is_current_session,
+    send_all_projects_watcher_message,
+    send_response, send_watcher_message,
 )
 from claude_manager.claude_interaction import (
     EMPTY_RESPONSE_TEXT,
     MONITORING_MODE_MESSAGE,
     NO_RESPONSE_MARKER,
 )
-from claude_manager import file_sender
-from claude_manager import project_manager
+from claude_manager import file_sender, project_manager, project_pending_delivery, unread_buffer
 import claude_manager.bot as bot_module
 import claude_manager.config as config_module
+import claude_manager.telegram_response_delivery as delivery_module
 from claude_manager.process_manager import (
     ProcessManagerError,
     ProcessNotFoundError,
@@ -171,10 +171,10 @@ def _setup_application():
     mock_app.bot.get_file = AsyncMock()
     mock_app.bot.send_chat_action = AsyncMock()
     mock_app.bot.set_my_commands = AsyncMock()
-    original = bot_module._application
-    bot_module._application = mock_app
+    original = bot_module._application, delivery_module._application
+    bot_module._application = delivery_module._application = mock_app
     yield mock_app
-    bot_module._application = original
+    bot_module._application, delivery_module._application = original
 
 
 def _make_update(
@@ -1414,7 +1414,7 @@ class TestSendResponse:
         assert EMPTY_RESPONSE_TEXT in sent_text
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.silence_mode_registry")
+    @patch("claude_manager.telegram_response_delivery.silence_mode_registry")
     async def test_silence_mode_suppresses_intermediate_messages(
         self,
         mock_silence: MagicMock,
@@ -1426,7 +1426,7 @@ class TestSendResponse:
         _setup_application.bot.send_message.assert_not_called()
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.silence_mode_registry")
+    @patch("claude_manager.telegram_response_delivery.silence_mode_registry")
     async def test_silence_mode_passes_final_messages(
         self,
         mock_silence: MagicMock,
@@ -1514,7 +1514,7 @@ class TestSendWatcherMessage:
         assert "<i>" in intermediate_text
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.silence_mode_registry")
+    @patch("claude_manager.telegram_response_delivery.silence_mode_registry")
     async def test_silence_mode_suppresses_intermediate_watcher_messages(
         self,
         mock_silence: MagicMock,
@@ -1528,7 +1528,7 @@ class TestSendWatcherMessage:
         _setup_application.bot.send_message.assert_not_called()
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.silence_mode_registry")
+    @patch("claude_manager.telegram_response_delivery.silence_mode_registry")
     @patch.object(session_manager, "get_bound_session")
     async def test_silence_mode_passes_final_watcher_messages(
         self,
@@ -2109,12 +2109,12 @@ class TestHandleSwitchProject:
             "switch_project",
             new=AsyncMock(return_value=switch_result),
         ), patch.object(
-            project_manager,
-            "collect_pending_messages_for_project",
+            project_pending_delivery,
+            "collect_pending_messages",
             new=AsyncMock(return_value=(1, pending)),
         ) as collect_mock, patch.object(
-            bot_module,
-            "_deliver_pending_messages",
+            project_pending_delivery,
+            "deliver_pending_messages",
             new=AsyncMock(),
         ) as deliver_mock:
             await handle_switch_project(update, context)
@@ -2250,7 +2250,7 @@ class TestHandleSwitchProject:
         ), patch(
             "claude_manager.unread_buffer.clear_snapshot_for_session_backend_pair"
         ) as clear_snapshot_mock:
-            await bot_module._deliver_pending_messages(TEST_CHAT_ID, pending)
+            await project_pending_delivery.deliver_pending_messages(TEST_CHAT_ID, pending)
 
         clear_snapshot_mock.assert_called_once_with(
             "codex-session",
@@ -2269,7 +2269,7 @@ class TestHandleSwitchProject:
             )
         ]
         silence_mode_registry._silence_enabled = True
-        bot_module.unread_buffer.save_snapshot(
+        unread_buffer.save_snapshot(
             "codex-session",
             BackendName.CODEX,
             raw_record_count=10,
@@ -2280,11 +2280,11 @@ class TestHandleSwitchProject:
             daily_session_registry, "register_session",
             new=AsyncMock(),
         ) as register_session_mock:
-            await bot_module._deliver_pending_messages(TEST_CHAT_ID, pending)
+            await project_pending_delivery.deliver_pending_messages(TEST_CHAT_ID, pending)
 
         register_session_mock.assert_not_awaited()
         bot_module._application.bot.send_message.assert_not_called()
-        assert bot_module.unread_buffer.restore_snapshot(
+        assert unread_buffer.restore_snapshot(
             "codex-session",
             BackendName.CODEX,
         ) is not None
@@ -2430,7 +2430,7 @@ class TestSendResponseFileMarkers:
     """Тесты обработки маркеров [SEND_FILE:path] в send_response."""
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.file_delivery.send_as_document", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.send_as_document", new_callable=AsyncMock)
     @patch.object(file_sender, "strip_file_markers", return_value="answer")
     @patch.object(
         file_sender, "extract_file_markers", return_value=["/tmp/test.md"],
@@ -2453,8 +2453,8 @@ class TestSendResponseFileMarkers:
         mock_send_document.assert_awaited_once()
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.file_delivery.process_file_markers", new_callable=AsyncMock)
-    @patch("claude_manager.bot.file_delivery.process_show_file_markers", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.process_file_markers", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.process_show_file_markers", new_callable=AsyncMock)
     async def test_send_response_not_final_skips_file_markers(
         self,
         mock_process_show: AsyncMock,
@@ -2472,7 +2472,7 @@ class TestSendResponseFileMarkers:
         mock_process_show.assert_not_awaited()
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.file_delivery.send_as_document", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.send_as_document", new_callable=AsyncMock)
     @patch.object(file_sender, "strip_file_markers", return_value="answer")
     @patch.object(
         file_sender, "extract_file_markers", return_value=["/tmp/image.png"],
@@ -2494,7 +2494,7 @@ class TestSendResponseFileMarkers:
         mock_send_document.assert_awaited_once()
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.file_delivery.send_as_document", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.send_as_document", new_callable=AsyncMock)
     @patch.object(file_sender, "strip_file_markers", return_value="answer")
     @patch.object(
         file_sender,
@@ -2518,7 +2518,7 @@ class TestSendResponseFileMarkers:
         assert mock_send_document.await_count == 2
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.telegram_sender.send_telegram_message", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.telegram_sender.send_telegram_message", new_callable=AsyncMock)
     @patch.object(
         file_sender,
         "read_file_content",
@@ -2562,7 +2562,7 @@ class TestSendWatcherMessageFileMarkers:
     """Тесты обработки маркеров [SEND_FILE:path] в send_watcher_message."""
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.file_delivery.send_as_document", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.send_as_document", new_callable=AsyncMock)
     @patch.object(file_sender, "strip_file_markers", return_value="ответ")
     @patch.object(
         file_sender, "extract_file_markers", return_value=["/tmp/file.md"],
@@ -2584,8 +2584,8 @@ class TestSendWatcherMessageFileMarkers:
         mock_send_document.assert_awaited_once()
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.file_delivery.process_file_markers", new_callable=AsyncMock)
-    @patch("claude_manager.bot.file_delivery.process_show_file_markers", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.process_file_markers", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.file_delivery.process_show_file_markers", new_callable=AsyncMock)
     @patch.object(session_manager, "get_bound_session", return_value=TEST_SESSION_ID)
     async def test_send_watcher_message_not_final_skips_markers(
         self,

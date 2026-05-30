@@ -95,6 +95,8 @@
 - **session-reports/13-05/** — исправление preview Codex-сессий в `/sessions`: фильтрация bootstrap-блока `AGENTS.md instructions`, извлечение подписи файловой задачи как исходного запроса пользователя, регрессионные тесты, полный pytest-прогон; отчёт о баге `/restart` при активных дочерних Codex-задачах
 - **session-reports/14-05/** — реализация и стабилизация глобального режима `/all`: мониторинг всех проектов, кликабельные команды `/3s12`, сохранение pending-доставки и восстановление all-mode после неудачного переключения проекта
 - **session-reports/15-05/** — handoff по ветке `codex-support-spec-implementation-cycle`: состояние уже влитой Codex-support работы, незакоммиченные summary `/sessions` и оптимизация `/all`, план стабилизации и отдельного фикса `/restart`
+- **session-reports/30-05/** — handoff по RCA медленного переключения проектов: причина 7-17 секунд, решение через 4-дневный Codex session index, ограничения по pending и план продолжения; handoff по дизайну reply-якорей для Telegram-ответов, watcher-сообщений, `/all`, `/stop`, переключения проектов и сессий
+- **session-reports/31-05/** — handoff по текущему состоянию подготовки reply-якорей: перенос доставки Telegram-ответов из `bot.py` в `telegram_response_delivery.py`, целевая проверка `172 passed`, size gate для больших файлов и следующие шаги реализации
 
 ## Логи
 

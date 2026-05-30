@@ -442,9 +442,10 @@ async def test_poll_delivers_all_project_message_and_keeps_unread_snapshot() -> 
     assert call[1] == 1
     assert call[2] == 1
     assert call[3] == "beta"
-    assert call[4] == "sess-beta"
-    assert call[5] == BackendName.CLAUDE
-    assert call[6] == "answer"
+    assert call[4] == "/projects/beta"
+    assert call[5] == "sess-beta"
+    assert call[6] == BackendName.CLAUDE
+    assert call[7] == "answer"
 
     unread_state = unread_buffer.restore_snapshot("sess-beta", BackendName.CLAUDE)
     assert unread_state == SessionUnreadState(

@@ -104,6 +104,14 @@ def build_photo_group_task(
     )
 
 
+def select_album_anchor_message_id(updates: list[Update]) -> int:
+    """Choose the Telegram message_id used as the album reply anchor."""
+    for update in updates:
+        if update.message.caption:
+            return update.message.message_id
+    return updates[0].message.message_id
+
+
 # --- Класс-агрегатор ---
 
 
@@ -357,6 +365,7 @@ async def finalize_photo_group(media_group_id: str) -> None:
             return
 
         task_text = build_photo_group_task(saved_paths, common_caption)
+        reply_to_message_id = select_album_anchor_message_id(updates)
 
         try:
             await _send_chat_action_callback(chat_id)
@@ -365,7 +374,11 @@ async def finalize_photo_group(media_group_id: str) -> None:
                 "send_chat_action не удался в finalize_photo_group: %s", exc,
             )
 
-        await _send_to_claude_callback(chat_id, task_text)
+        await _send_to_claude_callback(
+            chat_id,
+            task_text,
+            reply_to_message_id=reply_to_message_id,
+        )
     finally:
         # pop_group уже очистил состояние агрегатора до try, finally здесь --
         # на будущее: если добавятся внутренние состояния-следы (ретраи,

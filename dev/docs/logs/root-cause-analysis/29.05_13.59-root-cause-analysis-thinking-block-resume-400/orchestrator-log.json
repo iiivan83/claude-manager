@@ -1,0 +1,90 @@
+{
+  "pipeline": "root-cause-analysis",
+  "problem_summary": "Сессия #18 Claude в Telegram-боте упала с API Error 400 про thinking/redacted_thinking blocks после resume; бот воспринял ошибку как временную и запустил retry.",
+  "start_time": "2026-05-29T13:59:24+05:00",
+  "status": "completed",
+  "last_completed_stage": "phase_7_report_creation",
+  "steps": [
+    {
+      "step_number": 1,
+      "stage": "phase_0_project_recon",
+      "status": "completed",
+      "start_time": "2026-05-29T13:55:00+05:00",
+      "end_time": "2026-05-29T13:56:00+05:00",
+      "duration_seconds": 60,
+      "comment": "Прочитаны CLAUDE.md, AGENTS.md, root-cause-analysis skill, глобальные reference-файлы. Проект: Telegram-бот Claude Manager; код в src/claude_manager, тесты в tests, документация в dev/docs. Отдельного architecture.md и проектных SKILL.md не найдено."
+    },
+    {
+      "step_number": 2,
+      "stage": "phase_1_problem_context",
+      "status": "completed",
+      "start_time": "2026-05-29T13:56:00+05:00",
+      "end_time": "2026-05-29T13:57:00+05:00",
+      "duration_seconds": 60,
+      "comment": "Скриншот показывает #18 Ошибка Claude, повтор 1/10: API Error 400 messages.1.content.3 про thinking/redacted_thinking blocks. Логи подтвердили: #18 = 95c88bbd-d7dc-4365-9c72-28f21e616cff, backend=claude; #19 после /new уже backend=codex."
+    },
+    {
+      "step_number": 3,
+      "stage": "phase_2_documentation_analysis",
+      "status": "completed",
+      "start_time": "2026-05-29T13:57:00+05:00",
+      "end_time": "2026-05-29T13:58:00+05:00",
+      "duration_seconds": 60,
+      "comment": "Найдены связанные документы: session report 29-05 03:36 по той же thinking-block ошибке, RCA 29-05 11:26 по постоянным ошибкам retry, ADR 29-05 12:29 о классификации permanent errors. Текущая реализация закрыла Prompt is too long и hit your limit, но не thinking-block invariant."
+    },
+    {
+      "step_number": 4,
+      "stage": "phase_3_skill_analysis",
+      "status": "completed",
+      "start_time": "2026-05-29T13:58:00+05:00",
+      "end_time": "2026-05-29T13:58:20+05:00",
+      "duration_seconds": 20,
+      "comment": "Проектных .claude/skills/*/SKILL.md нет. Пробел процесса: предыдущее решение классификации ошибок брало маркеры из одного RCA и не сверило список известных permanent Claude errors из session reports."
+    },
+    {
+      "step_number": 5,
+      "stage": "phase_4_code_analysis",
+      "status": "completed",
+      "start_time": "2026-05-29T13:58:20+05:00",
+      "end_time": "2026-05-29T13:59:00+05:00",
+      "duration_seconds": 40,
+      "comment": "Код: claude_code_backend.py содержит CLAUDE_CONTEXT_OVERFLOW_ERROR_MARKERS=(prompt is too long,) и CLAUDE_USAGE_LIMIT_ERROR_MARKERS=(hit your limit,), но не распознаёт API Error 400 thinking blocks cannot be modified. process_manager.py при нераспознанной ошибке запускает _retry_loop."
+    },
+    {
+      "step_number": 6,
+      "stage": "phase_5_cause_chain",
+      "status": "completed",
+      "start_time": "2026-05-29T13:59:00+05:00",
+      "end_time": "2026-05-29T13:59:10+05:00",
+      "duration_seconds": 10,
+      "comment": "Цепочка: длинный/оборванный Claude turn с --effort max создаёт signed thinking blocks; resume той же JSONL-истории нарушает invariant API; CLI возвращает permanent 400; бот не классифицирует этот текст как permanent и запускает retry."
+    },
+    {
+      "step_number": 7,
+      "stage": "phase_6_verification",
+      "status": "completed",
+      "start_time": "2026-05-29T13:59:10+05:00",
+      "end_time": "2026-05-29T13:59:18+05:00",
+      "duration_seconds": 8,
+      "comment": "Проверены альтернативы: ошибка не из Codex #19, не из Telegram, не из маршрутизации сессий. Логи и JSONL указывают на Claude #18 и resume после max_tokens/thinking."
+    },
+    {
+      "step_number": 8,
+      "stage": "phase_6_5_solution_verification",
+      "status": "completed",
+      "start_time": "2026-05-29T13:59:18+05:00",
+      "end_time": "2026-05-29T13:59:22+05:00",
+      "duration_seconds": 4,
+      "comment": "Решение добавлять новый marker в ClaudeCodeBackend одобрено: соответствует текущей архитектуре backend-specific classification. Отдельный PermanentErrorKind лучше добавить как session_integrity_error или resume_state_corruption."
+    },
+    {
+      "step_number": 9,
+      "stage": "phase_7_report_creation",
+      "status": "completed",
+      "start_time": "2026-05-29T13:59:22+05:00",
+      "end_time": "2026-05-29T13:59:24+05:00",
+      "duration_seconds": 2,
+      "comment": "Создан root-cause отчёт dev/docs/logs/root-cause-reports/29-05_13-59_thinking-block-resume-400.md. Фазы документалиста и session-report не запускались: задача была read-only расследованием в текущем Codex runtime без доступного CLI-делегирования."
+    }
+  ]
+}

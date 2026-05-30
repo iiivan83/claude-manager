@@ -80,24 +80,24 @@ def _cleanup_watchdog_tasks():
 @pytest.fixture(autouse=True)
 def _setup_application():
     """Устанавливает фейковый Application и инициализирует callbacks."""
-    import claude_manager.bot as bot_module
+    import claude_manager.telegram_response_delivery as delivery_module
     mock_app = MagicMock()
     mock_app.bot = MagicMock()
     mock_app.bot.send_message = AsyncMock()
     mock_app.bot.send_chat_action = AsyncMock()
-    original = bot_module._application
-    bot_module._application = mock_app
+    original = delivery_module._application
+    delivery_module._application = mock_app
 
     # Инициализируем callbacks для claude_interaction
     from claude_manager import claude_interaction
     claude_interaction.init_callbacks(
-        send_response_module=bot_module,
+        send_response_module=delivery_module,
         send_response_attr="send_response",
-        send_telegram_message_module=bot_module,
+        send_telegram_message_module=delivery_module,
         send_telegram_message_attr="_send_telegram_message_bridge",
     )
     yield mock_app
-    bot_module._application = original
+    delivery_module._application = original
 
 
 
@@ -524,7 +524,7 @@ class TestSendToClaudeAndRespondBehavior:
     """Тесты основного сценария отправки сообщения в Claude и обработки ответа."""
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     @patch.object(session_manager, "get_active_session")
     async def test_send_to_agent_uses_active_session_backend(
@@ -573,7 +573,7 @@ class TestSendToClaudeAndRespondBehavior:
         assert mock_send_response.call_args.args[3] == BackendName.CODEX
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     @patch.object(session_manager, "get_bound_session")
     async def test_happy_path_sends_response(
@@ -654,7 +654,7 @@ class TestSendToClaudeAndRespondBehavior:
         ), patch.object(
             session_watcher, "resume_session", new_callable=AsyncMock,
         ) as mock_resume, patch(
-            "claude_manager.bot.send_response", new_callable=AsyncMock,
+            "claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock,
         ) as mock_send_response:
             await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
 
@@ -874,7 +874,7 @@ class TestSendToClaudeAndRespondBehavior:
     @pytest.mark.asyncio()
     @patch.object(ci_module, "generate_session_summary", new_callable=AsyncMock, create=True)
     @patch.object(daily_session_registry, "update_session_summary", new_callable=AsyncMock, create=True)
-    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     @patch.object(session_manager, "get_active_session")
     async def test_first_prompt_summary_saved_after_temp_session_gets_real_id(
@@ -947,7 +947,7 @@ class TestSendToClaudeAndRespondBehavior:
         )
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     @patch.object(session_manager, "get_bound_session")
     async def test_happy_path_sends_response(
@@ -1028,7 +1028,7 @@ class TestSendToClaudeAndRespondBehavior:
         ), patch.object(
             session_watcher, "resume_session", new_callable=AsyncMock,
         ) as mock_resume, patch(
-            "claude_manager.bot.send_response", new_callable=AsyncMock,
+            "claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock,
         ) as mock_send_response:
             await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
 
@@ -1246,7 +1246,7 @@ class TestSendToClaudeClosures:
     """Тесты замыканий callback'ов внутри _send_to_claude_and_respond."""
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     @patch.object(session_manager, "get_bound_session")
     async def test_on_progress_callback_sends_non_final_response(
@@ -1410,7 +1410,7 @@ class TestSendToClaudeClosures:
         ), patch.object(
             session_watcher, "resume_session", new_callable=AsyncMock,
         ), patch(
-            "claude_manager.bot.send_response", new_callable=AsyncMock,
+            "claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock,
         ) as mock_send_response:
             await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
 
@@ -1606,7 +1606,7 @@ class TestHandleClaudeResultBehavior:
     """Тесты обработки результата от Claude: успешный ответ и ошибка."""
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     async def test_success_result_sends_response_with_final_flag(
         self,
@@ -1697,7 +1697,7 @@ class TestHandleClaudeResultBehavior:
         assert "Неизвестная ошибка" in sent_text
 
     @pytest.mark.asyncio()
-    @patch("claude_manager.bot.send_response", new_callable=AsyncMock)
+    @patch("claude_manager.telegram_response_delivery.send_response", new_callable=AsyncMock)
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
     async def test_uses_actual_session_id_from_result(
         self,

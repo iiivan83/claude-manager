@@ -40,7 +40,7 @@ DATE_FORMAT = "%Y-%m-%d"
 MAX_CONCURRENT_BASELINE_READS = 16
 
 AllProjectsMessageCallback = Callable[
-    [int, int, int, str, str, BackendName, str, bool],
+    [int, int, int, str, str, str, BackendName, str, bool],
     Awaitable[None],
 ]
 
@@ -535,6 +535,7 @@ async def _deliver_project_session_delta(
                 project_session.project_number,
                 project_session.session_number,
                 project_session.project_name,
+                project_session.project_path,
                 file_info.session_id,
                 backend_name,
                 message.text,

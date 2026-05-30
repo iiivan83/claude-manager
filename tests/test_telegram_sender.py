@@ -215,6 +215,47 @@ class TestSendTelegramMessageExtended:
         call_kwargs = mock_bot.send_message.call_args[1]
         assert call_kwargs["reply_markup"] is mock_markup
 
+    @pytest.mark.asyncio()
+    async def test_reply_to_message_id_passed_as_reply_parameters(
+        self, mock_bot: MagicMock,
+    ) -> None:
+        """reply_to_message_id становится Telegram reply_parameters."""
+        await send_telegram_message(
+            mock_bot,
+            TEST_CHAT_ID,
+            "reply text",
+            reply_to_message_id=777,
+        )
+
+        call_kwargs = mock_bot.send_message.call_args[1]
+        assert call_kwargs["reply_parameters"].message_id == 777
+        assert call_kwargs["reply_parameters"].allow_sending_without_reply is True
+
+    @pytest.mark.asyncio()
+    async def test_reply_bad_request_retries_without_reply(
+        self, mock_bot: MagicMock,
+    ) -> None:
+        """Если Telegram отклоняет reply metadata, текст уходит без reply."""
+        mock_bot.send_message = AsyncMock(
+            side_effect=[
+                BadRequest("Message to be replied not found"),
+                MagicMock(),
+            ],
+        )
+
+        await send_telegram_message(
+            mock_bot,
+            TEST_CHAT_ID,
+            "reply text",
+            reply_to_message_id=777,
+        )
+
+        assert mock_bot.send_message.call_count == 2
+        first_kwargs = mock_bot.send_message.call_args_list[0][1]
+        second_kwargs = mock_bot.send_message.call_args_list[1][1]
+        assert first_kwargs["reply_parameters"].message_id == 777
+        assert "reply_parameters" not in second_kwargs
+
 
 # --- Тесты автоочистки файлов ---
 

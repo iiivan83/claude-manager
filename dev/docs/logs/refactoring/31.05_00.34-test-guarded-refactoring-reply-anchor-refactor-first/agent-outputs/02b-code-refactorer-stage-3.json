@@ -1,0 +1,100 @@
+{
+  "status": "completed",
+  "stage_id": 3,
+  "stage_name": "extract-project-switch-handlers",
+  "files_modified": [
+    "src/claude_manager/bot.py"
+  ],
+  "files_created": [
+    "src/claude_manager/telegram_project_handlers.py"
+  ],
+  "files_deleted": [],
+  "imports_updated": [
+    "src/claude_manager/bot.py: removed direct project switch implementation imports and added telegram_project_handlers for handler registration and compatibility re-exports",
+    "tests/test_bot.py: no changes needed because claude_manager.bot still re-exports handle_projects, handle_switch_project, and handle_switch_project_session",
+    "tests/test_project_switch_handlers_behavior.py: no changes needed because bot_module._application and bot_module.telegram_sender patches still work through injected callbacks and shared modules"
+  ],
+  "summary": "Moved /projects, /pN, and /<project>s<session> Telegram project-switch handling out of bot.py into telegram_project_handlers.py while preserving the old claude_manager.bot import surface.",
+  "validation": {
+    "py_compile": {
+      "command": ".venv/bin/python -m py_compile src/claude_manager/bot.py src/claude_manager/telegram_project_handlers.py src/claude_manager/project_pending_delivery.py tests/test_bot.py tests/test_project_switch_handlers_behavior.py",
+      "status": "passed"
+    },
+    "focused_subset": {
+      "command": ".venv/bin/python -m pytest tests/test_project_switch_handlers_behavior.py tests/test_project_pending_delivery_behavior.py tests/test_bot.py tests/test_telegram_response_delivery_behavior.py -q",
+      "status": "passed",
+      "result": "136 passed in 1.33s"
+    },
+    "full_suite": {
+      "status": "not_run",
+      "reason": "Stage 3c is responsible for the full test-runner pass; the known external Claude CLI 401 blocker was not rechecked in this Stage 3b subprocess."
+    }
+  },
+  "size_gate": {
+    "pre_edit": {
+      "src/claude_manager/bot.py": {
+        "lines": 1238,
+        "public_top_level_functions": 18,
+        "status": "pre_existing_error"
+      },
+      "src/claude_manager/telegram_project_handlers.py": {
+        "lines": 0,
+        "public_top_level_functions": 0,
+        "status": "new_file"
+      },
+      "src/claude_manager/project_pending_delivery.py": {
+        "lines": 267,
+        "public_top_level_functions": 4,
+        "status": "unchanged_target"
+      },
+      "tests/test_bot.py": {
+        "lines": 2660,
+        "public_top_level_functions": 0,
+        "status": "unchanged_pre_existing_large_test_file"
+      },
+      "tests/test_project_switch_handlers_behavior.py": {
+        "lines": 206,
+        "public_top_level_functions": 6,
+        "status": "unchanged_stage_test"
+      }
+    },
+    "post_edit": {
+      "src/claude_manager/bot.py": {
+        "lines": 979,
+        "public_top_level_functions": 15,
+        "status": "pre_existing_error_reduced",
+        "line_delta": -259,
+        "public_function_delta": -3,
+        "threshold_note": "Still above 500 lines and still above 10 public top-level functions; no new project-switch business logic remains in bot.py."
+      },
+      "src/claude_manager/telegram_project_handlers.py": {
+        "lines": 285,
+        "public_top_level_functions": 4,
+        "status": "within_limits",
+        "line_delta": 285,
+        "public_function_delta": 4
+      },
+      "src/claude_manager/project_pending_delivery.py": {
+        "lines": 267,
+        "public_top_level_functions": 4,
+        "status": "unchanged_within_stage_constraint",
+        "line_delta": 0,
+        "public_function_delta": 0
+      },
+      "tests/test_bot.py": {
+        "lines": 2660,
+        "public_top_level_functions": 0,
+        "status": "unchanged",
+        "line_delta": 0,
+        "public_function_delta": 0
+      },
+      "tests/test_project_switch_handlers_behavior.py": {
+        "lines": 206,
+        "public_top_level_functions": 6,
+        "status": "unchanged",
+        "line_delta": 0,
+        "public_function_delta": 0
+      }
+    }
+  }
+}

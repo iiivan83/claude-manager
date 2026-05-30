@@ -1,0 +1,85 @@
+{
+  "status": "completed",
+  "stage_id": 2,
+  "stage_name": "extract-project-pending-delivery",
+  "files_modified": [
+    "src/claude_manager/bot.py",
+    "src/claude_manager/project_pending_delivery.py",
+    "tests/test_bot.py",
+    "tests/test_project_pending_delivery_behavior.py"
+  ],
+  "files_created": [],
+  "files_deleted": [],
+  "imports_updated": [
+    "src/claude_manager/bot.py: imports project_pending_delivery and no longer imports unread_buffer for pending delivery helpers",
+    "src/claude_manager/project_pending_delivery.py: imports daily_session_registry, silence_mode_registry, telegram_response_delivery, and dataclasses.replace for moved pending-delivery behavior",
+    "tests/test_bot.py: pending-delivery patch paths now point to claude_manager.project_pending_delivery; unread_buffer is imported directly instead of through bot_module",
+    "tests/test_project_pending_delivery_behavior.py: all-mode same-project pending collection patch now targets project_pending_delivery.collect_pending_messages"
+  ],
+  "summary": "Moved visible pending filtering, silence-mode handling, daily-session registration, Telegram pending delivery, unread snapshot cleanup, and all-mode same-project pending collection out of bot.py into project_pending_delivery.py.",
+  "validation": [
+    {
+      "command": ".venv/bin/python -m py_compile src/claude_manager/bot.py src/claude_manager/project_pending_delivery.py tests/test_bot.py tests/test_project_pending_delivery_behavior.py",
+      "status": "passed"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py -v",
+      "status": "passed",
+      "result": "5 passed"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py tests/test_bot.py -v",
+      "status": "passed",
+      "result": "107 passed"
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/test_project_pending_delivery_behavior.py tests/test_bot.py tests/test_telegram_response_delivery_behavior.py -v",
+      "status": "passed_after_orchestrator_rerun",
+      "result": "126 passed",
+      "reason": "Orchestrator reran the focused Stage 2b command on the current workspace after agent completion."
+    },
+    {
+      "command": ".venv/bin/python -m pytest tests/ -v",
+      "status": "failed_unrelated_to_stage_2b_current_workspace",
+      "result": "1072 passed, 3 failed, 4 skipped",
+      "reason": "Known external blocker tests/integration/test_claude_cli_contract.py::test_claude_backend_stream_json_and_session_file_contract fails with Claude CLI 401. Two additional failures are from unrelated dirty Reply Anchor changes in claude_interaction.py/tests expecting no reply_to_message_id kwarg."
+    },
+    {
+      "command": "git diff --check -- src/claude_manager/bot.py src/claude_manager/project_pending_delivery.py tests/test_bot.py tests/test_project_pending_delivery_behavior.py",
+      "status": "passed"
+    }
+  ],
+  "size_gate": {
+    "src/claude_manager/bot.py": {
+      "before_lines": 1279,
+      "after_lines": 1226,
+      "line_delta": -53,
+      "before_public_functions": 18,
+      "after_public_functions": 18,
+      "status": "still_over_500_and_god_module_but_reduced",
+      "split_plan": "Continue extracting project switch/session handlers and their formatting helpers into focused project-switch modules in later stages."
+    },
+    "src/claude_manager/project_pending_delivery.py": {
+      "before_lines": 156,
+      "after_lines": 258,
+      "line_delta": 102,
+      "after_top_level_public_functions": 4,
+      "after_grep_public_defs_including_nested": 5,
+      "status": "under_thresholds_with_42_lines_remaining_before_300"
+    },
+    "tests/test_bot.py": {
+      "before_lines": 2660,
+      "after_lines": 2660,
+      "line_delta": 0,
+      "after_public_test_functions": 103,
+      "status": "mechanical_patch_path_updates_without_growth; existing test file remains over size thresholds"
+    },
+    "tests/test_project_pending_delivery_behavior.py": {
+      "before_lines": 248,
+      "after_lines": 249,
+      "line_delta": 1,
+      "after_public_test_functions": 5,
+      "status": "under_thresholds"
+    }
+  }
+}

@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from claude_manager import coding_agent_backend, config, unread_buffer
+from claude_manager import (
+    coding_agent_backend,
+    config,
+    daily_session_registry,
+    reply_anchor_registry,
+    silence_mode_registry,
+    telegram_response_delivery,
+    unread_buffer,
+)
 from claude_manager.coding_agent_backend import (
     BackendName,
     CodingAgentBackend,
@@ -29,6 +37,109 @@ class PendingDeliveryItem:
     backend: BackendName
     text: str
     is_final: bool
+
+
+def _pending_message_is_visible_now(pending_message: object) -> bool:
+    """Return whether a pending message will be shown immediately."""
+    is_final = getattr(pending_message, "is_final", True)
+    return bool(is_final) or not silence_mode_registry.is_enabled()
+
+
+def _get_visible_pending_messages(pending_messages: list[object]) -> list[object]:
+    """Return pending messages not suppressed by silence mode."""
+    return [
+        pending_message
+        for pending_message in pending_messages
+        if _pending_message_is_visible_now(pending_message)
+    ]
+
+
+def count_visible_pending_messages(result: object) -> int:
+    """Count pending messages that will be visible to the user."""
+    pending_messages = getattr(result, "pending_messages", [])
+    if not pending_messages:
+        return getattr(result, "pending_messages_count", 0)
+    return len(_get_visible_pending_messages(pending_messages))
+
+
+async def _register_pending_session(
+    pending: object,
+    backend: BackendName,
+) -> int | None:
+    """Register a pending session before delivery."""
+    try:
+        return await daily_session_registry.register_session(
+            pending.session_id,
+            backend,
+        )
+    except Exception:
+        logger.error(
+            "Ошибка регистрации сессии %s при доставке буфера",
+            getattr(pending, "session_id", "<unknown>"),
+            exc_info=True,
+        )
+        return None
+
+
+async def deliver_pending_messages(
+    chat_id: int,
+    pending_messages: list[object],
+) -> None:
+    """Deliver visible pending messages after project switch."""
+    for pending in _get_visible_pending_messages(pending_messages):
+        backend = getattr(pending, "backend", BackendName.CLAUDE)
+        is_final = getattr(pending, "is_final", True)
+        day_number = await _register_pending_session(pending, backend)
+        if day_number is None:
+            continue
+
+        send_response_kwargs = {"is_final": is_final}
+        reply_to_message_id = reply_anchor_registry.get_anchor(
+            config.WORKING_DIR,
+            backend,
+            pending.session_id,
+        )
+        if reply_to_message_id is not None:
+            send_response_kwargs["reply_to_message_id"] = reply_to_message_id
+        await telegram_response_delivery.send_response(
+            chat_id, pending.text, day_number, backend, **send_response_kwargs,
+        )
+        unread_buffer.clear_snapshot_for_session_backend_pair(
+            pending.session_id,
+            backend,
+        )
+
+
+def _should_collect_for_all_mode_same_project(
+    result: object,
+    was_all_projects_mode: bool,
+) -> bool:
+    """Return whether all-mode exit needs same-project pending collection."""
+    return (
+        was_all_projects_mode
+        and getattr(result, "success", False)
+        and getattr(result, "already_active", False)
+    )
+
+
+async def include_pending_for_all_mode_same_project(
+    result: object,
+    target_project: object,
+    was_all_projects_mode: bool,
+) -> object:
+    """Collect pending messages when all mode exits into the active project."""
+    if not _should_collect_for_all_mode_same_project(result, was_all_projects_mode):
+        return result
+
+    pending_count, pending_messages = await collect_pending_messages(
+        target_project.absolute_path
+    )
+    return replace(
+        result,
+        already_active=False,
+        pending_messages_count=pending_count,
+        pending_messages=pending_messages,
+    )
 
 
 def _has_new_messages(
