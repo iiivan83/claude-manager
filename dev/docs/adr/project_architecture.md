@@ -14,11 +14,20 @@
 
 Код разделён на четыре слоя с чёткими границами ответственности. Верхний слой может вызывать нижний, но не наоборот.
 
-### Транспортный слой — `bot.py`
+### Транспортный слой — `bot.py` и `telegram_*_handlers.py`
 
-Точка входа для всех событий из Telegram. Содержит обработчики команд (`/new`, `/sessions`, `/connect` и другие), обработчики текстовых сообщений и фотографий. Управляет watchers (мониторингом), очередями сообщений, эпохами сессий и координацией между компонентами.
+Точка входа для событий из Telegram разделена на facade и профильные handler-модули. `bot.py` остаётся тонкой точкой сборки: создаёт `Application` из `python-telegram-bot`, регистрирует handlers, подключает глобальный error handler, инициализирует callback-зависимости и сохраняет compatibility re-export старых публичных имён.
 
-Импортирует все остальные модули проекта. Это единственный модуль, который знает о Telegram API (`python-telegram-bot`).
+Логика Telegram-сценариев живёт в отдельных модулях по ответственности:
+
+- **`telegram_agent_handlers.py`** — выбор CLI-бэкенда через `/agent` и inline-кнопки
+- **`telegram_session_handlers.py`** — `/new`, `/sessions`, `/all`, `/stop` и переключение сессий по дневному номеру
+- **`telegram_input_handlers.py`** — текстовые сообщения, фото, документы и reply anchor для прямого ответа
+- **`telegram_lifecycle_handlers.py`** — `post_init`, watcher callbacks, `/restart`, `silence mode`
+- **`telegram_project_handlers.py`** — `/projects`, `/pN` и команды вида `/<project>s<session>`
+- **`telegram_response_delivery.py`** — доставка ответов в Telegram: заголовки, markdown/html, файловые маркеры и reply anchors
+
+Handler-модули не импортируют `bot.py`. Если им нужен Telegram `Application` или проверка доступа, `bot.py` передаёт эти зависимости через `init_callbacks`. Так транспортный слой знает о Telegram API, но не складывает все сценарии в один большой god-module.
 
 ### Слой бизнес-логики — `session_manager.py`, `daily_session_registry.py`
 
@@ -63,34 +72,32 @@
 - `IDLE_TIMEOUT_SECONDS` — таймаут бездействия (по умолчанию 7200 секунд, то есть 2 часа)
 - `EXTERNAL_SESSION_ACTIVITY_THRESHOLD` — порог определения активной внешней сессии (по умолчанию 30 секунд)
 
-### `bot.py` — обработчики Telegram-команд
+### `bot.py` и Telegram handler-модули
+
+`bot.py` больше не владеет реализацией пользовательских Telegram-сценариев. Он отвечает за wiring:
+
+- создание `Application`
+- регистрацию `CommandHandler`, `MessageHandler` и `CallbackQueryHandler`
+- подключение `_global_error_handler`
+- передачу callback-зависимостей в handler-модули
+- совместимые re-export-ы старых имён из `claude_manager.bot`
 
 Глобальное состояние распределено по профильным модулям:
+
 - `session_manager` — активная сессия чата и backend этой сессии
 - `daily_session_registry` — дневные номера сессий
-- `process_manager` — живые процессы CLI-агентов и флаги занятости
+- `process_manager` и `process_state` — живые процессы CLI-агентов, busy-флаги, stop-events и alias temp→real session id
 - `session_watcher` — cursor-счётчики активного проекта и пауза мониторинга
 - `silence_mode_registry` — глобальный режим подавления промежуточных сообщений
-- `all_projects_monitor._enabled_chat_ids` — чаты, которые сейчас получают глобальный `/all`
-- `all_projects_monitor._states` — cursor-счётчики глобального мониторинга по ключу `(project_path, session_id, backend)`
-- `all_projects_monitor._links` — соответствие кликабельных команд `/<project_number>s<session_number>` точному проекту, session_id и backend
+- `all_projects_monitor` — чаты в global `/all`, cursor-счётчики по проекту/сессии/backend и link registry для команд `/<project_number>s<session_number>`
 
-Команды:
-- `/start` — приветствие или подключение по deep link (`/start connect_SESSION_ID`)
-- `/new` — сбросить сессию (увеличить эпоху, остановить процесс, очистить очередь)
-- `/all` — включить глобальный мониторинг всех проектов через `all_projects_monitor`
-- `/sessions` — показать 5 последних сессий с дневными номерами
-- `/connect N` или `/N` — подключиться к сессии по дневному номеру
-- `/status` — текущее состояние: сессия, режим, рабочая папка
-- `/project /path` — сменить рабочую папку
-- `/full` и `/project_only` — переключение режима инструментов
-- `/stop` — остановить текущий процесс Claude
-- `/watch` — включить/выключить мониторинг текущей сессии
-- `/help` — список доступных команд
+Команды и входы распределены так:
 
-Ключевые константы:
-- `PROGRESS_MIN_INTERVAL_SECONDS = 30` — минимальный интервал между промежуточными сообщениями
-- `STOP_WORDS = {"стоп", "отмена", "stop", "cancel"}` — слова для мгновенной остановки Claude
+- **`telegram_agent_handlers.py`** — `/agent` и callback data `agent:<backend>`
+- **`telegram_session_handlers.py`** — `/new`, `/sessions`, `/all`, `/all_projects`, `/stop`, `/N`
+- **`telegram_input_handlers.py`** — обычный текст, фото, документы, текстовые команды `silence on/off`
+- **`telegram_lifecycle_handlers.py`** — `/restart`, `/silence_on`, `/silence_off`, `post_init` и callbacks watchers
+- **`telegram_project_handlers.py`** — `/projects`, `/pN`, `/<project>s<session>`
 
 ### `process_manager.py` и `process_state.py` — управление процессами Claude
 
@@ -145,7 +152,7 @@
 
 Наблюдатель за файлами сессий активного проекта:
 
-- **SessionWatcher** — следит за одним файлом `.jsonl`. Каждые 2 секунды проверяет, вырос ли файл. Читает новые строки, ищет сообщения assistant, конвертирует Markdown в HTML через `markdown_to_html()` и отправляет через callback. Поддерживает паузу/возобновление для координации с handle_message.
+- **SessionWatcher** — следит за одним файлом `.jsonl`. Каждые 2 секунды проверяет, вырос ли файл. Читает новые строки, ищет сообщения assistant, конвертирует Markdown в HTML через `markdown_to_html()` и отправляет через callback. Поддерживает паузу/возобновление для координации с `telegram_input_handlers.handle_message`.
 
 Функция `markdown_to_html()`: разделяет текст на блоки кода и обычный текст. Блоки кода оборачиваются в `<pre>`, обычный текст: `**жирный**` в `<b>`, инлайн-код в `<code>`.
 
@@ -164,16 +171,16 @@
 
 Полный путь сообщения от Telegram до Claude Code CLI и обратно:
 
-**1. Приём сообщения (bot.py)**
+**1. Приём сообщения (`telegram_input_handlers.py`)**
 - Telegram отправляет update в бота
-- `handle_message()` проверяет доступ пользователя (белый список)
+- `telegram_input_handlers.handle_message()` проверяет доступ пользователя (белый список)
 - Проверяет наличие активной сессии и режим наблюдения
 - Если Claude занят — проверяет на команду стопа, иначе добавляет в очередь
 
-**2. Подготовка к отправке (bot.py)**
+**2. Подготовка к отправке (`telegram_input_handlers.py`, `claude_interaction.py`)**
 - Проверяется, не находится ли чат в global all-mode; из этого режима отправка агенту блокируется до выбора проекта и сессии
 - `claude_interaction.send_message_to_agent()` координирует отправку с `session_watcher`, чтобы пользователь не получил один ответ дважды
-- Вызывается `_send_to_claude_and_respond()` — основная логика доставки запроса агенту и ответа пользователю
+- Вызывается `claude_interaction.send_to_claude_and_respond()` — основная логика доставки запроса агенту и ответа пользователю
 
 **3. Отправка в Claude (claude_runner.py, process_manager.py, process_state.py)**
 - `run_claude()` вызывает `ProcessManager.send_message()`
@@ -196,14 +203,12 @@
   - `control_request` — запрос разрешения на инструмент, автоматически отвечает по режиму
 - `send_message()` ожидает результат из очереди с таймаутом 30 минут
 
-**5. Возврат ответа (bot.py)**
+**5. Возврат ответа (`claude_interaction.py`, `telegram_response_delivery.py`)**
 - Проверяет эпоху — если пользователь переключил сессию, ответ не сохраняется
 - Сохраняет session_id через SessionManager
 - Регистрирует в DailySessionRegistry (получает номер #N)
-- Конвертирует Markdown в HTML через `markdown_to_html()`
-- Добавляет заголовок `<b>#N</b>` с дневным номером сессии
-- Разбивает на части через `split_message()` (лимит 4096 символов)
-- Отправляет в Telegram через `_send_html_with_fallback()` (при ошибке парсинга HTML — fallback на plain text)
+- Передаёт текст в `telegram_response_delivery.send_response()`
+- `telegram_response_delivery.py` добавляет заголовок с дневным номером сессии, готовит markdown/html, разбивает длинные сообщения и отправляет их через Telegram
 - Обрабатывает очередь накопленных сообщений через `_drain_message_queue()`
 - Возобновляет watchers через `_resume_watcher()`
 
@@ -291,9 +296,9 @@
 - Если совпадают — всё в порядке, session_id сохраняется
 - Если не совпадают — пользователь переключился, ответ отправляется но session_id не сохраняется
 
-### Координация watchers и handle_message
+### Координация watchers и `telegram_input_handlers.handle_message`
 
-Проблема: SessionWatcher читает тот же файл сессии, в который Claude пишет ответ. Без координации пользователь получит ответ дважды — от watcher и от handle_message.
+Проблема: SessionWatcher читает тот же файл сессии, в который Claude пишет ответ. Без координации пользователь получит ответ дважды — от watcher и от прямого обработчика пользовательского сообщения.
 
 Решение — счётчик активных запросов (`chat_active_requests`):
 - `_pause_watcher()` увеличивает счётчик и вызывает `pause()` на watchers
