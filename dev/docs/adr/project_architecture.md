@@ -27,11 +27,12 @@
 - **SessionManager** — хранит связку chat_id к session_id в памяти и на диске (`sessions.json`)
 - **DailySessionRegistry** — присваивает сессиям последовательные номера в пределах дня, сбрасывает нумерацию в полночь, хранит данные в `daily_sessions.json`
 
-### Слой инфраструктуры — `process_manager.py`, `claude_runner.py`
+### Слой инфраструктуры — `process_manager.py`, `process_state.py`, `claude_runner.py`
 
 Запуск и управление долгоживущими процессами Claude Code CLI. Протокол stream-json: запись в stdin, чтение из stdout, маршрутизация событий. Не знает про Telegram.
 
-- **ProcessManager** — ядро: пул процессов, фоновое чтение stdout, очереди ответов, автоматическая обработка control_request, очистка бездействующих процессов
+- **process_manager** — оркестратор lifecycle: запуск CLI-процессов, отправка сообщений, чтение событий, retry и `/stop`
+- **process_state** — in-memory state процессов: словари процессов, busy-флаги, stop-events, alias temp→real session_id и атомарный перенос ключей
 - **claude_runner** — тонкая обёртка: предоставляет функцию `run_claude()` и синглтон ProcessManager
 
 ### Утилиты и мониторинг — `message_splitter.py`, `session_reader.py`, `session_watcher.py`, `all_projects_monitor.py`
@@ -91,25 +92,29 @@
 - `PROGRESS_MIN_INTERVAL_SECONDS = 30` — минимальный интервал между промежуточными сообщениями
 - `STOP_WORDS = {"стоп", "отмена", "stop", "cancel"}` — слова для мгновенной остановки Claude
 
-### `process_manager.py` — управление процессами Claude
+### `process_manager.py` и `process_state.py` — управление процессами Claude
 
-Центральный модуль инфраструктуры. Управляет пулом долгоживущих процессов — один процесс на сессию.
+Центральная инфраструктурная пара модулей. `process_manager.py` управляет поведением процесса: запуском Claude/Codex CLI, отправкой сообщения, чтением stream-json событий, retry-циклом и `/stop`. `process_state.py` хранит только in-memory state процесса и атомарные helper-функции для ключей и alias-ов.
 
 Ключевые структуры данных:
-- `ClaudeResponse` (dataclass) — результат вызова: `text`, `session_id`, `is_success`, `error`, `intermediate_texts`
-- `ManagedProcess` (dataclass) — управляемый процесс: `session_id`, `process` (Popen), `working_dir`, `tools_mode`, `created_at`, `last_activity_at`, `is_busy`, `response_queue`, `on_progress`, `stdin_lock`
-- `ProcessDeadError` (исключение) — процесс умер или не доступен для записи
+- `SendResult` (dataclass) — результат отправки сообщения в CLI: текст ответа, session_id, backend, флаг ошибки, число retry и тип постоянной ошибки
+- `StopResult` (dataclass) — результат `/stop`: был ли процесс живым, был ли retry, какой backend остановлен
+- `ProcessKey` — ключ состояния: строковый session_id для legacy Claude-only пути или tuple `(session_id, backend)` для backend-aware пути
+- `ManagedProcess` — общий тип для старого `ClaudeProcess` и нового `BackendSubprocess`
 
 Внутреннее состояние:
-- `_processes: dict[str, ManagedProcess]` — session_id к управляемому процессу
-- `_session_locks: dict[str, asyncio.Lock]` — блокировки для одновременных запросов
-- `_reader_tasks: dict[str, asyncio.Task]` — фоновые задачи чтения stdout
-- `_cleanup_task: asyncio.Task` — периодическая очистка бездействующих процессов
+- `process_state._processes` — ключ процесса к живому subprocess wrapper
+- `process_state._busy_flags` — флаги занятости процесса
+- `process_state._stop_events` — события отмены для `/stop` и прерывания ожидания retry
+- `process_state._session_id_aliases` — alias temp session id → real session id после первого события CLI
+- `process_state._busy_lock` — общий `asyncio.Lock` для коротких атомарных секций
 
 Ключевые константы:
-- `RESPONSE_TIMEOUT_SECONDS = 1800` — 30 минут максимального ожидания ответа
-- `CLEANUP_INTERVAL_SECONDS = 60` — проверка бездействующих процессов каждую минуту
-- `PROJECT_ONLY_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write"]` — разрешённые инструменты в безопасном режиме
+- `MAX_RETRIES = 10` — максимум повторов при временной ошибке CLI
+- `RETRY_INTERVAL_SECONDS = 60` — пауза между retry
+- `PROGRESS_THROTTLE_SECONDS = 30` — минимальный интервал между промежуточными progress-сообщениями
+
+`process_manager.py` реэкспортирует state-объекты из `process_state.py`, чтобы старые тесты и приватный доступ вида `process_manager._processes` продолжали работать. Это временная compatibility-граница первого разреза: поведение запуска, retry и `/stop` не меняется.
 
 ### `claude_runner.py` — обёртка над ProcessManager
 
@@ -170,7 +175,7 @@
 - `claude_interaction.send_message_to_agent()` координирует отправку с `session_watcher`, чтобы пользователь не получил один ответ дважды
 - Вызывается `_send_to_claude_and_respond()` — основная логика доставки запроса агенту и ответа пользователю
 
-**3. Отправка в Claude (claude_runner.py, process_manager.py)**
+**3. Отправка в Claude (claude_runner.py, process_manager.py, process_state.py)**
 - `run_claude()` вызывает `ProcessManager.send_message()`
 - Если нет живого процесса — создаёт новый через `subprocess.Popen`:
   ```
@@ -182,7 +187,7 @@
 - Формирует JSON-сообщение и записывает в stdin процесса
 - Запускает фоновую задачу `_stdout_reader_loop()` для чтения ответов
 
-**4. Обработка ответов (process_manager.py)**
+**4. Обработка ответов (process_manager.py, process_state.py)**
 - Фоновый reader читает строки из stdout, парсит JSON
 - Маршрутизирует по типу события:
   - `system (init)` — первое событие с реальным session_id, обновляет ключи во всех словарях

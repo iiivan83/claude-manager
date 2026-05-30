@@ -71,7 +71,8 @@ claude_manager/
 │   ├── claude_interaction.py  # Оркестрация запросов к Claude: занятость, progress, watchdog, финальный ответ
 │   ├── config.py             # Загрузка и валидация настроек из .env
 │   ├── claude_runner.py      # Обёртка для запуска Claude Code CLI (subprocess + stream-json)
-│   ├── process_manager.py    # Жизненный цикл процессов Claude (ретраи, /stop, прогресс)
+│   ├── process_manager.py    # Жизненный цикл процессов Claude (запуск, ретраи, /stop, прогресс)
+│   ├── process_state.py      # In-memory state процессов CLI: процессы, busy-флаги, stop-events, alias temp→real
 │   ├── session_manager.py    # Привязка chat_id ↔ session_id, переключение сессий
 │   ├── session_reader.py     # Чтение JSONL-файлов сессий Claude Code с диска
 │   ├── session_watcher.py    # Мониторинг сессий в реальном времени (polling каждые 2 сек)
@@ -114,7 +115,7 @@ claude_manager/
 
 - **Транспортный слой** (bot.py, telegram_sender, telegram_file_downloader, media_group_handler, file_delivery, claude_interaction) — приём сообщений из Telegram, отправка ответов, скачивание файлов, агрегация альбомов, доставка файлов из ответа Claude, оркестрация запросов к Claude CLI. Модуль bot.py — точка входа слоя: обработчики команд, настройка Application, инициализация callback-зависимостей. Остальные модули слоя не импортируют bot.py — зависимости разрешаются через callback-функции, которые bot.py передаёт при старте (init_callbacks). Знает о Telegram API, не знает внутренности Claude.
 - **Слой бизнес-логики** (session_manager, daily_session_registry, project_manager, silence_mode_registry) — управление сессиями, нумерация, переключение между проектами, режим тишины. Не знает ни про Telegram, ни про процессы.
-- **Слой инфраструктуры** (process_manager, claude_runner) — запуск процессов, чтение stdout, протокол stream-json. Не знает про Telegram.
+- **Слой инфраструктуры** (process_manager, process_state, claude_runner) — запуск процессов, хранение in-memory state процессов, чтение stdout, протокол stream-json. Не знает про Telegram.
 - **Утилиты** (message_splitter, session_reader, file_sender) — вспомогательные функции без состояния.
 - **Мониторинг** (session_watcher, all_projects_monitor) — `session_watcher` опрашивает сессии активного проекта и координируется с обработчиком через pause/resume; `all_projects_monitor` опрашивает все проекты в режиме `/all`, хранит отдельные cursor-счётчики и не помечает сообщения прочитанными для обычной pending-доставки.
 
@@ -126,7 +127,7 @@ claude_manager/
 
 ### Состояние в памяти
 
-Состояние хранится в словарях на уровне модулей: session_manager (привязки chat_id → session_id), daily_session_registry (дневные номера), process_manager (процессы, флаги занятости), session_watcher (счётчики обработанных сообщений активного проекта), all_projects_monitor (чаты в global all, cursor-счётчики по проекту/сессии/backend и link registry для команд `/3s12`). Персистентность — через JSON-файлы (sessions.json, daily_sessions.json). При потере состояния в памяти — автовосстановление из файлов при перезапуске. Конкурентный доступ к словарям состояния в `process_manager` защищён `asyncio.Lock` (`_busy_lock`) — Lock захватывается только на короткие критические секции (проверка и установка busy-флага, очистка, перенос ключей), чтобы не блокировать длительные операции.
+Состояние хранится в словарях на уровне модулей: session_manager (привязки chat_id → session_id), daily_session_registry (дневные номера), process_state (процессы CLI, busy-флаги, stop-events и alias temp→real session_id), session_watcher (счётчики обработанных сообщений активного проекта), all_projects_monitor (чаты в global all, cursor-счётчики по проекту/сессии/backend и link registry для команд `/3s12`). Персистентность — через JSON-файлы (sessions.json, daily_sessions.json). При потере состояния в памяти — автовосстановление из файлов при перезапуске. Конкурентный доступ к словарям состояния процессов защищён `asyncio.Lock` (`process_state._busy_lock`) — Lock захватывается только на короткие критические секции (проверка и установка busy-флага, очистка, перенос ключей), чтобы не блокировать длительные операции. `process_manager` остаётся владельцем поведения запуска, retry и `/stop`, но реэкспортирует state-объекты из `process_state` для обратной совместимости старых тестов и приватных импортов.
 
 ### Защита персистентных данных от затирания
 
