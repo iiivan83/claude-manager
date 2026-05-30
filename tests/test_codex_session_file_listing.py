@@ -6,7 +6,10 @@ from unittest.mock import patch
 
 import pytest
 
-from claude_manager.codex_session_file_listing import session_file_exists_for_project
+from claude_manager.codex_session_file_listing import (
+    list_session_file_infos_for_project,
+    session_file_exists_for_project,
+)
 
 
 def _write_rollout_file(file_path: Path, session_id: str, project_dir: str) -> None:
@@ -53,3 +56,25 @@ async def test_session_file_exists_uses_uuid_date_before_full_scan(
 
     assert exists is True
     full_scan.assert_not_called()
+
+
+@pytest.mark.asyncio()
+async def test_list_session_files_uses_two_day_hotfix_window(
+    tmp_path: Path,
+) -> None:
+    """User-facing Codex session list uses the temporary two-day window."""
+    sessions_root = tmp_path / ".codex" / "sessions"
+    sessions_root.mkdir(parents=True)
+
+    with patch(
+        "claude_manager.codex_session_file_listing._list_rollout_files_blocking",
+        return_value=[],
+    ) as list_rollout_files:
+        infos = await list_session_file_infos_for_project(
+            str(sessions_root),
+            "/home/ivan/claude-sandbox/claude_manager",
+        )
+
+    assert infos == []
+    assert list_rollout_files.call_count == 1
+    assert list_rollout_files.call_args.args[1] == 2

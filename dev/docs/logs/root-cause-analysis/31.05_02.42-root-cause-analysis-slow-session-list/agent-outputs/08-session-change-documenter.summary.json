@@ -1,0 +1,13 @@
+{
+  "agent": "session-change-documenter",
+  "status": "success",
+  "result_file": "agent-outputs/08-session-change-documenter.result.md",
+  "decisions": [
+    "RCA report is the durable event document for this investigation",
+    "No ADR/CLAUDE.md/BRD/docs-index edits were made during investigation",
+    "Session report was created for continuation context"
+  ],
+  "next_step_input": {
+    "session_report": "dev/docs/session-reports/31-05/02-47_slow-session-list-rca.md"
+  }
+}

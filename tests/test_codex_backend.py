@@ -24,7 +24,6 @@ from claude_manager.codex_backend import (
     CLI_FLAG_JSON,
     CLI_FLAG_SKIP_GIT_CHECK,
     CODEX_STOP_STRATEGY,
-    MAX_RECENT_SESSIONS,
     STOP_SIGINT_TIMEOUT_SECONDS,
     STOP_SIGTERM_TIMEOUT_SECONDS,
     CodexBackend,
@@ -330,10 +329,10 @@ async def test_read_messages_from_session_file_extracts_response_items(
     ]
 
 
-async def test_list_session_files_filters_by_cwd_and_limits_recent(
+async def test_list_session_files_filters_by_cwd_and_uses_two_day_hotfix(
     backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Codex session listing filters rollout files by session_meta.payload.cwd."""
+    """Codex session listing filters by project and the temporary hotfix window."""
     patch_codex_home(monkeypatch, tmp_path)
     sessions_root = tmp_path / ".codex" / "sessions"
     project_dir = "/tmp/project-a"
@@ -360,12 +359,12 @@ async def test_list_session_files_filters_by_cwd_and_limits_recent(
 
     session_file_infos = await backend.list_session_files_for_project(project_dir)
 
-    assert len(session_file_infos) == MAX_RECENT_SESSIONS
+    assert len(session_file_infos) == 2
     assert session_file_infos[0] == SessionFileInfo(
-        session_id="019dfaeb-7c5b-7ba1-9e56-a33b5e0b5019",
-        file_path=str(included_paths[19]),
-        last_modified_at=1019.0,
-        preview="question 19",
+        session_id="019dfaeb-7c5b-7ba1-9e56-a33b5e0b5001",
+        file_path=str(included_paths[1]),
+        last_modified_at=1001.0,
+        preview="question 1",
     )
     assert all(info.preview != "wrong project" for info in session_file_infos)
     assert session_file_infos == sorted(
@@ -485,10 +484,10 @@ async def test_session_file_exists_for_project_scans_all_history(
     assert not await backend.session_file_exists_for_project("missing", project_dir)
 
 
-async def test_list_all_session_files_ignores_recent_and_lookback_limits(
+async def test_list_all_session_files_keeps_full_history_while_user_list_is_hotfixed(
     backend: CodexBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Operational scans return all matching Codex project sessions."""
+    """Operational full scan is unchanged while user-facing listing is capped."""
     patch_codex_home(monkeypatch, tmp_path)
     sessions_root = tmp_path / ".codex" / "sessions"
     project_dir = "/tmp/project-a"
@@ -510,7 +509,7 @@ async def test_list_all_session_files_ignores_recent_and_lookback_limits(
     recent_infos = await backend.list_session_files_for_project(project_dir)
 
     assert len(all_infos) == 21
-    assert len(recent_infos) == MAX_RECENT_SESSIONS
+    assert len(recent_infos) == 2
 
 
 async def test_list_all_session_files_respects_operational_lookback_days(

@@ -20,10 +20,18 @@ Codex хранит rollout-файлы глобально в `~/.codex/sessions/Y
 
 - `list_all_session_file_infos_for_project(..., lookback_days=N)` делегирует в `codex_session_index.list_project_session_file_infos(...)`.
 - `lookback_days=None` сохраняет legacy full scan для совместимости.
-- `list_session_file_infos_for_project(...)` для `/sessions` остаётся без operational index, потому что ему нужен preview и лимит свежих сессий.
+- `list_session_file_infos_for_project(...)` для `/sessions` остаётся без operational index, потому что ему нужен preview и лимит свежих сессий. После hotfix 31-05-2026 этот UI-путь временно ограничен двумя днями, чтобы не перечитывать 30-дневную Codex-историю на каждом вызове.
 - `config.OPERATIONAL_SESSION_LOOKBACK_DAYS = 4`: сегодня и три предыдущих дня. Повторные обращения в этом окне не перечитывают `session_meta` всех rollout-файлов, пока не изменилась подпись date-директорий или не истёк safety TTL индекса.
 
 Индекс не является источником содержимого сообщений. Summary, preview, pending-дельта и watcher snapshot всё ещё читают реальные файлы через backend reader.
+
+## Актуализация 31-05-2026: двухдневный hotfix для `/sessions`
+
+RCA `dev/docs/logs/root-cause-reports/31-05_02-47_slow-session-list.md` показал, что `/sessions` повторно читает `session_meta` у 14 106 Codex rollout-файлов за 30 дней. Основной правильный фикс — user-facing index/cache для `/sessions`, где метаданные берутся из индекса, а preview дочитывается только для 15 видимых сессий.
+
+По решению Ивана внедрён временный hotfix: `LOOKBACK_DAYS_FOR_SESSION_LISTING = 2`. Это ускоряет пользовательский список ценой видимости старых Codex-сессий: сессии старше двух дней остаются на диске и доступны другим путям, но не попадают в быстрый список `/sessions`.
+
+Это не заменяет будущий index/cache-фикс. При внедрении user-facing индекса значение можно вернуть к более широкому пользовательскому окну без повторного global scan.
 
 ## Версия Codex CLI
 
@@ -61,7 +69,7 @@ Codex хранит rollout-файлы глобально в `~/.codex/sessions/Y
 
 - **Поле текста ассистента — разное в stdout и файле сессии.** В stdout `item.completed` с `item.type == "agent_message"` имеет поле `item.text` (struct `AgentMessageItem`, `exec/src/exec_events.rs:134-137`). В файле сессии запись `event_msg.payload.type == "agent_message"` имеет поле `message` (struct `AgentMessageEvent`, `protocol/src/protocol.rs:2283-2289`). Это разные struct-ы, и спека учитывает оба.
 
-- **Lookback-окно при сканировании сессий — 30 дней, не 2.** В первой версии родительской спеки было сказано «обойти `~/.codex/sessions/YYYY/MM/DD/` за последние 2 дня». Это значение неоправданно маленькое для пользователя бота: список сессий через `/sessions` показывает не больше 15 свежих, и при активной работе пользователь может за неделю-две накопить десятки сессий, из которых будут выбраны 15 самых новых. Спека увеличивает окно до 30 дней (константа `LOOKBACK_DAYS_FOR_SESSION_LISTING`). При нагрузке 100 сессий/день это 3000 файлов на проход — приемлемая стоимость одного `/sessions` (десятки миллисекунд через `asyncio.to_thread`). Текущая родительская спека уже фиксирует lookback как backend-specific контракт, а точное значение оставляет реализации.
+- **Lookback-окно UI-списка временно возвращено к 2 дням.** Первая версия родительской спеки предлагала обходить `~/.codex/sessions/YYYY/MM/DD/` за последние 2 дня, затем эта спека увеличила окно до 30 дней, чтобы пользователь видел больше старых сессий. Реальные данные 31-05-2026 показали, что 30-дневное окно уже содержит 14 106 Codex rollout-файлов, и `/sessions` ждёт 8-10 секунд из-за повторного чтения `session_meta`. Поэтому текущий runtime-контракт — временный hotfix `LOOKBACK_DAYS_FOR_SESSION_LISTING = 2`. Он принят как компромисс до user-facing index/cache для `/sessions`, а не как окончательная архитектура.
 
 - **Метод `is_turn_terminal_session_record` поднят в родительский интерфейс.** В первой версии этой спеки `CodexBackend.is_turn_terminal_session_record(record)` был Codex-only расширением: метод объявлялся только в Codex-бэкенде, а `session_watcher` обязан был вызывать его через `isinstance(backend, CodexBackend)` или `backend.name == BackendName.CODEX`. После уточнения ревью 06-05 решение пересмотрено: метод поднят в `CodingAgentBackend` как абстрактный, и теперь его реализуют ОБА бэкенда. Реализация для Claude — тривиальная (`record.get("type") == "result"`, см. `claude_code_backend_spec.md`), для Codex — нетривиальная (подтип `event_msg.payload.type == "task_complete"`, как было раньше). Это устраняет ветвление по `backend.name` в потребителе: `session_watcher` остаётся полностью backend-агностичным, и добавление третьего бэкенда не потребует править watcher. **Причина:** уточнение по итогам ревью 06-05 — нарушение принципа подмены Лисков (LSP) в потребителе.
 
@@ -1011,7 +1019,7 @@ codex exec resume <session_id> --json --dangerously-bypass-approvals-and-sandbox
 - `MAX_RECENT_SESSIONS = 15` — максимум сессий из UI-метода `list_session_files_for_project`. Источник: BRD CJM-05 («15 самых свежих сессий»). Согласовано с Claude (`session_reader.py:22`). Operational-метод `list_all_session_files_for_project` этот лимит не применяет.
 - `PREVIEW_MAX_LENGTH = 120` — максимум символов в `preview` поле `SessionFileInfo`. Источник: BRD CJM-05 («первое сообщение пользователя, до 120 символов»)
 - `MAX_LINES_FOR_PREVIEW = 50` — сколько строк JSONL читать из начала файла для извлечения `session_meta` и первого user-сообщения. Согласовано с Claude (`session_reader.py:28`)
-- `LOOKBACK_DAYS_FOR_SESSION_LISTING = 30` — окно в днях для UI-метода `list_session_files_for_project` при поиске сессий проекта. Объяснение и причина значения 30 — в разделе «Расхождения с концепцией». Operational-метод `list_all_session_files_for_project` обходит всю доступную историю.
+- `LOOKBACK_DAYS_FOR_SESSION_LISTING = 2` — временное окно в днях для UI-метода `list_session_files_for_project` при поиске Codex-сессий проекта. Причина значения 2 — hotfix 31-05-2026 после RCA медленного `/sessions`. Operational-метод `list_all_session_files_for_project` обходит всю доступную историю.
 - `MAX_CONCURRENT_FILE_READS = 8` — ограничение concurrent чтения файлов в методах перечисления через `asyncio.Semaphore`. Защита от исчерпания файловых дескрипторов при сотнях rollout-файлов. Значение 8 — баланс между параллелизмом и предсказуемостью на macOS (дефолтный `ulimit -n` обычно 256, оставляем запас под другие операции бота)
 - `WHITESPACE_PATTERN = re.compile(r"\s+")` — регулярка для сжатия whitespace в превью
 - `ROLLOUT_FILENAME_PATTERN = re.compile(r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")` — регулярка для извлечения UUID из имени файла rollout. Источник: формат пути из `recorder.rs:1363-1393`
@@ -1202,13 +1210,13 @@ codex exec resume <session_id> --json --dangerously-bypass-approvals-and-sandbox
 
 - **test_list_session_files_filters_by_payload_cwd** — async-тест: создать в tmp-структуре `tmp_root/2026/05/06/rollout-A.jsonl` с `session_meta.payload.cwd = "/proj/A"` и `tmp_root/2026/05/06/rollout-B.jsonl` с `cwd = "/proj/B"`, вызвать с `project_dir = "/proj/A"` — в результате только сессия A. Тип: edge case
 
-- **test_list_session_files_limits_to_max_recent_sessions** — async-тест: создать 20 rollout-файлов с одинаковым `cwd` за разные дни — результат содержит ровно 15 элементов, отсортированных по mtime DESC. Тип: edge case
+- **test_list_session_files_filters_by_cwd_and_uses_two_day_hotfix** — async-тест: создать 20 rollout-файлов с одинаковым `cwd` за разные дни — user-facing результат содержит только сессии из двухдневного hotfix-окна, отсортированные по mtime DESC. Тип: edge case
 
-- **test_list_all_session_files_ignores_recent_and_lookback_limits** — async-тест: создать 20 rollout-файлов с одинаковым `cwd` в recent-окне и один rollout за пределами `LOOKBACK_DAYS_FOR_SESSION_LISTING`; `list_all_session_files_for_project` возвращает все 21, а `list_session_files_for_project` остаётся ограниченным 15. Тип: edge case
+- **test_list_all_session_files_keeps_full_history_while_user_list_is_hotfixed** — async-тест: создать 20 rollout-файлов с одинаковым `cwd` и один старый rollout; `list_all_session_files_for_project` возвращает все 21, а `list_session_files_for_project` остаётся ограниченным двухдневным hotfix-окном. Тип: edge case
 
 - **test_list_session_files_sorts_by_mtime_desc** — async-тест: два файла с разным mtime — порядок: новый первым. Тип: edge case
 
-- **test_list_session_files_includes_only_files_within_lookback_window** — async-тест: создать файл за 31 день назад и за 5 дней назад (с подходящим `cwd`) — в результате только второй (первый — за пределами `LOOKBACK_DAYS_FOR_SESSION_LISTING = 30`). Тип: edge case
+- **test_list_session_files_uses_two_day_hotfix_window** — async-тест: замокать `_list_rollout_files_blocking` и проверить, что `list_session_file_infos_for_project` передаёт `lookback_days = 2`. Тип: edge case
 
 - **test_list_session_files_extracts_session_id_from_session_meta** — async-тест: rollout с `session_meta.payload.id = "abc-uuid"` — `SessionFileInfo.session_id == "abc-uuid"`. Тип: edge case
 
