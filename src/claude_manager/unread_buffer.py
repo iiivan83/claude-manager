@@ -45,6 +45,7 @@ def save_snapshot(
     backend: BackendName | dict[str, int],
     raw_record_count: int | None = None,
     last_delivered_idx: int | None = None,
+    last_modified_at: float | None = None,
 ) -> None:
     """Сохраняет cursor-состояние для пары session_id/backend."""
     if isinstance(backend, dict):
@@ -64,6 +65,7 @@ def save_snapshot(
     state = SessionUnreadState(
         raw_record_count=raw_record_count,
         last_delivered_idx=last_delivered_idx,
+        last_modified_at=last_modified_at,
     )
     _snapshots[(session_id, backend)] = SessionUnreadSnapshot(
         state=state,

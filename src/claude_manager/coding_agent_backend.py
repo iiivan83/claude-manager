@@ -55,6 +55,7 @@ class SessionUnreadState:
 
     raw_record_count: int
     last_delivered_idx: int
+    last_modified_at: float | None = None
 
 
 class TerminalStatus(str, Enum):

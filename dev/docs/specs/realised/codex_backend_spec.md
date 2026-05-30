@@ -10,6 +10,21 @@
 - `dev/docs/specs/claude_code_backend_spec.md` — реализация интерфейса для Claude Code CLI (первая ветка Adapter pattern)
 - `dev/docs/specs/current_backend_registry_spec.md` — персистентное хранилище выбранного бэкенда
 
+## Актуализация 30-05-2026: operational index для горячего листинга
+
+Codex хранит rollout-файлы глобально в `~/.codex/sessions/YYYY/MM/DD/`, а принадлежность проекту лежит внутри записи `session_meta.payload.cwd`. Поэтому прямой operational-листинг проекта раньше был дорогим: код открывал много чужих JSONL-файлов, чтобы найти несколько нужных.
+
+Для горячих путей (`/pN`, `session_watcher.reset_state`, `poll_once`, pending-сбор) добавлен модуль `codex_session_index.py`. Он держит in-memory карту `project_dir -> list[SessionFileInfo]` за operational lookback-окно и хранит только лёгкие метаданные: `session_id`, `file_path`, `project_dir`, `last_modified_at`. Preview не строится, потому что горячим путям нужен не UI-текст, а быстрый список файлов.
+
+Контракт теперь такой:
+
+- `list_all_session_file_infos_for_project(..., lookback_days=N)` делегирует в `codex_session_index.list_project_session_file_infos(...)`.
+- `lookback_days=None` сохраняет legacy full scan для совместимости.
+- `list_session_file_infos_for_project(...)` для `/sessions` остаётся без operational index, потому что ему нужен preview и лимит свежих сессий.
+- `config.OPERATIONAL_SESSION_LOOKBACK_DAYS = 4`: сегодня и три предыдущих дня. Повторные обращения в этом окне не перечитывают `session_meta` всех rollout-файлов, пока не изменилась подпись date-директорий или не истёк safety TTL индекса.
+
+Индекс не является источником содержимого сообщений. Summary, preview, pending-дельта и watcher snapshot всё ещё читают реальные файлы через backend reader.
+
 ## Версия Codex CLI
 
 Эта спека описывает **кастомную сборку Codex CLI v0.128.0**, исходники которой лежат в `~/.codex/custom-codex-rust-v0.128.0/codex-rs/`. Все флаги (`--json`, `--dangerously-bypass-approvals-and-sandbox`, `--skip-git-repo-check`, `-C/--cd`), имена событий stdout (`thread.started`, `turn.completed`, `item.completed`, `turn.failed`), формат файла сессии (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` с adjacently-tagged JSON), имена подтипов в `event_msg` (`task_started`, `task_complete`, `agent_message`, `token_count`) и поведение сигналов остановки (`SIGINT` → `TurnInterrupt`) подтверждены чтением Rust-исходников именно этой сборки и эмпирическими запусками реального CLI.

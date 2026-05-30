@@ -18,6 +18,7 @@ class SessionWatcherState:
     parsed_message_count: int = 0
     cli_process_is_currently_writing_session_file: bool = False
     last_delivered_idx: int = -1
+    last_modified_at: float | None = None
     paused_at: float | None = None
     # True, пока запрос обрабатывает send_to_claude_and_respond: обработчик сам
     # доставит финальный ответ этой сессии. Watcher в это время не доставляет финал,

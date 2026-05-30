@@ -296,6 +296,7 @@ class SessionWatcher:
             return
 
         if self._snapshot_is_unchanged(previous, snapshot):
+            previous.last_modified_at = file_info.last_modified_at
             return
 
         messages = snapshot.messages
@@ -379,6 +380,7 @@ class SessionWatcher:
             parsed_message_count=len(messages),
             cli_process_is_currently_writing_session_file=snapshot.is_turn_active,
             last_delivered_idx=new_last_delivered_idx,
+            last_modified_at=file_info.last_modified_at,
             paused_at=previous.paused_at,
             handler_owns_final_delivery=previous.handler_owns_final_delivery,
         )
@@ -540,6 +542,7 @@ class SessionWatcher:
                 parsed_message_count=len(snapshot.messages),
                 cli_process_is_currently_writing_session_file=snapshot.is_turn_active,
                 last_delivered_idx=len(snapshot.messages) - 1,
+                last_modified_at=file_info.last_modified_at,
                 paused_at=None,
             )
 
@@ -602,6 +605,7 @@ class SessionWatcher:
             snapshot.is_turn_active
         )
         state.last_delivered_idx = len(snapshot.messages) - 1
+        state.last_modified_at = file_info.last_modified_at
         self._missing_files.pop(session_id, None)
 
         logger.debug(
@@ -639,6 +643,7 @@ class SessionWatcher:
             session_id: SessionUnreadState(
                 raw_record_count=state.raw_count,
                 last_delivered_idx=state.last_delivered_idx,
+                last_modified_at=state.last_modified_at,
             )
             for session_id, state in self._states.items()
         }

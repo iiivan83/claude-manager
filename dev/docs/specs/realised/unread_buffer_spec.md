@@ -18,13 +18,13 @@
 - Чтение JSONL — это знание формата конкретного бэкенда (`backend.read_session_file_snapshot(file_path)`). Модулю буфера незачем знать про два разных формата файлов.
 - Ключ по `project_path` теряет смысл: запись о сессии Codex живёт в общей директории `~/.codex/sessions/YYYY/MM/DD/` и не привязана к проекту через путь файла, а только через поле `cwd` внутри файла.
 
-Поэтому новый `unread_buffer` — тонкое in-memory хранилище cursor-состояния (`SessionUnreadState`) с ключом `(session_id: str, backend: BackendName)`, без файлового I/O и без знания о форме сообщений Claude/Codex. Состояние хранит и сырой счётчик строк, и индекс последнего доставленного сообщения, чтобы потребители не вычисляли границу сообщений из служебных JSONL-строк. Старый project-path API сохраняется только как compatibility no-op слой: он не создаёт backend-aware snapshot-ы и не читает сообщения.
+Поэтому новый `unread_buffer` — тонкое in-memory хранилище cursor-состояния (`SessionUnreadState`) с ключом `(session_id: str, backend: BackendName)`, без файлового I/O и без знания о форме сообщений Claude/Codex. Состояние хранит сырой счётчик строк, индекс последнего доставленного сообщения и `last_modified_at` файла, который видел watcher. Это позволяет pending-сбору быстро пропускать неизменившиеся файлы без полного чтения JSONL. Старый project-path API сохраняется только как compatibility no-op слой: он не создаёт backend-aware snapshot-ы и не читает сообщения.
 
 ## Назначение
 
 Тонкое потокобезопасное in-memory хранилище cursor-состояния непрочитанных сообщений по сессиям. Решает задачу: при переключении проекта watcher перестаёт следить за сессиями старого проекта, но процессы Claude/Codex продолжают писать в свои JSONL-файлы. Чтобы при возврате доставить накопившуюся дельту, нужно зафиксировать «вот сколько строк JSONL было видно и какое последнее сообщение уже дошло до пользователя». Модуль и хранит эти отметки.
 
-Сами сообщения и их извлечение из JSONL — НЕ ответственность этого модуля. Он хранит `SessionUnreadState(raw_record_count, last_delivered_idx)` для каждой пары `(session_id, backend)`, плюс время сохранения (для TTL). Решение о том, как прочитать новые сообщения, принимает потребитель (`project_manager` через `coding_agent_backend.read_session_file_snapshot`).
+Сами сообщения и их извлечение из JSONL — НЕ ответственность этого модуля. Он хранит `SessionUnreadState(raw_record_count, last_delivered_idx, last_modified_at)` для каждой пары `(session_id, backend)`, плюс время сохранения (для TTL). Решение о том, как прочитать новые сообщения, принимает потребитель (`project_pending_delivery` через методы backend-а).
 
 ★ Insight ─────────────────────────────────────
 Здесь применяется принцип «тонкого ядра»: один маленький модуль с минимальной зоной ответственности легче тестировать, переносить и менять. Расширенная логика (чтение JSONL, фильтрация служебных сообщений, доставка) уезжает к потребителям — и каждый потребитель сам выбирает, как именно обработать дельту.
@@ -42,7 +42,7 @@ CJM-11 явно описывает (BRD строки 507–514):
 
 ## Публичный API
 
-### `save_snapshot(session_id: str, backend: BackendName, raw_record_count: int, last_delivered_idx: int) -> None`
+### `save_snapshot(session_id: str, backend: BackendName, raw_record_count: int, last_delivered_idx: int, last_modified_at: float | None = None) -> None`
 
 Сохраняет (или перезаписывает) cursor-состояние для пары `(session_id, backend)` с текущим временем. Используется потребителем при переключении проекта — фиксирует точку «здесь пользователь ушёл из проекта; сколько строк JSONL было видно и какое последнее сообщение уже доставлено».
 
@@ -52,6 +52,7 @@ CJM-11 явно описывает (BRD строки 507–514):
 - `backend` (`BackendName`) — `BackendName.CLAUDE` или `BackendName.CODEX`. Импортируется из `coding_agent_backend`.
 - `raw_record_count` (`int`) — общее количество строк JSONL в файле сессии на момент ухода из проекта. Источник — поле `SessionFileSnapshot.raw_record_count`, возвращаемое `backend.read_session_file_snapshot(file_path)`. Считаются ВСЕ строки (включая `system`, `result`, любые служебные); это нужно потому, что счётчик должен быть стабилен для дельта-чтения, а не зависеть от фильтрации.
 - `last_delivered_idx` (`int`) — индекс последнего сообщения из `SessionFileSnapshot.messages`, которое watcher уже доставил или сознательно пропустил. `-1` валиден и означает «ещё не доставлено ни одного сообщения».
+- `last_modified_at` (`float | None`) — `mtime` файла сессии, который watcher видел вместе с cursor-ом. `None` сохраняет совместимость со старыми вызовами и заставляет pending-сбор перейти к cursor-check вместо mtime no-op.
 
 **Возвращает:** `None`
 
@@ -59,7 +60,7 @@ CJM-11 явно описывает (BRD строки 507–514):
 
 **Постусловия:**
 
-- В `_snapshots[(session_id, backend)]` хранится свежий `SessionUnreadSnapshot(state=SessionUnreadState(raw_record_count=<входное число>, last_delivered_idx=<входное число>), saved_at=datetime.now())`.
+- В `_snapshots[(session_id, backend)]` хранится свежий `SessionUnreadSnapshot(state=SessionUnreadState(raw_record_count=<входное число>, last_delivered_idx=<входное число>, last_modified_at=<mtime или None>), saved_at=datetime.now())`.
 - Если запись для той же пары уже существовала — она перезаписывается без предупреждения.
 
 ---
@@ -157,7 +158,7 @@ class SessionUnreadSnapshot:
 
 ### `save_snapshot`
 
-1. Создать `state = SessionUnreadState(raw_record_count=raw_record_count, last_delivered_idx=last_delivered_idx)`.
+1. Создать `state = SessionUnreadState(raw_record_count=raw_record_count, last_delivered_idx=last_delivered_idx, last_modified_at=last_modified_at)`.
 2. Создать `record = SessionUnreadSnapshot(state=state, saved_at=_now())`.
 3. Записать `_snapshots[(session_id, backend)] = record` (перезаписывая существующую, если была).
 4. Залогировать на уровне `debug`: «снапшот сохранён для сессии {session_id} ({backend.value}): raw_count={raw_record_count}, last_delivered_idx={last_delivered_idx}». Уровень `debug`, потому что эта операция выполняется при каждом переключении проекта для каждой отслеживаемой сессии — на `info` логи зашумятся.

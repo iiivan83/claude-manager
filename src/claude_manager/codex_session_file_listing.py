@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
+from claude_manager import codex_session_index
 from claude_manager.codex_session_file_reader import (
     LOOKBACK_DAYS_FOR_SESSION_LISTING,
     MAX_LINES_FOR_PREVIEW,
@@ -30,10 +31,6 @@ logger = logging.getLogger(__name__)
 
 CODEX_BOOTSTRAP_AGENTS_PREFIX = "# AGENTS.md instructions for "
 CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER = "<INSTRUCTIONS>"
-
-# Параллелизм чтения мета-записей и построения SessionFileInfo при листинге Codex-сессий.
-# Без ограничения большой проект (десятки сессий за lookback-окно) создаёт сотни
-# одновременных I/O-операций и упирается в файловые дескрипторы / thread pool.
 MAX_CONCURRENT_FILE_READS = 16
 UUID_V7_TIMESTAMP_HEX_LENGTH = 12
 MILLISECONDS_PER_SECOND = 1000
@@ -46,10 +43,25 @@ async def _gather_optional_results_with_concurrency_limit(
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_FILE_READS)
 
     async def with_semaphore(awaitable):
-        async with semaphore:
-            return await awaitable
+        should_close = True
+        try:
+            async with semaphore:
+                should_close = False
+                return await awaitable
+        finally:
+            if should_close:
+                close = getattr(awaitable, "close", None)
+                if close is not None:
+                    close()
 
-    results = await asyncio.gather(*(with_semaphore(a) for a in awaitables))
+    tasks = [asyncio.create_task(with_semaphore(awaitable)) for awaitable in awaitables]
+    try:
+        results = await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     return [result for result in results if result is not None]
 
 
@@ -410,16 +422,9 @@ async def list_all_session_file_infos_for_project(
         file_paths = await asyncio.to_thread(
             _list_all_rollout_files_blocking, sessions_root,
         )
-    else:
-        file_paths = await asyncio.to_thread(
-            _list_rollout_files_blocking,
-            sessions_root,
-            lookback_days,
-            date.today(),
-        )
-    return await _list_operational_session_file_infos_from_paths(
-        file_paths,
-        project_dir,
+        return await _list_operational_session_file_infos_from_paths(file_paths, project_dir)
+    return await codex_session_index.list_project_session_file_infos(
+        sessions_root, project_dir, lookback_days,
     )
 
 
