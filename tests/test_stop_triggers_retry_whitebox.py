@@ -293,7 +293,10 @@ class TestDev3HandleStopDuringRetry:
             patch.object(bot, "_application", mock_app),
             patch.object(session_manager, "get_bound_session", return_value=session_id),
             patch.object(bot, "_check_access", return_value=True),
-            patch("claude_manager.bot.telegram_sender.send_telegram_message", new_callable=AsyncMock) as mock_send,
+            patch(
+                "claude_manager.telegram_session_handlers.telegram_sender.send_telegram_message",
+                new_callable=AsyncMock,
+            ) as mock_send,
             patch.object(process_manager, "stop_process", new_callable=AsyncMock) as mock_stop,
             patch.object(process_manager, "is_busy", return_value=True),
             patch.object(process_manager, "has_process", return_value=False),
@@ -327,7 +330,10 @@ class TestDev3HandleStopDuringRetry:
             patch.object(bot, "_application", mock_app),
             patch.object(session_manager, "get_bound_session", return_value=session_id),
             patch.object(bot, "_check_access", return_value=True),
-            patch("claude_manager.bot.telegram_sender.send_telegram_message", new_callable=AsyncMock) as mock_send,
+            patch(
+                "claude_manager.telegram_session_handlers.telegram_sender.send_telegram_message",
+                new_callable=AsyncMock,
+            ) as mock_send,
             patch.object(process_manager, "stop_process", new_callable=AsyncMock) as mock_stop,
             patch.object(process_manager, "is_busy", return_value=True),
             patch.object(process_manager, "has_process", return_value=False),

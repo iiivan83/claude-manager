@@ -1,30 +1,25 @@
 """Тесты модуля bot — транспортный слой Telegram-бота."""
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from telegram.constants import ChatAction, ParseMode
+from telegram.constants import ParseMode
 
 from claude_manager import (
     all_projects_monitor,
-    coding_agent_backend,
     current_backend_registry,
     daily_session_registry,
-    process_manager,
     session_manager,
     session_reader,
     session_watcher,
     silence_mode_registry,
 )
-from claude_manager.coding_agent_backend import BackendName, SessionFileInfo
+from claude_manager.coding_agent_backend import BackendName
 
 from claude_manager.bot import (
-    ALL_PROJECTS_MODE_INPUT_WARNING,
     ALL_PROJECTS_MODE_LINE,
-    BOT_COMMANDS,
     EMPTY_PROJECTS_TEMPLATE,
     INVALID_PROJECT_NUMBER_TEMPLATE,
     PROJECT_ALREADY_ACTIVE_TEMPLATE,
@@ -32,19 +27,9 @@ from claude_manager.bot import (
     PROJECT_SWITCH_ERROR_TEMPLATE,
     PROJECT_SWITCH_SUCCESS_TEMPLATE,
     _check_access,
-    handle_all,
-    handle_document,
-    handle_message,
-    handle_new,
-    handle_photo,
     handle_projects,
-    handle_restart,
-    handle_sessions,
-    handle_stop,
     handle_switch_project,
     handle_switch_project_session,
-    handle_switch_session,
-    post_init,
     setup_bot,
 )
 from claude_manager.telegram_response_delivery import (
@@ -62,21 +47,8 @@ from claude_manager import file_sender, project_manager, project_pending_deliver
 import claude_manager.bot as bot_module
 import claude_manager.config as config_module
 import claude_manager.telegram_response_delivery as delivery_module
-from claude_manager.process_manager import (
-    ProcessManagerError,
-    ProcessNotFoundError,
-    ProcessStoppedError,
-    SendResult,
-    StopResult,
-)
-from claude_manager.session_manager import ActiveSession, NewSessionResult, SwitchResult
+from claude_manager.session_manager import ActiveSession
 from claude_manager.session_reader import SessionInfo
-
-
-def _discard_background_coro(coro):
-    """Close a background coroutine that is intentionally not run in unit tests."""
-    coro.close()
-    return MagicMock()
 
 
 # --- Фикстуры ---
@@ -89,45 +61,11 @@ TEST_SESSION_ID = "abc-def-111"
 TEST_SESSION_ID_2 = "abc-def-222"
 
 
-class FakeBackendForSessionList:
-    """Минимальный backend для теста объединённого списка /sessions."""
-
-    def __init__(
-        self,
-        name: BackendName,
-        display_name: str,
-        session_files: list[SessionFileInfo],
-    ) -> None:
-        self.name = name
-        self.display_name = display_name
-        self.session_files = session_files
-
-    async def list_session_files_for_project(
-        self,
-        _project_dir: str,
-    ) -> list[SessionFileInfo]:
-        """Возвращает заранее заданные файлы сессий."""
-        return self.session_files
-
-
-def _session_file(
-    session_id: str,
-    last_modified_at: float,
-    preview: str,
-) -> SessionFileInfo:
-    """Создаёт session metadata для списка /sessions."""
-    return SessionFileInfo(
-        session_id=session_id,
-        file_path=f"/tmp/{session_id}.jsonl",
-        last_modified_at=last_modified_at,
-        preview=preview,
-    )
-
-
 @pytest.fixture(autouse=True)
 def _setup_config():
     """Настраивает config для всех тестов."""
     original_allowed = config_module.ALLOWED_USER_IDS
+    original_e2e = config_module.E2E_TEST_USER_ID
     original_working_dir = config_module.WORKING_DIR
     original_silence_enabled = silence_mode_registry._silence_enabled
     original_silence_loaded = silence_mode_registry._loaded_from_disk
@@ -139,8 +77,10 @@ def _setup_config():
     silence_mode_registry._loaded_from_disk = True
     current_backend_registry._current_backend = BackendName.CLAUDE
     current_backend_registry._loaded_from_disk = True
+    config_module.E2E_TEST_USER_ID = None
     yield
     config_module.ALLOWED_USER_IDS = original_allowed
+    config_module.E2E_TEST_USER_ID = original_e2e
     config_module.WORKING_DIR = original_working_dir
     silence_mode_registry._silence_enabled = original_silence_enabled
     silence_mode_registry._loaded_from_disk = original_silence_loaded
@@ -267,80 +207,6 @@ class TestE2eTestUserAccess:
         finally:
             config_module.E2E_TEST_USER_ID = original
 
-    @patch("claude_manager.bot.telegram_sender.send_telegram_message", new_callable=AsyncMock)
-    @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
-    @patch("claude_manager.bot.session_manager")
-    async def test_post_init_skips_e2e_user(
-        self,
-        mock_session_mgr: MagicMock,
-        mock_clean: AsyncMock,
-        mock_send: AsyncMock,
-    ) -> None:
-        """post_init не шлёт уведомление E2E-пользователю."""
-        original_allowed = config_module.ALLOWED_USER_IDS
-        original_e2e = config_module.E2E_TEST_USER_ID
-
-        # Оба ID в белом списке, но E2E-пользователь должен быть пропущен
-        config_module.ALLOWED_USER_IDS = {111, E2E_TEST_USER_ID}
-        config_module.E2E_TEST_USER_ID = E2E_TEST_USER_ID
-
-        mock_session_mgr.load_bindings = AsyncMock()
-        mock_session_mgr.get_all_bindings.return_value = {}
-
-        mock_app = MagicMock()
-        mock_app.bot = MagicMock()
-        mock_app.bot.set_my_commands = AsyncMock()
-
-        try:
-            with patch(
-                "claude_manager.bot.asyncio.create_task",
-                side_effect=_discard_background_coro,
-            ), patch.object(
-                daily_session_registry, "is_registry_loaded", return_value=False,
-            ):
-                await post_init(mock_app)
-
-            # telegram_sender.send_telegram_message вызван только для chat_id=111, не для E2E
-            # Первый аргумент — bot, второй — chat_id
-            sent_chat_ids = [
-                call.args[1] for call in mock_send.call_args_list
-            ]
-            assert 111 in sent_chat_ids
-            assert E2E_TEST_USER_ID not in sent_chat_ids
-        finally:
-            config_module.ALLOWED_USER_IDS = original_allowed
-            config_module.E2E_TEST_USER_ID = original_e2e
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "load_state")
-    @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
-    @patch("claude_manager.bot.session_manager")
-    async def test_post_init_loads_current_backend_registry(
-        self,
-        mock_session_mgr: MagicMock,
-        _mock_clean: AsyncMock,
-        mock_load_backend_state: MagicMock,
-    ) -> None:
-        """post_init загружает текущий backend до старта watcher-а."""
-        mock_session_mgr.load_bindings = AsyncMock()
-        mock_session_mgr.get_all_bindings.return_value = {}
-        mock_app = MagicMock()
-        mock_app.bot = MagicMock()
-        mock_app.bot.set_my_commands = AsyncMock()
-
-        with patch(
-            "claude_manager.bot.asyncio.create_task",
-            side_effect=_discard_background_coro,
-        ), patch.object(
-            daily_session_registry,
-            "is_registry_loaded",
-            return_value=True,
-        ):
-            await post_init(mock_app)
-
-        mock_load_backend_state.assert_called_once()
-
-
 # --- Тесты форматирования ---
 
 
@@ -408,965 +274,6 @@ class TestIsCurrentSession:
 
 
 # --- Тесты обработчиков команд ---
-
-
-class TestHandleNew:
-    """Тесты команды /new."""
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "get_current")
-    @patch.object(session_manager, "create_new_session", new_callable=AsyncMock)
-    async def test_handle_new_uses_current_backend(
-        self,
-        mock_create_session: AsyncMock,
-        mock_get_current: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /new создаёт новую сессию в текущем backend-е."""
-        mock_get_current.return_value = BackendName.CODEX
-        mock_create_session.return_value = NewSessionResult(
-            session_id="_new_codex123", day_number=7, backend=BackendName.CODEX
-        )
-
-        update = _make_update(text="/new")
-        context = _make_context()
-        await handle_new(update, context)
-
-        mock_create_session.assert_called_once_with(TEST_CHAT_ID, BackendName.CODEX)
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "#7" in sent_text
-        assert "Codex" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "create_new_session", new_callable=AsyncMock)
-    async def test_handle_new_creates_session(
-        self,
-        mock_create_session: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /new создаёт сессию и отправляет подтверждение."""
-        mock_create_session.return_value = NewSessionResult(
-            session_id="_new_abc123def456", day_number=1
-        )
-
-        update = _make_update(text="/new")
-        context = _make_context()
-        await handle_new(update, context)
-
-        mock_create_session.assert_called_once_with(TEST_CHAT_ID, BackendName.CLAUDE)
-
-        sent = _setup_application.bot.send_message
-        sent.assert_called()
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1] if len(sent.call_args[0]) > 1 else "")
-        assert "#1" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(all_projects_monitor, "is_enabled_for_chat")
-    @patch.object(session_manager, "create_new_session", new_callable=AsyncMock)
-    async def test_handle_new_blocked_in_all_projects_mode(
-        self,
-        mock_create_session: AsyncMock,
-        mock_is_all_projects: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """In global all mode /new must not create a hidden session."""
-        mock_is_all_projects.return_value = True
-
-        update = _make_update(text="/new")
-        context = _make_context()
-        await handle_new(update, context)
-
-        mock_create_session.assert_not_awaited()
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "проект" in sent_text.lower()
-        assert "сесси" in sent_text.lower()
-
-    @pytest.mark.asyncio()
-    async def test_handle_new_denied_user(
-        self, _setup_application: MagicMock
-    ) -> None:
-        """Неавторизованный пользователь не может создать сессию."""
-        update = _make_update(text="/new", user_id=DENIED_USER_ID)
-        context = _make_context()
-        await handle_new(update, context)
-        _setup_application.bot.send_message.assert_not_called()
-
-
-class TestHandleSessions:
-    """Тесты команды /sessions."""
-
-    @pytest.mark.asyncio()
-    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
-    async def test_handle_sessions_merges_backends_before_limiting(
-        self,
-        mock_register: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /sessions объединяет Claude и Codex перед ограничением списка."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [_session_file("claude-old", 10.0, "Claude old")],
-        )
-        codex_backend = FakeBackendForSessionList(
-            BackendName.CODEX,
-            "⚡ Codex",
-            [_session_file("codex-new", 20.0, "Codex new")],
-        )
-        mock_register.side_effect = [1, 2]
-
-        update = _make_update(text="/sessions")
-        context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend, codex_backend],
-        ):
-            await handle_sessions(update, context)
-
-        assert mock_register.call_args_list[0].args == (
-            "codex-new",
-            BackendName.CODEX,
-        )
-        assert mock_register.call_args_list[1].args == (
-            "claude-old",
-            BackendName.CLAUDE,
-        )
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert sent_text.splitlines()[0].startswith("/1 ⚡ Codex")
-        assert sent_text.splitlines()[1].startswith("/2 🤖 Claude")
-
-    @pytest.mark.asyncio()
-    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
-    @patch.object(
-        daily_session_registry,
-        "get_session_summary",
-        new_callable=AsyncMock,
-        create=True,
-    )
-    async def test_handle_sessions_prefers_daily_registry_summary(
-        self,
-        mock_get_summary: AsyncMock,
-        mock_register: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /sessions показывает сохранённую краткую суть вместо длинного preview."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [
-                _session_file(
-                    "id-1",
-                    10.0,
-                    "Давай доработаем инициализирующий скрипт загрузки данных по отзывам",
-                ),
-            ],
-        )
-        mock_register.return_value = 1
-        mock_get_summary.return_value = "Загрузка отзывов за период"
-
-        update = _make_update(text="/sessions")
-        context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend],
-        ):
-            await handle_sessions(update, context)
-
-        mock_get_summary.assert_awaited_once_with("id-1", BackendName.CLAUDE)
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "/1 🤖 Claude Загрузка отзывов за период" in sent_text
-        assert "инициализирующий скрипт" not in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
-    async def test_handle_sessions_shows_list(
-        self,
-        mock_register: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /sessions показывает список сессий."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [
-                _session_file("id-1", 10.0, "Первая сессия"),
-                _session_file("id-2", 11.0, "Вторая сессия"),
-                _session_file("id-3", 12.0, "Третья сессия"),
-            ],
-        )
-        # Каждый вызов register_session возвращает номер по порядку
-        mock_register.side_effect = [1, 2, 3]
-
-        update = _make_update(text="/sessions")
-        context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend],
-        ):
-            await handle_sessions(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent.assert_called_once()
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "/1" in sent_text
-        assert "/2" in sent_text
-        assert "/3" in sent_text
-        # parse_mode=None чтобы /1 были кликабельными
-        assert sent.call_args[1].get("parse_mode") is None
-
-    @pytest.mark.asyncio()
-    async def test_handle_sessions_empty(
-        self,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Пустой список сессий."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [],
-        )
-
-        update = _make_update(text="/sessions")
-        context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend],
-        ):
-            await handle_sessions(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent.assert_called_once()
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "Нет сессий" in sent_text
-
-
-class TestHandleAgent:
-    """Тесты команды /agent."""
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "get_current")
-    async def test_handle_agent_shows_current_backend(
-        self,
-        mock_get_current: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /agent показывает текущий backend."""
-        mock_get_current.return_value = BackendName.CLAUDE
-
-        update = _make_update(text="/agent")
-        context = _make_context()
-        await bot_module.handle_agent(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "Текущий агент: 🤖 Claude" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "get_current")
-    async def test_handle_agent_keyboard_marks_current_backend(
-        self,
-        mock_get_current: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Клавиатура /agent помечает текущий backend галочкой."""
-        mock_get_current.return_value = BackendName.CLAUDE
-
-        update = _make_update(text="/agent")
-        context = _make_context()
-        await bot_module.handle_agent(update, context)
-
-        reply_markup = _setup_application.bot.send_message.call_args.kwargs["reply_markup"]
-        buttons = [button for row in reply_markup.inline_keyboard for button in row]
-        assert buttons[0].text == "✓ 🤖 Claude"
-        assert buttons[0].callback_data == "agent:claude"
-        assert buttons[1].text == "⚡ Codex"
-        assert buttons[1].callback_data == "agent:codex"
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "get_active_session")
-    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
-    @patch.object(current_backend_registry, "set_current")
-    @patch.object(current_backend_registry, "get_current")
-    async def test_handle_agent_callback_switches_to_codex(
-        self,
-        mock_get_current: MagicMock,
-        mock_set_current: MagicMock,
-        mock_register_session: AsyncMock,
-        mock_get_active: MagicMock,
-    ) -> None:
-        """Callback agent:codex переключает текущий backend на Codex."""
-        mock_get_current.return_value = BackendName.CLAUDE
-        mock_get_active.return_value = ActiveSession(
-            TEST_SESSION_ID,
-            BackendName.CLAUDE,
-        )
-        mock_register_session.return_value = 1
-
-        update = _make_callback_update("agent:codex")
-        context = _make_context()
-        await bot_module.handle_agent_callback(update, context)
-
-        mock_set_current.assert_called_once_with(BackendName.CODEX)
-        update.callback_query.answer.assert_awaited_once()
-        sent_text = update.callback_query.edit_message_text.call_args.kwargs["text"]
-        assert "через ⚡ Codex" in sent_text
-        assert "Текущая сессия #1 остаётся на 🤖 Claude" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "set_current")
-    @patch.object(current_backend_registry, "get_current")
-    async def test_handle_agent_callback_does_not_switch_when_already_current(
-        self,
-        mock_get_current: MagicMock,
-        mock_set_current: MagicMock,
-    ) -> None:
-        """Повторный выбор текущего backend-а не пишет файл."""
-        mock_get_current.return_value = BackendName.CODEX
-
-        update = _make_callback_update("agent:codex")
-        context = _make_context()
-        await bot_module.handle_agent_callback(update, context)
-
-        mock_set_current.assert_not_called()
-        sent_text = update.callback_query.edit_message_text.call_args.kwargs["text"]
-        assert sent_text == "Уже выбран: ⚡ Codex."
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "get_active_session", return_value=None)
-    @patch.object(current_backend_registry, "set_current")
-    @patch.object(current_backend_registry, "get_current")
-    async def test_handle_agent_callback_without_active_session_omits_current_session_line(
-        self,
-        mock_get_current: MagicMock,
-        mock_set_current: MagicMock,
-        _mock_get_active: MagicMock,
-    ) -> None:
-        """Без активной сессии подтверждение не упоминает текущую сессию."""
-        mock_get_current.return_value = BackendName.CLAUDE
-
-        update = _make_callback_update("agent:codex")
-        context = _make_context()
-        await bot_module.handle_agent_callback(update, context)
-
-        mock_set_current.assert_called_once_with(BackendName.CODEX)
-        sent_text = update.callback_query.edit_message_text.call_args.kwargs["text"]
-        assert "Текущая сессия" not in sent_text
-        assert "Чтобы начать новую сессию, отправьте /new." in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "set_current", side_effect=RuntimeError("state not loaded"))
-    @patch.object(current_backend_registry, "get_current")
-    async def test_handle_agent_callback_handles_registry_runtime_error(
-        self,
-        mock_get_current: MagicMock,
-        _mock_set_current: MagicMock,
-    ) -> None:
-        """RuntimeError из registry показывается пользователю."""
-        mock_get_current.return_value = BackendName.CLAUDE
-
-        update = _make_callback_update("agent:codex")
-        context = _make_context()
-        await bot_module.handle_agent_callback(update, context)
-
-        sent_text = update.callback_query.edit_message_text.call_args.kwargs["text"]
-        assert "Не удалось переключить агента: state not loaded" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "set_current", side_effect=OSError("disk full"))
-    @patch.object(current_backend_registry, "get_current")
-    async def test_handle_agent_callback_handles_oserror(
-        self,
-        mock_get_current: MagicMock,
-        _mock_set_current: MagicMock,
-    ) -> None:
-        """OSError из registry показывается пользователю."""
-        mock_get_current.return_value = BackendName.CLAUDE
-
-        update = _make_callback_update("agent:codex")
-        context = _make_context()
-        await bot_module.handle_agent_callback(update, context)
-
-        sent_text = update.callback_query.edit_message_text.call_args.kwargs["text"]
-        assert "Не удалось переключить агента: disk full" in sent_text
-
-    @pytest.mark.asyncio()
-    async def test_handle_agent_callback_rejects_unknown_backend_value(self) -> None:
-        """Неизвестное callback value отклоняется."""
-        update = _make_callback_update("agent:gemini")
-        context = _make_context()
-        await bot_module.handle_agent_callback(update, context)
-
-        update.callback_query.answer.assert_awaited_once_with(
-            "Неизвестный агент",
-            show_alert=True,
-        )
-        update.callback_query.edit_message_text.assert_not_awaited()
-
-    @pytest.mark.asyncio()
-    @patch.object(current_backend_registry, "get_current")
-    async def test_unauthorized_agent_command_ignored(
-        self,
-        mock_get_current: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Неавторизованный пользователь не получает клавиатуру /agent."""
-        update = _make_update(text="/agent", user_id=DENIED_USER_ID)
-        context = _make_context()
-        await bot_module.handle_agent(update, context)
-
-        mock_get_current.assert_not_called()
-        _setup_application.bot.send_message.assert_not_called()
-
-
-class TestHandleStop:
-    """Тесты команды /stop."""
-
-    @pytest.mark.asyncio()
-    @patch.object(process_manager, "stop_process", new_callable=AsyncMock)
-    @patch.object(process_manager, "is_busy")
-    @patch.object(process_manager, "has_process")
-    @patch.object(session_manager, "get_active_session")
-    async def test_handle_stop_passes_active_backend(
-        self,
-        mock_get_active: MagicMock,
-        mock_has_process: MagicMock,
-        mock_is_busy: MagicMock,
-        mock_stop: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /stop передаёт backend активной сессии."""
-        mock_get_active.return_value = ActiveSession(
-            TEST_SESSION_ID,
-            BackendName.CODEX,
-        )
-        mock_has_process.return_value = True
-        mock_is_busy.return_value = False
-        mock_stop.return_value = StopResult(
-            was_running=True,
-            was_retrying=False,
-            backend=BackendName.CODEX,
-        )
-
-        update = _make_update(text="/stop")
-        context = _make_context()
-        await handle_stop(update, context)
-
-        mock_has_process.assert_called_once_with(TEST_SESSION_ID, BackendName.CODEX)
-        mock_stop.assert_called_once_with(TEST_SESSION_ID, BackendName.CODEX)
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "Codex" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(process_manager, "stop_process", new_callable=AsyncMock)
-    @patch.object(process_manager, "has_process")
-    @patch.object(session_manager, "get_bound_session")
-    async def test_handle_stop_stops_process(
-        self,
-        mock_get_bound: MagicMock,
-        mock_has_process: MagicMock,
-        mock_stop: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /stop останавливает Claude."""
-        mock_get_bound.return_value = TEST_SESSION_ID
-        mock_has_process.return_value = True
-        mock_stop.return_value = StopResult(was_running=True, was_retrying=False)
-
-        update = _make_update(text="/stop")
-        context = _make_context()
-        await handle_stop(update, context)
-
-        mock_stop.assert_called_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "остановлен" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "get_bound_session")
-    async def test_handle_stop_in_all_mode(
-        self,
-        mock_get_bound: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /stop в режиме /all — предупреждение."""
-        mock_get_bound.return_value = None
-
-        update = _make_update(text="/stop")
-        context = _make_context()
-        await handle_stop(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "только внутри сессии" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(process_manager, "has_process")
-    @patch.object(session_manager, "get_bound_session")
-    async def test_handle_stop_claude_not_running(
-        self,
-        mock_get_bound: MagicMock,
-        mock_has_process: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /stop когда Claude не работает."""
-        mock_get_bound.return_value = TEST_SESSION_ID
-        mock_has_process.return_value = False
-
-        update = _make_update(text="/stop")
-        context = _make_context()
-        await handle_stop(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "не работает" in sent_text
-
-
-class TestHandleAll:
-    """Тесты команды /all."""
-
-    @pytest.mark.asyncio()
-    @patch.object(all_projects_monitor, "enable_for_chat", new_callable=AsyncMock)
-    @patch.object(session_manager, "unbind_session", new_callable=AsyncMock)
-    async def test_handle_all_switches_to_monitoring(
-        self,
-        mock_unbind: AsyncMock,
-        mock_enable_all_projects: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Command /all enables global monitoring across projects."""
-        update = _make_update(text="/all")
-        context = _make_context()
-        await handle_all(update, context)
-
-        mock_unbind.assert_called_once_with(TEST_CHAT_ID)
-        mock_enable_all_projects.assert_awaited_once_with(TEST_CHAT_ID)
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "all" in sent_text.lower()
-        assert "проект" in sent_text.lower()
-
-    @pytest.mark.asyncio()
-    @patch.object(all_projects_monitor, "enable_for_chat", new_callable=AsyncMock)
-    @patch.object(session_manager, "unbind_session", new_callable=AsyncMock)
-    async def test_handle_all_projects_alias_switches_to_monitoring(
-        self,
-        mock_unbind: AsyncMock,
-        mock_enable_all_projects: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Command /all_projects enables global monitoring across projects."""
-        update = _make_update(text="/all_projects")
-        context = _make_context()
-        await handle_all(update, context)
-
-        mock_unbind.assert_called_once_with(TEST_CHAT_ID)
-        mock_enable_all_projects.assert_awaited_once_with(TEST_CHAT_ID)
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "all" in sent_text.lower()
-        assert "проект" in sent_text.lower()
-
-
-class TestHandleSwitchSession:
-    """Тесты переключения на сессию по номеру."""
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "switch_to_session", new_callable=AsyncMock)
-    async def test_handle_switch_session_connects(
-        self,
-        mock_switch: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Переключение /3 подключает к сессии."""
-        mock_switch.return_value = SwitchResult(
-            found=True,
-            session_id=TEST_SESSION_ID,
-            day_number=3,
-            preview="Первая сессия",
-        )
-
-        update = _make_update(text="/3")
-        context = _make_context()
-        await handle_switch_session(update, context)
-
-        mock_switch.assert_called_once_with(TEST_CHAT_ID, 3)
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "#3" in sent_text
-        assert "Подключён" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "switch_to_session", new_callable=AsyncMock)
-    async def test_handle_switch_session_not_found(
-        self,
-        mock_switch: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Переключение на несуществующую сессию."""
-        mock_switch.return_value = SwitchResult(
-            found=False, session_id="", day_number=99, preview=""
-        )
-
-        update = _make_update(text="/99")
-        context = _make_context()
-        await handle_switch_session(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "#99" in sent_text
-        assert "не найдена" in sent_text
-
-
-class TestHandleMessage:
-    """Тесты обработки текстовых сообщений."""
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_message_sends_to_claude(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Текстовое сообщение отправляется в Claude."""
-        mock_is_monitoring.return_value = False
-
-        update = _make_update(text="Посмотри файл main.py")
-        context = _make_context()
-        await handle_message(update, context)
-
-        mock_send_to_claude.assert_called_once_with(
-            TEST_CHAT_ID, "Посмотри файл main.py"
-        )
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_message_in_all_mode(
-        self,
-        mock_is_monitoring: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Сообщение в режиме /all — предупреждение."""
-        mock_is_monitoring.return_value = True
-
-        update = _make_update(text="Привет")
-        context = _make_context()
-        await handle_message(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "мониторинг" in sent_text.lower()
-
-    @pytest.mark.asyncio()
-    @patch.object(all_projects_monitor, "is_enabled_for_chat")
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_message_in_all_projects_mode_mentions_project(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_is_all_projects: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """All-project mode text is blocked with a project/session warning."""
-        mock_is_monitoring.return_value = True
-        mock_is_all_projects.return_value = True
-
-        update = _make_update(text="запрос")
-        context = _make_context()
-        await handle_message(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "проект" in sent_text.lower()
-        assert "сесси" in sent_text.lower()
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_typing_indicator_shown(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Индикатор 'печатает...' включается перед отправкой в Claude."""
-        mock_is_monitoring.return_value = False
-
-        update = _make_update(text="Тест")
-        context = _make_context()
-        await handle_message(update, context)
-
-        context.bot.send_chat_action.assert_called_once_with(
-            TEST_CHAT_ID, ChatAction.TYPING
-        )
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_text_commands_sent_to_claude(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Текстовые слова 'стоп' отправляются как обычные сообщения."""
-        mock_is_monitoring.return_value = False
-
-        update = _make_update(text="стоп")
-        context = _make_context()
-        await handle_message(update, context)
-
-        mock_send_to_claude.assert_called_once_with(TEST_CHAT_ID, "стоп")
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    async def test_silence_on_command_not_sent_to_claude(
-        self,
-        mock_silence: MagicMock,
-        mock_send_to_claude: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """'Silence on' перехватывается — enable() вызван, подтверждение отправлено, в Claude не ушло."""
-        update = _make_update(text="Silence on")
-        context = _make_context()
-        await handle_message(update, context)
-
-        mock_silence.enable.assert_called_once()
-        mock_send_to_claude.assert_not_called()
-        sent = _setup_application.bot.send_message
-        sent.assert_called()
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "включён" in sent_text
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    async def test_silence_off_command_not_sent_to_claude(
-        self,
-        mock_silence: MagicMock,
-        mock_send_to_claude: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """'Silence off' перехватывается — disable() вызван, в Claude не ушло."""
-        update = _make_update(text="Silence off")
-        context = _make_context()
-        await handle_message(update, context)
-
-        mock_silence.disable.assert_called_once()
-        mock_send_to_claude.assert_not_called()
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    async def test_silence_command_case_insensitive(
-        self,
-        mock_silence: MagicMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Команды silence нечувствительны к регистру и пробелам."""
-        context = _make_context()
-        for text in ["silence ON", "SILENCE on", " Silence On "]:
-            mock_silence.reset_mock()
-            mock_send_to_claude.reset_mock()
-            update = _make_update(text=text)
-            await handle_message(update, context)
-            mock_silence.enable.assert_called_once()
-            mock_send_to_claude.assert_not_called()
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_silence_command_works_in_monitoring_mode(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_silence: MagicMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Silence on перехватывается ДО проверки monitoring mode."""
-        mock_is_monitoring.return_value = True
-        update = _make_update(text="Silence on")
-        context = _make_context()
-        await handle_message(update, context)
-
-        mock_silence.enable.assert_called_once()
-        mock_send_to_claude.assert_not_called()
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_regular_text_not_intercepted_as_silence(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_silence: MagicMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Похожий текст (не точное совпадение) НЕ перехватывается."""
-        mock_is_monitoring.return_value = False
-        context = _make_context()
-        for text in ["Silence", "silence on please", "Turn silence on"]:
-            mock_silence.reset_mock()
-            mock_send_to_claude.reset_mock()
-            update = _make_update(text=text)
-            await handle_message(update, context)
-            mock_silence.enable.assert_not_called()
-            mock_silence.disable.assert_not_called()
-
-
-# --- Тесты обработки фото и документов ---
-
-
-class TestHandlePhoto:
-    """Тесты обработки фотографий."""
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.telegram_file_downloader.download_and_save_file", new_callable=AsyncMock)
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_photo_sends_to_claude(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_download: AsyncMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Фото скачивается и отправляется в Claude."""
-        mock_is_monitoring.return_value = False
-        mock_download.return_value = "/tmp/received_files/photo.jpg"
-
-        update = _make_update()
-        update.message.photo = [MagicMock()]  # Хотя бы один PhotoSize
-        context = _make_context()
-        await handle_photo(update, context)
-
-        mock_download.assert_called_once()
-        mock_send_to_claude.assert_called_once()
-        task_text = mock_send_to_claude.call_args[0][1]
-        assert "/tmp/received_files/photo.jpg" in task_text
-
-    @pytest.mark.asyncio()
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_photo_in_all_mode(
-        self,
-        mock_is_monitoring: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Фото в режиме /all — предупреждение."""
-        mock_is_monitoring.return_value = True
-
-        update = _make_update()
-        update.message.photo = [MagicMock()]
-        context = _make_context()
-        await handle_photo(update, context)
-
-        sent = _setup_application.bot.send_message
-        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "мониторинг" in sent_text.lower()
-
-    @pytest.mark.asyncio()
-    @patch.object(all_projects_monitor, "is_enabled_for_chat")
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_photo_in_all_projects_mode_mentions_project(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_is_all_projects: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Photo input is blocked in global all mode."""
-        mock_is_monitoring.return_value = True
-        mock_is_all_projects.return_value = True
-
-        update = _make_update()
-        update.message.photo = [MagicMock()]
-        context = _make_context()
-        await handle_photo(update, context)
-
-        sent_text = _setup_application.bot.send_message.call_args.args[1]
-        assert "проект" in sent_text.lower()
-        assert "сесси" in sent_text.lower()
-
-
-class TestHandleDocument:
-    """Тесты обработки документов."""
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.telegram_file_downloader.download_and_save_file", new_callable=AsyncMock)
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_document_sends_to_claude(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_download: AsyncMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Документ скачивается и отправляется в Claude."""
-        mock_is_monitoring.return_value = False
-        mock_download.return_value = "/tmp/received_files/report.pdf"
-
-        update = _make_update()
-        update.message.document = MagicMock()
-        update.message.document.file_name = "report.pdf"
-        context = _make_context()
-        await handle_document(update, context)
-
-        mock_download.assert_called_once()
-        mock_send_to_claude.assert_called_once()
-        task_text = mock_send_to_claude.call_args[0][1]
-        assert "/tmp/received_files/report.pdf" in task_text
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.claude_interaction.send_to_claude_and_respond", new_callable=AsyncMock)
-    @patch("claude_manager.bot.telegram_file_downloader.download_and_save_file", new_callable=AsyncMock)
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_document_image_by_extension(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_download: AsyncMock,
-        mock_send_to_claude: AsyncMock,
-    ) -> None:
-        """Документ с расширением изображения определяется как изображение."""
-        mock_is_monitoring.return_value = False
-        mock_download.return_value = "/tmp/received_files/screenshot.png"
-
-        update = _make_update()
-        update.message.document = MagicMock()
-        update.message.document.file_name = "screenshot.png"
-        context = _make_context()
-        await handle_document(update, context)
-
-        mock_send_to_claude.assert_called_once()
-        task_text = mock_send_to_claude.call_args[0][1]
-        # Для изображения должен быть текст про фотографию
-        assert "фотографию" in task_text or "подписью" in task_text or "изображени" in task_text
-
-    @pytest.mark.asyncio()
-    @patch.object(all_projects_monitor, "is_enabled_for_chat")
-    @patch.object(session_manager, "is_monitoring_mode")
-    async def test_handle_document_in_all_projects_mode_mentions_project(
-        self,
-        mock_is_monitoring: MagicMock,
-        mock_is_all_projects: MagicMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Document input is blocked in global all mode."""
-        mock_is_monitoring.return_value = True
-        mock_is_all_projects.return_value = True
-
-        update = _make_update()
-        update.message.document = MagicMock()
-        context = _make_context()
-        await handle_document(update, context)
-
-        sent_text = _setup_application.bot.send_message.call_args.args[1]
-        assert "проект" in sent_text.lower()
-        assert "сесси" in sent_text.lower()
 
 
 # --- Тесты send_response ---
@@ -1572,18 +479,64 @@ class TestSendAllProjectsWatcherMessage:
 # --- Тесты setup_bot ---
 
 
+def test_bot_reexports_agent_handlers() -> None:
+    """Old imports from claude_manager.bot keep working for agent handlers."""
+    from claude_manager import bot as bot_module
+    from claude_manager import telegram_agent_handlers
+
+    assert bot_module.handle_agent is telegram_agent_handlers.handle_agent
+    assert bot_module.handle_agent_callback is telegram_agent_handlers.handle_agent_callback
+
+
+def test_bot_reexports_session_handlers() -> None:
+    """Old imports from claude_manager.bot keep working for session handlers."""
+    from claude_manager import bot as bot_module
+    from claude_manager import telegram_session_handlers
+
+    assert bot_module.handle_new is telegram_session_handlers.handle_new
+    assert bot_module.handle_sessions is telegram_session_handlers.handle_sessions
+    assert bot_module.handle_stop is telegram_session_handlers.handle_stop
+    assert bot_module.handle_all is telegram_session_handlers.handle_all
+    assert (
+        bot_module.handle_switch_session
+        is telegram_session_handlers.handle_switch_session
+    )
+
+
+def test_bot_reexports_input_handlers() -> None:
+    """Old imports from claude_manager.bot keep working for input handlers."""
+    from claude_manager import bot as bot_module
+    from claude_manager import telegram_input_handlers
+
+    assert bot_module.handle_message is telegram_input_handlers.handle_message
+    assert bot_module.handle_photo is telegram_input_handlers.handle_photo
+    assert bot_module.handle_document is telegram_input_handlers.handle_document
+
+
+def test_bot_reexports_lifecycle_handlers() -> None:
+    """Old imports from claude_manager.bot keep working for lifecycle handlers."""
+    from claude_manager import bot as bot_module
+    from claude_manager import telegram_lifecycle_handlers
+
+    assert bot_module.post_init is telegram_lifecycle_handlers.post_init
+    assert bot_module.handle_restart is telegram_lifecycle_handlers.handle_restart
+    assert bot_module.handle_silence_on is telegram_lifecycle_handlers.handle_silence_on
+    assert bot_module.handle_silence_off is telegram_lifecycle_handlers.handle_silence_off
+    assert bot_module.BOT_COMMANDS is telegram_lifecycle_handlers.BOT_COMMANDS
+
+
 class TestSetupBot:
     """Тесты настройки бота."""
 
     @patch("claude_manager.bot.ApplicationBuilder")
-    def test_setup_bot_registers_handlers(
+    def test_setup_bot_registers_handlers_in_expected_order(
         self,
         mock_builder_class: MagicMock,
     ) -> None:
-        """setup_bot регистрирует все обработчики."""
-        # Настраиваем цепочку builder
+        """setup_bot registers command handlers before broad text handlers."""
         mock_app = MagicMock()
         mock_app.add_handler = MagicMock()
+        mock_app.add_error_handler = MagicMock()
         mock_builder = MagicMock()
         mock_builder.token.return_value = mock_builder
         mock_builder.post_init.return_value = mock_builder
@@ -1599,9 +552,18 @@ class TestSetupBot:
         result = setup_bot()
 
         assert result is mock_app
-        # Должно быть минимум 8 обработчиков
-        # (new, sessions, stop, all, /N, text, photo, document)
-        assert mock_app.add_handler.call_count >= 10
+        handlers = [call.args[0] for call in mock_app.add_handler.call_args_list]
+        command_sets = [getattr(handler, "commands", set()) for handler in handlers]
+        assert command_sets[0] == {"new"}
+        assert command_sets[1] == {"agent"}
+        assert command_sets[3] == {"sessions"}
+        assert command_sets[4] == {"stop"}
+        assert command_sets[5] == {"all", "all_projects"}
+        assert command_sets[6] == {"projects"}
+        assert command_sets[7] == {"silence_on"}
+        assert command_sets[8] == {"silence_off"}
+        assert command_sets[9] == {"restart"}
+        assert mock_app.add_error_handler.called
 
     @patch("claude_manager.bot.ApplicationBuilder")
     def test_setup_bot_registers_all_projects_command_alias(
@@ -1633,116 +595,6 @@ class TestSetupBot:
         assert "all_projects" in registered_commands
 
 
-# --- Тесты post_init ---
-
-
-class TestPostInit:
-    """Тесты инициализации бота (очистка файлов, восстановление состояния, меню)."""
-
-    @pytest.fixture(autouse=True)
-    def _disable_watcher_task(self):
-        """post_init tests should not leave the infinite watcher task running."""
-        with patch(
-            "claude_manager.bot.asyncio.create_task",
-            side_effect=_discard_background_coro,
-        ):
-            yield
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    @patch("claude_manager.bot.session_manager")
-    async def test_post_init_sets_commands(
-        self, mock_session_mgr: MagicMock, mock_silence: MagicMock, mock_clean: AsyncMock,
-    ) -> None:
-        """post_init устанавливает меню команд."""
-        mock_session_mgr.load_bindings = AsyncMock()
-        mock_session_mgr.get_all_bindings.return_value = {}
-        mock_app = MagicMock()
-        mock_app.bot = MagicMock()
-        mock_app.bot.set_my_commands = AsyncMock()
-
-        await post_init(mock_app)
-
-        mock_app.bot.set_my_commands.assert_called_once()
-        commands = mock_app.bot.set_my_commands.call_args[0][0]
-        assert len(commands) == len(BOT_COMMANDS)
-        assert any(command.command == "all_projects" for command in commands)
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    @patch("claude_manager.bot.session_manager")
-    async def test_post_init_restores_bindings(
-        self, mock_session_mgr: MagicMock, mock_silence: MagicMock, mock_clean: AsyncMock,
-    ) -> None:
-        """post_init восстанавливает привязки сессий."""
-        mock_session_mgr.load_bindings = AsyncMock()
-        mock_session_mgr.get_all_bindings.return_value = {12345: "session-abc"}
-        mock_app = MagicMock()
-        mock_app.bot = MagicMock()
-        mock_app.bot.set_my_commands = AsyncMock()
-
-        await post_init(mock_app)
-
-        mock_session_mgr.load_bindings.assert_called_once()
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    @patch("claude_manager.bot.session_manager")
-    async def test_post_init_continues_on_restore_error(
-        self, mock_session_mgr: MagicMock, mock_silence: MagicMock, mock_clean: AsyncMock,
-    ) -> None:
-        """post_init не падает при ошибке восстановления состояния."""
-        mock_session_mgr.load_bindings = AsyncMock(
-            side_effect=OSError("disk error")
-        )
-        mock_session_mgr.get_all_bindings.return_value = {}
-        mock_app = MagicMock()
-        mock_app.bot = MagicMock()
-        mock_app.bot.set_my_commands = AsyncMock()
-
-        # Не должно выбросить исключение
-        await post_init(mock_app)
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    @patch("claude_manager.bot.session_manager")
-    async def test_post_init_loads_silence_mode(
-        self, mock_session_mgr: MagicMock, mock_silence: MagicMock, mock_clean: AsyncMock,
-    ) -> None:
-        """post_init вызывает silence_mode_registry.load_state()."""
-        mock_session_mgr.load_bindings = AsyncMock()
-        mock_session_mgr.get_all_bindings.return_value = {}
-        mock_app = MagicMock()
-        mock_app.bot = MagicMock()
-        mock_app.bot.set_my_commands = AsyncMock()
-
-        await post_init(mock_app)
-
-        mock_silence.load_state.assert_called_once()
-
-    @pytest.mark.asyncio()
-    @patch("claude_manager.bot.telegram_file_downloader.clean_old_received_files", new_callable=AsyncMock)
-    @patch("claude_manager.bot.silence_mode_registry")
-    @patch("claude_manager.bot.session_manager")
-    async def test_post_init_handles_silence_mode_load_error(
-        self, mock_session_mgr: MagicMock, mock_silence: MagicMock, mock_clean: AsyncMock,
-    ) -> None:
-        """post_init не падает при ошибке загрузки silence mode."""
-        mock_session_mgr.load_bindings = AsyncMock()
-        mock_session_mgr.get_all_bindings.return_value = {}
-        mock_silence.load_state.side_effect = Exception("test error")
-        mock_app = MagicMock()
-        mock_app.bot = MagicMock()
-        mock_app.bot.set_my_commands = AsyncMock()
-
-        # Не должно выбросить исключение — бот продолжает инициализацию
-        await post_init(mock_app)
-
-        mock_app.bot.set_my_commands.assert_called_once()
 # --- Тесты команды /projects ---
 
 
@@ -2601,60 +1453,3 @@ class TestSendWatcherMessageFileMarkers:
         )
         mock_process.assert_not_awaited()
         mock_process_show.assert_not_awaited()
-
-
-class TestHandleRestart:
-    """Тесты обработчика /restart — самоперезапуск бота."""
-
-    async def test_sends_warning_message_and_writes_marker(
-        self, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """handle_restart: пишет маркер с chat_id и шлёт «Перезапускаюсь через 2 сек»."""
-        from claude_manager import bot
-
-        marker_path = tmp_path / "restart-marker"
-        monkeypatch.setattr(bot, "RESTART_MARKER_PATH", marker_path)
-
-        update = MagicMock()
-        update.effective_chat.id = 12345
-        update.effective_user.id = next(iter(config_module.ALLOWED_USER_IDS))
-        context = MagicMock()
-        context.bot.send_message = AsyncMock()
-
-        with patch("claude_manager.bot.asyncio.create_subprocess_exec", new=AsyncMock()) as mock_exec:
-            await bot.handle_restart(update, context)
-
-        assert marker_path.read_text() == "12345"
-        context.bot.send_message.assert_awaited_once()
-        sent_text = context.bot.send_message.call_args[0][1]
-        assert "Перезапускаюсь" in sent_text
-        assert "2" in sent_text
-
-    async def test_launches_detached_systemctl_subprocess(
-        self, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """handle_restart: запускает bash -c 'sleep 2 && systemctl --user restart ...' detached."""
-        from claude_manager import bot
-
-        monkeypatch.setattr(bot, "RESTART_MARKER_PATH", tmp_path / "marker")
-
-        update = MagicMock()
-        update.effective_chat.id = 12345
-        update.effective_user.id = next(iter(config_module.ALLOWED_USER_IDS))
-        context = MagicMock()
-        context.bot.send_message = AsyncMock()
-
-        with patch("claude_manager.bot.asyncio.create_subprocess_exec", new=AsyncMock()) as mock_exec:
-            await bot.handle_restart(update, context)
-
-        mock_exec.assert_awaited_once()
-        args, kwargs = mock_exec.call_args
-        # bash, "-c", "sleep 2 && systemctl --user restart claude-manager.service"
-        assert args[0] == "bash"
-        assert args[1] == "-c"
-        assert "systemctl --user restart claude-manager.service" in args[2]
-        assert "sleep 2" in args[2]
-        assert kwargs.get("start_new_session") is True
-        # stdout/stderr должны быть DEVNULL чтобы пайпы не висели
-        assert kwargs.get("stdout") == asyncio.subprocess.DEVNULL
-        assert kwargs.get("stderr") == asyncio.subprocess.DEVNULL

@@ -10,8 +10,8 @@ from claude_manager import (
     process_manager,
     reply_anchor_registry,
     session_manager,
+    telegram_session_handlers as session_handlers,
 )
-from claude_manager.bot import handle_stop
 from claude_manager.coding_agent_backend import BackendName
 from claude_manager.session_manager import ActiveSession
 
@@ -44,15 +44,20 @@ def _setup_bot() -> MagicMock:
     fake_application.bot.send_message = AsyncMock()
     original_application = bot_module._application
     original_allowed = config_module.ALLOWED_USER_IDS
+    original_e2e = config_module.E2E_TEST_USER_ID
     original_working_dir = config_module.WORKING_DIR
     bot_module._application = fake_application
+    bot_module._init_handler_callbacks()
     config_module.ALLOWED_USER_IDS = {ALLOWED_USER_ID}
+    config_module.E2E_TEST_USER_ID = None
     config_module.WORKING_DIR = TEST_PROJECT_PATH
     reply_anchor_registry.clear_all()
     yield fake_application
     reply_anchor_registry.clear_all()
     bot_module._application = original_application
+    bot_module._init_handler_callbacks()
     config_module.ALLOWED_USER_IDS = original_allowed
+    config_module.E2E_TEST_USER_ID = original_e2e
     config_module.WORKING_DIR = original_working_dir
 
 
@@ -76,7 +81,7 @@ async def test_handle_stop_clears_reply_anchor(
     monkeypatch.setattr(process_manager, "is_busy", lambda *_args: True)
     monkeypatch.setattr(process_manager, "stop_process", AsyncMock())
 
-    await handle_stop(_make_update(), _make_context())
+    await session_handlers.handle_stop(_make_update(), _make_context())
 
     assert (
         reply_anchor_registry.get_anchor(

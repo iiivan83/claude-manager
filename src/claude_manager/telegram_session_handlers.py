@@ -1,0 +1,280 @@
+"""Telegram handlers for session commands and all-project mode."""
+
+import logging
+from collections.abc import Callable
+
+from telegram import Update
+from telegram.ext import Application, ContextTypes
+
+from claude_manager import (
+    all_projects_monitor,
+    coding_agent_backend,
+    config,
+    current_backend_registry,
+    daily_session_registry,
+    process_manager,
+    reply_anchor_registry,
+    session_manager,
+    telegram_sender,
+)
+from claude_manager.coding_agent_backend import BackendName
+from claude_manager.session_manager import ActiveSession
+
+logger = logging.getLogger(__name__)
+
+SESSION_LIST_LIMIT = 15
+ALL_PROJECTS_MODE_ENABLED_MESSAGE = (
+    "Режим all включён: показываю сообщения из всех проектов.\n"
+    "Писать агенту отсюда нельзя — сначала выберите проект и сессию."
+)
+ALL_PROJECTS_MODE_INPUT_WARNING = (
+    "Вы в режиме all по всем проектам. Чтобы писать агенту, сначала войдите "
+    "в проект и сессию: выберите проект через /projects или нажмите команду "
+    "вида /1s2 в сообщении all."
+)
+
+_ApplicationGetter = Callable[[], Application | None]
+_AccessChecker = Callable[[Update], bool]
+_application_getter: _ApplicationGetter | None = None
+_access_checker: _AccessChecker | None = None
+
+
+def init_callbacks(
+    application_getter: _ApplicationGetter,
+    access_checker: _AccessChecker,
+) -> None:
+    """Inject bot-owned callbacks needed by session handlers."""
+    global _application_getter, _access_checker
+    _application_getter = application_getter
+    _access_checker = access_checker
+
+
+def _get_application() -> Application:
+    if _application_getter is None:
+        raise RuntimeError("telegram session handlers are not initialized")
+    application = _application_getter()
+    if application is None:
+        raise RuntimeError("telegram application is not initialized")
+    return application
+
+
+def _has_access(update: Update) -> bool:
+    if _access_checker is None:
+        raise RuntimeError("telegram session access checker is not initialized")
+    return _access_checker(update)
+
+
+def _get_backend_display_name(backend: BackendName) -> str:
+    """Возвращает человекочитаемое имя CLI-backend-а."""
+    return coding_agent_backend.get_backend(backend).display_name
+
+
+async def handle_new(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик команды /new — создаёт новую сессию Claude."""
+    if not _has_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+
+    if all_projects_monitor.is_enabled_for_chat(chat_id):
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            ALL_PROJECTS_MODE_INPUT_WARNING,
+            parse_mode=None,
+        )
+        return
+
+    try:
+        backend = current_backend_registry.get_current()
+        new_result = await session_manager.create_new_session(chat_id, backend)
+        day_number = new_result.day_number
+        display_name = _get_backend_display_name(new_result.backend)
+
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            f"Создана новая сессия #{day_number} ({display_name})",
+            parse_mode=None,
+        )
+    except Exception:
+        logger.error("Ошибка создания сессии (chat_id=%d)", chat_id, exc_info=True)
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            "Не удалось создать сессию. Попробуйте ещё раз",
+            parse_mode=None,
+        )
+
+
+async def handle_sessions(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик команды /sessions — показывает список последних сессий."""
+    if not _has_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+    sessions_with_backend = []
+    error_lines: list[str] = []
+    for backend in coding_agent_backend.get_all_backends():
+        try:
+            sessions = await backend.list_session_files_for_project(
+                config.WORKING_DIR
+            )
+        except Exception:
+            logger.warning(
+                "Не удалось прочитать список сессий backend-а %s",
+                backend.name.value,
+                exc_info=True,
+            )
+            error_lines.append(
+                f"{backend.display_name}: не удалось прочитать список сессий"
+            )
+            continue
+        for session in sessions:
+            sessions_with_backend.append((session, backend))
+
+    if not sessions_with_backend and not error_lines:
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            "Нет сессий",
+            parse_mode=None,
+        )
+        return
+
+    lines: list[str] = []
+    sessions_with_backend.sort(
+        key=lambda item: item[0].last_modified_at,
+        reverse=True,
+    )
+    for session, backend in sessions_with_backend[:SESSION_LIST_LIMIT]:
+        day_number = await daily_session_registry.register_session(
+            session.session_id,
+            backend.name,
+        )
+        session_summary = await daily_session_registry.get_session_summary(
+            session.session_id,
+            backend.name,
+        )
+        session_label = session_summary or session.preview
+        lines.append(f"/{day_number} {backend.display_name} {session_label}")
+
+    lines.extend(error_lines)
+    if not lines:
+        lines.append("Нет сессий")
+
+    text = "\n".join(lines)
+    # Отправляем без HTML, чтобы /1 /2 /3 были кликабельными командами
+    await telegram_sender.send_telegram_message(
+        _get_application().bot,
+        chat_id,
+        text,
+        parse_mode=None,
+    )
+
+
+async def handle_stop(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик команды /stop — останавливает текущий процесс Claude."""
+    if not _has_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+    active_session = session_manager.get_active_session(chat_id)
+    if active_session is None:
+        legacy_session_id = session_manager.get_bound_session(chat_id)
+        if legacy_session_id is not None:
+            active_session = ActiveSession(legacy_session_id, BackendName.CLAUDE)
+
+    if active_session is None:
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            "Команда /stop работает только внутри сессии. "
+            "Подключитесь к сессии через /sessions",
+            parse_mode=None,
+        )
+        return
+
+    session_id = active_session.session_id
+    backend = active_session.backend
+    display_name = _get_backend_display_name(backend)
+
+    # Процесс может отсутствовать в _processes (has_process=False),
+    # но retry loop ещё активен (is_busy=True). Первый /stop удаляет
+    # процесс из _processes, retry loop ещё не создал новый.
+    # В этом случае /stop должен установить флаг отмены для retry loop.
+    if (
+        not process_manager.has_process(session_id, backend)
+        and not process_manager.is_busy(session_id, backend)
+    ):
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            f"{display_name} сейчас не работает, нечего останавливать",
+            parse_mode=None,
+        )
+        return
+
+    await process_manager.stop_process(session_id, backend)
+    reply_anchor_registry.clear_anchor(config.WORKING_DIR, backend, session_id)
+    await telegram_sender.send_telegram_message(
+        _get_application().bot,
+        chat_id,
+        f"{display_name} остановлен",
+        parse_mode=None,
+    )
+
+
+async def handle_all(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик команды /all — включает глобальный мониторинг всех проектов."""
+    if not _has_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+    await session_manager.unbind_session(chat_id)
+    await all_projects_monitor.enable_for_chat(chat_id)
+    await telegram_sender.send_telegram_message(
+        _get_application().bot,
+        chat_id,
+        ALL_PROJECTS_MODE_ENABLED_MESSAGE,
+        parse_mode=None,
+    )
+
+
+async def handle_switch_session(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик команды /N — переключает на сессию по номеру."""
+    if not _has_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+    day_number = int(update.message.text[1:])
+
+    result = await session_manager.switch_to_session(chat_id, day_number)
+
+    if not result.found:
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            f"Сессия #{day_number} не найдена",
+            parse_mode=None,
+        )
+        return
+
+    display_name = _get_backend_display_name(result.backend)
+    preview_text = f": {result.preview}" if result.preview else ""
+    await telegram_sender.send_telegram_message(
+        _get_application().bot,
+        chat_id,
+        f"Подключён к сессии #{day_number} ({display_name}){preview_text}",
+        parse_mode=None,
+    )
