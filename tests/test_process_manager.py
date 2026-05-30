@@ -1,6 +1,7 @@
 """Тесты модуля process_manager — управление жизненным циклом процессов Claude."""
 
 import asyncio
+import importlib
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -55,6 +56,20 @@ def reset_module_state():
     pm_module._busy_flags.clear()
     pm_module._stop_events.clear()
     pm_module._session_id_aliases.clear()
+
+
+def test_process_manager_reexports_process_state_objects() -> None:
+    """process_manager exposes the same mutable state objects after the split."""
+    try:
+        process_state = importlib.import_module("claude_manager.process_state")
+    except ModuleNotFoundError as error:
+        pytest.fail(f"process_state module should exist: {error}")
+
+    assert pm_module._processes is process_state._processes
+    assert pm_module._busy_flags is process_state._busy_flags
+    assert pm_module._busy_lock is process_state._busy_lock
+    assert pm_module._stop_events is process_state._stop_events
+    assert pm_module._session_id_aliases is process_state._session_id_aliases
 
 
 def _make_mock_subprocess(pid: int = 42) -> MagicMock:

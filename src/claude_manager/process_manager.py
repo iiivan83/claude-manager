@@ -34,6 +34,25 @@ from claude_manager.claude_runner import (
     start_subprocess_for_backend,
     start_process,
 )
+from claude_manager.process_state import (
+    ManagedProcess,
+    ProcessKey,
+    _busy_flags,
+    _busy_lock,
+    _make_backend_process_key,
+    _make_process_key,
+    _prefer_existing_process_key_unlocked,
+    _processes,
+    _remove_session_id_aliases_unlocked,
+    _resolve_process_key_alias_unlocked,
+    _resolve_session_id_alias_unlocked,
+    _session_id_aliases,
+    _split_process_key,
+    _stop_events,
+    has_process,
+    is_busy,
+    update_session_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +61,6 @@ logger = logging.getLogger(__name__)
 type ProgressCallback = Callable[[str, str], Awaitable[None]]
 type RetryCallback = Callable[[str, int, int, str], Awaitable[None]]
 type SessionIdCallback = Callable[..., Awaitable[None]]
-type ProcessKey = str | tuple[str, BackendName]
-type ManagedProcess = ClaudeProcess | BackendSubprocess
 
 # --- Константы ---
 
@@ -118,108 +135,12 @@ class StopResult:
     backend: BackendName = BackendName.CLAUDE
 
 
-# --- Состояние модуля ---
-
-# Запущенные процессы: session_id -> ClaudeProcess
-_processes: dict[ProcessKey, ManagedProcess] = {}
-
-# Флаги занятости: session_id -> True/False
-_busy_flags: dict[ProcessKey, bool] = {}
-
-# Блокировка для атомарных операций над _busy_flags, _processes, _stop_events.
-# Захватывается только на короткие критические секции — не на всё время обработки.
-_busy_lock: asyncio.Lock = asyncio.Lock()
-
-# События отмены для прерывания ретраев через /stop
-_stop_events: dict[ProcessKey, asyncio.Event] = {}
-
-# Алиасы устаревших session_id после temp -> real ремаппинга.
-_session_id_aliases: dict[ProcessKey, ProcessKey] = {}
-
 # --- Внутренние функции ---
 
 
 def _generate_temp_session_id() -> str:
     """Генерирует уникальный временный идентификатор сессии."""
     return f"{TEMP_SESSION_PREFIX}{uuid.uuid4().hex[:12]}"
-
-
-def _make_process_key(
-    session_id: str,
-    backend: BackendName = BackendName.CLAUDE,
-) -> ProcessKey:
-    """Возвращает ключ процесса с совместимостью для старого Claude-only API."""
-    if backend == BackendName.CLAUDE:
-        return session_id
-    return (session_id, backend)
-
-
-def _make_backend_process_key(session_id: str, backend: BackendName) -> ProcessKey:
-    """Возвращает backend-aware ключ без Claude-only compatibility shortcut."""
-    return (session_id, backend)
-
-
-def _split_process_key(key: ProcessKey) -> tuple[str, BackendName]:
-    """Возвращает session_id/backend из внутреннего ключа."""
-    if isinstance(key, tuple):
-        return key
-    return key, BackendName.CLAUDE
-
-
-def _resolve_process_key_alias_unlocked(
-    session_id: str,
-    backend: BackendName = BackendName.CLAUDE,
-) -> ProcessKey:
-    """Возвращает актуальный process key по цепочке алиасов."""
-    resolved_key = _make_process_key(session_id, backend)
-    seen: set[ProcessKey] = set()
-
-    while resolved_key in _session_id_aliases:
-        if resolved_key in seen:
-            logger.error("Обнаружен цикл алиасов process key: %s", resolved_key)
-            return resolved_key
-        seen.add(resolved_key)
-        resolved_key = _session_id_aliases[resolved_key]
-
-    return resolved_key
-
-
-def _prefer_existing_process_key_unlocked(
-    session_id: str,
-    backend: BackendName = BackendName.CLAUDE,
-) -> ProcessKey:
-    """Возвращает существующий ключ, поддерживая tuple-ключи для Claude."""
-    process_key = _resolve_process_key_alias_unlocked(session_id, backend)
-    if (
-        backend == BackendName.CLAUDE
-        and process_key not in _processes
-        and (session_id, BackendName.CLAUDE) in _processes
-    ):
-        return (session_id, BackendName.CLAUDE)
-    return process_key
-
-
-def _resolve_session_id_alias_unlocked(session_id: str) -> str:
-    """Возвращает актуальный session_id по цепочке алиасов."""
-    resolved_key = _resolve_process_key_alias_unlocked(session_id)
-    resolved_session_id, _backend = _split_process_key(resolved_key)
-    return resolved_session_id
-
-
-def _remove_session_id_aliases_unlocked(session_ids: set[str]) -> None:
-    """Удаляет алиасы, связанные с указанными session_id."""
-    if not session_ids:
-        return
-
-    aliases_to_remove = [
-        alias for alias, target in _session_id_aliases.items()
-        if (
-            _split_process_key(alias)[0] in session_ids
-            or _split_process_key(target)[0] in session_ids
-        )
-    ]
-    for alias in aliases_to_remove:
-        _session_id_aliases.pop(alias, None)
 
 
 def _extract_progress_text(event: dict) -> str | None:
@@ -1265,64 +1186,3 @@ async def stop_all_processes() -> int:
 
     logger.info("Остановлено процессов Claude: %d", stopped_count)
     return stopped_count
-
-
-def is_busy(
-    session_id: str,
-    backend: BackendName = BackendName.CLAUDE,
-) -> bool:
-    """Проверяет, обрабатывает ли процесс запрос прямо сейчас."""
-    process_key = _prefer_existing_process_key_unlocked(session_id, backend)
-    return _busy_flags.get(process_key, False)
-
-
-def has_process(
-    session_id: str,
-    backend: BackendName = BackendName.CLAUDE,
-) -> bool:
-    """Проверяет, есть ли запущенный процесс для указанной сессии."""
-    process_key = _prefer_existing_process_key_unlocked(session_id, backend)
-    claude_process = _processes.get(process_key)
-    if claude_process is None:
-        return False
-    return claude_process.is_running()
-
-
-async def update_session_id(
-    old_session_id: str,
-    new_session_id: str,
-    backend: BackendName = BackendName.CLAUDE,
-) -> None:
-    """Обновляет ключ сессии во всех внутренних словарях."""
-    # Атомарный перенос: все три словаря обновляются за один захват Lock.
-    # Без Lock: другая корутина может прочитать словарь между pop и присвоением
-    # нового ключа — и увидеть промежуточное состояние (ключ удалён, но новый не создан).
-    async with _busy_lock:
-        old_key = _prefer_existing_process_key_unlocked(old_session_id, backend)
-        old_session_id, resolved_backend = _split_process_key(old_key)
-        # Сохраняем форму ключа: если состояние лежит под tuple-ключом
-        # (backend-aware путь), новый ключ тоже обязан быть tuple. Иначе
-        # _make_process_key схлопнет его в голую строку для CLAUDE,
-        # состояние переедет под строковый ключ, а finally backend-aware
-        # пути чистит только tuple-ключи — выставленный stop_event останется
-        # висеть и убьёт следующий turn (сессия «не оживает» после /stop).
-        if isinstance(old_key, tuple):
-            new_key = _make_backend_process_key(new_session_id, resolved_backend)
-        else:
-            new_key = _make_process_key(new_session_id, resolved_backend)
-        new_key = _session_id_aliases.get(new_key, new_key)
-        new_session_id, _new_backend = _split_process_key(new_key)
-        if old_key == new_key:
-            return
-
-        for storage in (_processes, _busy_flags, _stop_events):
-            if old_key in storage:
-                storage[new_key] = storage.pop(old_key)
-        _session_id_aliases[old_key] = new_key
-        for alias, target in list(_session_id_aliases.items()):
-            if target == old_key:
-                _session_id_aliases[alias] = new_key
-
-    logger.info(
-        "Session ID обновлён: %s -> %s", old_session_id, new_session_id,
-    )
