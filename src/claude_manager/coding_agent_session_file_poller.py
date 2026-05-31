@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 # Сообщения с таким текстом приходят, когда CLI сознательно отказался отвечать
 # (например, после служебной команды) — их не нужно доставлять в Telegram.
 NO_RESPONSE_MARKERS = frozenset({"No response requested."})
+CURSOR_ONLY_PARSED_MESSAGE_COUNT = -1
 
 
 def _is_empty_response(text: str) -> bool:
@@ -313,9 +314,19 @@ class SessionWatcher:
         hold_final_message = (
             snapshot.is_turn_active or previous.handler_owns_final_delivery
         )
-        candidate_indices = list(
-            range(previous.last_delivered_idx + 1, len(messages))
-        )
+        if previous.parsed_message_count == CURSOR_ONLY_PARSED_MESSAGE_COUNT:
+            candidate_indices = [
+                index
+                for index, message in enumerate(messages)
+                if (
+                    message.raw_record_index is not None
+                    and message.raw_record_index > previous.raw_count
+                )
+            ]
+        else:
+            candidate_indices = list(
+                range(previous.last_delivered_idx + 1, len(messages))
+            )
         if hold_final_message and candidate_indices:
             last_idx = len(messages) - 1
             candidate_indices = [
@@ -451,9 +462,13 @@ class SessionWatcher:
         state: SessionWatcherState,
         snapshot: SessionFileSnapshot,
     ) -> bool:
+        parsed_count_matches = (
+            state.parsed_message_count == CURSOR_ONLY_PARSED_MESSAGE_COUNT
+            or len(snapshot.messages) == state.parsed_message_count
+        )
         return (
             snapshot.raw_record_count == state.raw_count
-            and len(snapshot.messages) == state.parsed_message_count
+            and parsed_count_matches
             and snapshot.is_turn_active
             == state.cli_process_is_currently_writing_session_file
         )
@@ -546,12 +561,17 @@ class SessionWatcher:
             if file_info is None:
                 return None
             async with semaphore:
-                snapshot = await self.backend.read_session_file_snapshot(
+                snapshot = await self.backend.read_session_file_cursor(
                     file_info.file_path
                 )
+            parsed_message_count = (
+                len(snapshot.messages)
+                if snapshot.messages
+                else CURSOR_ONLY_PARSED_MESSAGE_COUNT
+            )
             return session_id, SessionWatcherState(
                 raw_count=snapshot.raw_record_count,
-                parsed_message_count=len(snapshot.messages),
+                parsed_message_count=parsed_message_count,
                 cli_process_is_currently_writing_session_file=snapshot.is_turn_active,
                 last_delivered_idx=len(snapshot.messages) - 1,
                 last_modified_at=file_info.last_modified_at,

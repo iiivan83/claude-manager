@@ -28,6 +28,7 @@ def _write_rollout_file(
     project_dir: str,
     *,
     mtime: float | None = None,
+    thread_source: str = "user",
 ) -> Path:
     file_path = (
         sessions_root
@@ -41,7 +42,11 @@ def _write_rollout_file(
         json.dumps(
             {
                 "type": "session_meta",
-                "payload": {"id": session_id, "cwd": project_dir},
+                "payload": {
+                    "id": session_id,
+                    "cwd": project_dir,
+                    "thread_source": thread_source,
+                },
             }
         )
         + "\n",
@@ -74,6 +79,28 @@ async def test_index_groups_rollouts_by_project(tmp_path: Path) -> None:
 
     assert [info.session_id for info in infos_a] == ["session-a"]
     assert [info.session_id for info in infos_b] == ["session-b"]
+
+
+async def test_index_excludes_codex_subagent_rollouts(tmp_path: Path) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    project_dir = "/projects/a"
+    _write_rollout_file(sessions_root, TODAY, "user-session", project_dir)
+    _write_rollout_file(
+        sessions_root,
+        TODAY,
+        "subagent-session",
+        project_dir,
+        thread_source="subagent",
+    )
+
+    infos = await codex_session_index.list_project_session_file_infos(
+        str(sessions_root),
+        project_dir,
+        lookback_days=4,
+        today=TODAY,
+    )
+
+    assert [info.session_id for info in infos] == ["user-session"]
 
 
 async def test_index_keeps_only_sliding_lookback_window(tmp_path: Path) -> None:

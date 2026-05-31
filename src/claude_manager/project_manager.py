@@ -228,7 +228,6 @@ async def _reset_all_state_modules() -> None:
     """Сбрасывает состояние всех state-модулей — для switch_project."""
     reset_steps = [
         ("session_manager", session_manager.reset_state),
-        ("daily_session_registry", daily_session_registry.reset_state),
         ("session_watcher", session_watcher.reset_state),
     ]
     errors: list[str] = []

@@ -26,6 +26,8 @@ from claude_manager.session_request_preview import clean_session_request_preview
 logger = logging.getLogger(__name__)
 
 SESSION_LIST_LIMIT = 15
+SESSION_LIST_TITLE_MAX_LENGTH = 120
+SESSION_LIST_TITLE_SUFFIX = "..."
 ALL_PROJECTS_MODE_ENABLED_MESSAGE = (
     "Режим all включён: показываю сообщения из всех проектов.\n"
     "Писать агенту отсюда нельзя — сначала выберите проект и сессию."
@@ -91,7 +93,15 @@ def _format_session_list_line(
     prefix = f"/{day_number}"
     if backend_marker:
         prefix = f"{prefix} {backend_marker}"
-    return f"{prefix} {session_label}".rstrip()
+    return f"{prefix} {_compact_session_list_title(session_label)}".rstrip()
+
+
+def _compact_session_list_title(session_label: str) -> str:
+    """Ограничивает заголовок сессии до компактного двухстрочного бюджета."""
+    if len(session_label) <= SESSION_LIST_TITLE_MAX_LENGTH:
+        return session_label
+    content_limit = SESSION_LIST_TITLE_MAX_LENGTH - len(SESSION_LIST_TITLE_SUFFIX)
+    return session_label[:content_limit].rstrip() + SESSION_LIST_TITLE_SUFFIX
 
 
 def _is_codex_bootstrap_request(text: str) -> bool:

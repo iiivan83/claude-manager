@@ -1,6 +1,7 @@
 """Tests for bounded recent session refresh."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,30 @@ def _file(
     )
 
 
+def _write_codex_rollout(
+    file_path: Path,
+    session_id: str,
+    project_path: str,
+    *,
+    thread_source: str,
+) -> None:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": session_id,
+                    "cwd": project_path,
+                    "thread_source": thread_source,
+                },
+            }
+        )
+        + "\n",
+        "utf-8",
+    )
+
+
 @pytest.mark.asyncio()
 async def test_project_query_uses_store_first_without_backend_listing(
     tmp_path: Path,
@@ -94,6 +119,54 @@ async def test_project_query_uses_store_first_without_backend_listing(
 
     assert [row.session_id for row in result.rows] == ["from-backend"]
     assert backend.project_list_calls == []
+
+
+@pytest.mark.asyncio()
+async def test_project_query_hides_cached_codex_subagent_rows(
+    tmp_path: Path,
+) -> None:
+    store = RecentSessionsStore(tmp_path / "recent.sqlite3")
+    await store.initialize()
+    project_path = "/projects/alpha"
+    user_file = tmp_path / "user.jsonl"
+    subagent_file = tmp_path / "subagent.jsonl"
+    _write_codex_rollout(user_file, "user", project_path, thread_source="user")
+    _write_codex_rollout(
+        subagent_file,
+        "subagent",
+        project_path,
+        thread_source="subagent",
+    )
+    await store.upsert_headers(
+        [
+            RecentSessionHeader(
+                project_path=project_path,
+                backend=BackendName.CODEX,
+                session_id="subagent",
+                file_path=str(subagent_file),
+                last_modified_at=20.0,
+            ),
+            RecentSessionHeader(
+                project_path=project_path,
+                backend=BackendName.CODEX,
+                session_id="user",
+                file_path=str(user_file),
+                last_modified_at=10.0,
+            ),
+        ]
+    )
+    backend = FakeBackend(BackendName.CODEX, {project_path: []})
+
+    result = await get_project_recent_sessions(
+        project_path=project_path,
+        backends=[backend],
+        store=store,
+        limit=15,
+    )
+
+    assert [row.session_id for row in result.rows] == ["user"]
+    assert backend.project_list_calls == []
+    assert [row.session_id for row in await store.query_project(project_path)] == ["user"]
 
 
 @pytest.mark.asyncio()

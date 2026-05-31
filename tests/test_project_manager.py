@@ -585,7 +585,7 @@ class TestSwitchProject:
     async def test_resets_all_state_modules(
         self, projects_root: Path, last_project_file: Path
     ) -> None:
-        """switch_project вызывает reset_state у трёх state-модулей."""
+        """switch_project не дублирует загрузку дневного реестра."""
         working_dir = projects_root / "project_alpha"
         target = projects_root / "project_beta"
 
@@ -607,7 +607,7 @@ class TestSwitchProject:
             await switch_project(str(target))
 
         session_reset.assert_awaited_once()
-        registry_reset.assert_awaited_once()
+        registry_reset.assert_not_awaited()
         watcher_reset.assert_awaited_once()
 
     @pytest.mark.asyncio()

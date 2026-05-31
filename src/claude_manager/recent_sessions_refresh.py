@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from claude_manager import coding_agent_backend, config
-from claude_manager.coding_agent_backend import CodingAgentBackend, SessionFileInfo
+from claude_manager.codex_session_metadata import is_subagent_session_file
+from claude_manager.coding_agent_backend import (
+    BackendName,
+    CodingAgentBackend,
+    SessionFileInfo,
+)
 from claude_manager.recent_sessions_store import RecentSessionHeader, RecentSessionsStore
 
 
@@ -118,7 +123,10 @@ async def get_project_recent_sessions(
     """Return project rows from store, with one bounded refresh if empty."""
     active_store = _resolve_store(store)
     await active_store.initialize()
-    rows = await active_store.query_project(project_path, limit=limit)
+    rows = await _hide_subagent_rows(
+        active_store,
+        await active_store.query_project(project_path, limit=limit),
+    )
     if rows:
         if refresh_on_hit:
             _schedule_project_background_refresh(
@@ -128,7 +136,10 @@ async def get_project_recent_sessions(
         return RecentSessionsQueryResult(rows=rows, degraded_messages=[])
 
     refresh_result = await refresh_project_sessions(project_path, backends, active_store)
-    rows = await active_store.query_project(project_path, limit=limit)
+    rows = await _hide_subagent_rows(
+        active_store,
+        await active_store.query_project(project_path, limit=limit),
+    )
     return RecentSessionsQueryResult(
         rows=rows,
         degraded_messages=refresh_result.degraded_messages,
@@ -144,7 +155,10 @@ async def get_global_recent_sessions(
     """Return global rows from store, with one bounded refresh if empty."""
     active_store = _resolve_store(store)
     await active_store.initialize()
-    rows = await active_store.query_global_for_projects(project_paths, limit=limit)
+    rows = await _hide_subagent_rows(
+        active_store,
+        await active_store.query_global_for_projects(project_paths, limit=limit),
+    )
     if rows:
         return RecentSessionsQueryResult(rows=rows, degraded_messages=[])
 
@@ -154,7 +168,10 @@ async def get_global_recent_sessions(
         active_store,
         limit=limit,
     )
-    rows = await active_store.query_global_for_projects(project_paths, limit=limit)
+    rows = await _hide_subagent_rows(
+        active_store,
+        await active_store.query_global_for_projects(project_paths, limit=limit),
+    )
     return RecentSessionsQueryResult(
         rows=rows,
         degraded_messages=refresh_result.degraded_messages,
@@ -169,6 +186,22 @@ def _resolve_backends(
     backends: list[CodingAgentBackend] | None,
 ) -> list[CodingAgentBackend]:
     return backends if backends is not None else coding_agent_backend.get_all_backends()
+
+
+async def _hide_subagent_rows(
+    store: RecentSessionsStore,
+    rows: list[RecentSessionHeader],
+) -> list[RecentSessionHeader]:
+    visible_rows: list[RecentSessionHeader] = []
+    for row in rows:
+        if row.backend != BackendName.CODEX:
+            visible_rows.append(row)
+            continue
+        if await is_subagent_session_file(row.file_path):
+            await store.mark_missing(row.project_path, row.backend, row.session_id)
+            continue
+        visible_rows.append(row)
+    return visible_rows
 
 
 def _schedule_project_background_refresh(

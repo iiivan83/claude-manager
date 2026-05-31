@@ -25,6 +25,7 @@ from claude_manager.codex_session_file_reader import (
     _parse_jsonl_string_lines,
     _read_file_lines_blocking,
 )
+from claude_manager.codex_session_metadata import is_subagent_meta_record as _is_subagent
 from claude_manager.coding_agent_backend import SessionFileInfo
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ def _sort_paths_by_mtime_descending(file_paths: list[str]) -> list[str]:
 def _payload_from_meta_record(meta_record: dict[str, object]) -> dict[str, object]:
     """Return a session_meta payload dict or an empty dict."""
     payload = meta_record.get("payload")
-    return payload if isinstance(payload, dict) else {}
+    return payload if isinstance(payload, dict) and not _is_subagent(meta_record) else {}
 
 
 async def _read_project_meta_pair(

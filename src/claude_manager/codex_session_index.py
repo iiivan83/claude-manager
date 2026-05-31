@@ -25,6 +25,7 @@ from claude_manager.codex_session_index_paths import (
     _list_rollout_files_blocking,
     _normalize_sessions_root,
 )
+from claude_manager.codex_session_metadata import is_subagent_meta_record as _is_subagent
 from claude_manager.coding_agent_backend import SessionFileInfo
 
 logger = logging.getLogger(__name__)
@@ -223,7 +224,7 @@ def _read_session_meta_record_blocking(file_path: str) -> dict[str, object] | No
 
 def _payload_from_meta_record(meta_record: dict[str, object]) -> dict[str, object]:
     payload = meta_record.get("payload")
-    return payload if isinstance(payload, dict) else {}
+    return payload if isinstance(payload, dict) and not _is_subagent(meta_record) else {}
 
 
 async def _refresh_project_mtimes_locked(
