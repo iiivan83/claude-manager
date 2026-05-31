@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_GENERATOR_SESSION_ID = "_new_session_summary"
 SUMMARY_TEMP_DIR_PREFIX = "claude-manager-session-summary-"
-SUMMARY_MAX_LENGTH = 80
+SUMMARY_MAX_LENGTH = 160
 SUBPROCESS_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024
 
 
@@ -38,9 +38,7 @@ def _clean_generated_summary(raw_text: str) -> str:
     first_line = raw_text.strip().splitlines()[0] if raw_text.strip() else ""
     summary = first_line.strip().strip("\"'`«»“”")
     summary = summary.rstrip(".。")
-    if len(summary) <= SUMMARY_MAX_LENGTH:
-        return summary
-    return summary[:SUMMARY_MAX_LENGTH].rstrip()
+    return summary
 
 
 def _extract_summary_from_stdout(

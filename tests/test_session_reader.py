@@ -184,13 +184,12 @@ class TestCleanPreview:
         result = _clean_preview("Посмотри   файл\n\nmain.py   и скажи")
         assert result == "Посмотри файл main.py и скажи"
 
-    def test_truncates_long_text(self) -> None:
-        """Длинный текст обрезается до 120 символов с многоточием."""
+    def test_keeps_long_text(self) -> None:
+        """Длинный текст не обрезается и не получает многоточие."""
         long_text = "А" * 200
         result = _clean_preview(long_text)
-        # 120 символов содержимого + 3 символа "..."
-        assert len(result) == 123
-        assert result.endswith("...")
+        assert result == long_text
+        assert not result.endswith("...")
 
     def test_keeps_text_between_tags(self) -> None:
         """Текст между XML-тегами сохраняется после удаления тегов."""

@@ -31,11 +31,11 @@ def test_clean_generated_summary_removes_wrapping_noise() -> None:
     assert result == "Загрузка отзывов за период"
 
 
-def test_clean_generated_summary_limits_length() -> None:
-    """Generated summaries are capped before storage in daily_sessions.json."""
+def test_clean_generated_summary_keeps_length() -> None:
+    """Generated summaries are cleaned without silent truncation."""
     result = _clean_generated_summary("А" * (SUMMARY_MAX_LENGTH + 10))
 
-    assert result == "А" * SUMMARY_MAX_LENGTH
+    assert result == "А" * (SUMMARY_MAX_LENGTH + 10)
 
 
 def test_extract_summary_from_stdout_uses_backend_assistant_text() -> None:

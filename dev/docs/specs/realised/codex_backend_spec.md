@@ -141,7 +141,7 @@ def display_name(self) -> str:
     return BACKEND_DISPLAY_NAME_CODEX  # "⚡ Codex"
 ```
 
-Возвращает человекочитаемое имя бэкенда с эмодзи. Используется в UI Telegram: командах `/agent`, `/sessions`, формате ретрая (`#N Ошибка ⚡ Codex, повтор X/10`).
+Возвращает человекочитаемое имя бэкенда с эмодзи. Используется в UI Telegram: командах `/agent`, сообщениях создания/подключения/остановки сессии, заголовках ответов и формате ретрая (`#N Ошибка ⚡ Codex, повтор X/10`). В `/sessions` используется только иконка `⚡`, без слова `Codex`.
 
 #### `compose_subprocess_command_args(session_id, cwd, prompt_text, image_paths) -> list[str]`
 
@@ -325,7 +325,7 @@ async def list_session_files_for_project(
 **Аргументы:**
 - `project_dir` (`str`) — абсолютный путь к директории проекта (используется как фильтр при сравнении `payload.cwd == project_dir`)
 
-**Возвращает:** `list[SessionFileInfo]`. Каждый элемент содержит `session_id` (UUID сессии — `payload.id` из `session_meta`, либо извлечённый из имени файла), `file_path` (абсолютный путь к JSONL), `last_modified_at` (значение `os.path.getmtime`), `preview` (первое настоящее сообщение пользователя, обрезанное до `PREVIEW_MAX_LENGTH = 120` символов).
+**Возвращает:** `list[SessionFileInfo]`. Каждый элемент содержит `session_id` (UUID сессии — `payload.id` из `session_meta`, либо извлечённый из имени файла), `file_path` (абсолютный путь к JSONL), `last_modified_at` (значение `os.path.getmtime`), `preview` (первое настоящее сообщение пользователя без обязательной обрезки).
 
 Алгоритм:
 1. Сформировать корень: `sessions_root = ~/.codex/sessions`
@@ -545,7 +545,7 @@ Lazy-резолвер пути к бинарнику `codex`. Возвращае
 
 ### `_clean_preview_text(raw_text: str) -> str`
 
-Очищает превью: сжимает любые подряд идущие whitespace-символы в один пробел (паттерн `\s+`), обрезает до `PREVIEW_MAX_LENGTH = 120` символов с добавлением `...` при обрезке. В отличие от Claude-версии, **не удаляет XML-теги** — у Codex нет аналога `<command-name>`-тегов в response_item; в текстах могут быть пользовательские XML-конструкции, которые надо сохранить.
+Очищает превью: сжимает любые подряд идущие whitespace-символы в один пробел (паттерн `\s+`) и возвращает полный очищенный текст без добавления `...`. В отличие от Claude-версии, **не удаляет XML-теги** — у Codex нет аналога `<command-name>`-тегов в response_item; в текстах могут быть пользовательские XML-конструкции, которые надо сохранить.
 
 ### `_iter_session_dirs_in_lookback_window(sessions_root: str, today: date, lookback_days: int) -> Iterator[str]`
 
@@ -1017,7 +1017,7 @@ codex exec resume <session_id> --json --dangerously-bypass-approvals-and-sandbox
 - `CLI_SUBCOMMAND_EXEC = "exec"` — подкоманда headless-запуска
 - `CLI_SUBCOMMAND_RESUME = "resume"` — sub-подкоманда возобновления (`codex exec resume`)
 - `MAX_RECENT_SESSIONS = 15` — максимум сессий из UI-метода `list_session_files_for_project`. Источник: BRD CJM-05 («15 самых свежих сессий»). Согласовано с Claude (`session_reader.py:22`). Operational-метод `list_all_session_files_for_project` этот лимит не применяет.
-- `PREVIEW_MAX_LENGTH = 120` — максимум символов в `preview` поле `SessionFileInfo`. Источник: BRD CJM-05 («первое сообщение пользователя, до 120 символов»)
+- `PREVIEW_MAX_LENGTH = None` — лимит длины `preview` отключён. Источник: BRD CJM-05, обновлённый контракт `/sessions`: полный очищенный заголовок без `...`
 - `MAX_LINES_FOR_PREVIEW = 50` — сколько строк JSONL читать из начала файла для извлечения `session_meta` и первого user-сообщения. Согласовано с Claude (`session_reader.py:28`)
 - `LOOKBACK_DAYS_FOR_SESSION_LISTING = 2` — временное окно в днях для UI-метода `list_session_files_for_project` при поиске Codex-сессий проекта. Причина значения 2 — hotfix 31-05-2026 после RCA медленного `/sessions`. Operational-метод `list_all_session_files_for_project` обходит всю доступную историю.
 - `MAX_CONCURRENT_FILE_READS = 8` — ограничение concurrent чтения файлов в методах перечисления через `asyncio.Semaphore`. Защита от исчерпания файловых дескрипторов при сотнях rollout-файлов. Значение 8 — баланс между параллелизмом и предсказуемостью на macOS (дефолтный `ulimit -n` обычно 256, оставляем запас под другие операции бота)

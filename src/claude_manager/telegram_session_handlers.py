@@ -19,7 +19,9 @@ from claude_manager import (
     telegram_sender,
 )
 from claude_manager.coding_agent_backend import BackendName
+from claude_manager.recent_sessions_store import RecentSessionHeader
 from claude_manager.session_manager import ActiveSession
+from claude_manager.session_request_preview import clean_session_request_preview
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,8 @@ ALL_PROJECTS_MODE_INPUT_WARNING = (
     "в проект и сессию: выберите проект через /projects или нажмите команду "
     "вида /1s2 в сообщении all."
 )
+CODEX_BOOTSTRAP_AGENTS_PREFIX = "# AGENTS.md instructions for "
+CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER = "<INSTRUCTIONS>"
 
 _ApplicationGetter = Callable[[], Application | None]
 _AccessChecker = Callable[[Update], bool]
@@ -68,6 +72,62 @@ def _has_access(update: Update) -> bool:
 def _get_backend_display_name(backend: BackendName) -> str:
     """Возвращает человекочитаемое имя CLI-backend-а."""
     return coding_agent_backend.get_backend(backend).display_name
+
+
+def _get_backend_list_marker(backend: BackendName) -> str:
+    """Возвращает короткий маркер backend-а для компактного списка сессий."""
+    display_name = _get_backend_display_name(backend)
+    marker, separator, _tail = display_name.partition(" ")
+    return marker if separator else ""
+
+
+def _format_session_list_line(
+    day_number: int,
+    backend: BackendName,
+    session_label: str,
+) -> str:
+    """Форматирует одну строку списка /sessions без имени backend-а."""
+    backend_marker = _get_backend_list_marker(backend)
+    prefix = f"/{day_number}"
+    if backend_marker:
+        prefix = f"{prefix} {backend_marker}"
+    return f"{prefix} {session_label}".rstrip()
+
+
+def _is_codex_bootstrap_request(text: str) -> bool:
+    """Проверяет служебный AGENTS-запрос Codex, не являющийся темой сессии."""
+    return (
+        text.startswith(CODEX_BOOTSTRAP_AGENTS_PREFIX)
+        and CODEX_BOOTSTRAP_INSTRUCTIONS_MARKER in text
+    )
+
+
+async def _resolve_session_list_label(
+    row: RecentSessionHeader,
+    session_summary: str,
+) -> str:
+    """Возвращает полный заголовок сессии для списка /sessions."""
+    if session_summary or not row.preview.endswith("..."):
+        return session_summary or row.preview
+
+    try:
+        backend = coding_agent_backend.get_backend(row.backend)
+        messages = await backend.read_messages_from_session_file(row.file_path)
+    except Exception:
+        logger.debug(
+            "Не удалось дочитать полный preview сессии %s (%s)",
+            row.session_id,
+            row.backend.value,
+            exc_info=True,
+        )
+        return row.preview
+
+    for message in messages:
+        if message.role == "user" and message.text:
+            if _is_codex_bootstrap_request(message.text):
+                continue
+            return clean_session_request_preview(message.text)
+    return row.preview
 
 
 async def handle_new(
@@ -136,7 +196,6 @@ async def handle_sessions(
 
     lines: list[str] = []
     for row in result.rows[:SESSION_LIST_LIMIT]:
-        backend = coding_agent_backend.get_backend(row.backend)
         day_number = await daily_session_registry.register_session(
             row.session_id,
             row.backend,
@@ -145,8 +204,8 @@ async def handle_sessions(
             row.session_id,
             row.backend,
         )
-        session_label = session_summary or row.preview
-        lines.append(f"/{day_number} {backend.display_name} {session_label}")
+        session_label = await _resolve_session_list_label(row, session_summary)
+        lines.append(_format_session_list_line(day_number, row.backend, session_label))
 
     if not lines:
         lines.append("Нет сессий")

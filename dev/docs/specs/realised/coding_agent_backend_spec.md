@@ -98,7 +98,7 @@ class SessionFileInfo:
     session_id: str               # UUID сессии (для Claude и Codex одинаково — UUID)
     file_path: str                # абсолютный путь к JSONL-файлу сессии на диске
     last_modified_at: float       # timestamp последней модификации файла (os.path.getmtime); используется для сортировки от свежих к старым
-    preview: str                  # первое сообщение пользователя, до PREVIEW_MAX_LENGTH символов (для отображения в /sessions)
+    preview: str                  # первое очищенное сообщение пользователя для отображения в /sessions, без обязательной обрезки
 ```
 
 Поле названо `last_modified_at`, а не `created_at`, потому что физически в файловой системе доступно `mtime`, а не creation time. На macOS они часто близки, но не совпадают побайтно. Семантически для сортировки в `/sessions` нужно именно «когда последний раз менялась», что эквивалентно «когда последний раз CLI писал в эту сессию» — это полезнее, чем строгое время создания.
@@ -194,7 +194,7 @@ class StopStrategy:
 def name(self) -> BackendName: ...
 ```
 
-Возвращает имя бэкенда. Используется для записи в `daily_session_registry`, для отображения в `/sessions` (эмодзи + название), для логов.
+Возвращает имя бэкенда. Используется для записи в `daily_session_registry`, сравнения владельца сессии и логов.
 
 #### `display_name` (свойство)
 
@@ -204,7 +204,7 @@ def name(self) -> BackendName: ...
 def display_name(self) -> str: ...
 ```
 
-Возвращает человекочитаемое название с эмодзи для UI: `"🤖 Claude"` или `"⚡ Codex"`. Используется в командах `/agent`, `/sessions`, в формате ретрая (`#N Ошибка {display_name}, повтор X/10`).
+Возвращает человекочитаемое название с эмодзи для UI: `"🤖 Claude"` или `"⚡ Codex"`. Используется в командах `/agent`, сообщениях `/new`, `/stop`, `/N`, в заголовках ответов и в формате ретрая (`#N Ошибка {display_name}, повтор X/10`). В `/sessions` строка берёт только короткую иконку из этой метки, без слова `Claude` или `Codex`.
 
 #### `compose_subprocess_command_args(session_id: str | None, cwd: str, prompt_text: str, image_paths: list[str]) -> list[str]`
 
@@ -928,7 +928,7 @@ _snapshot: dict[tuple[str, BackendName], SessionUnreadState]
 ## Константы
 
 - `MAX_RECENT_SESSIONS = 15` — максимум файлов сессий, возвращаемых из UI-метода `list_session_files_for_project`. Значение взято из существующей реализации `session_reader.py` (постоянная `MAX_RECENT_SESSIONS = 15`). Объяснение: BRD-требование к `/sessions` — «15 самых свежих сессий». Operational-метод `list_all_session_files_for_project` этот лимит не применяет.
-- `PREVIEW_MAX_LENGTH = 120` — максимум символов в `SessionFileInfo.preview`. Из BRD: «первое сообщение пользователя, до 120 символов».
+- `PREVIEW_MAX_LENGTH = None` — превью для `/sessions` больше не имеет обязательной обрезки. Старые сохранённые строки с `...` могут быть заменены полным текстом при показе списка через дочитывание файла сессии.
 - `BACKEND_DISPLAY_NAME_CLAUDE = "🤖 Claude"` — UI-метка бэкенда Claude. Эмодзи 🤖 (робот) — нейтральный «AI помощник», узнаваемый.
 - `BACKEND_DISPLAY_NAME_CODEX = "⚡ Codex"` — UI-метка бэкенда Codex. Эмодзи ⚡ (молния) — намёк на скорость.
 - `_INSTANCES_CACHE: dict[BackendName, CodingAgentBackend] = {}` — кеш singleton-инстансов на уровне модуля. Заполняется лениво при первом вызове `get_backend`. Не очищается за время жизни процесса (бэкенды без состояния, держать один инстанс безопасно).

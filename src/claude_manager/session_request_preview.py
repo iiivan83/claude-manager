@@ -2,7 +2,7 @@
 
 import re
 
-DEFAULT_PREVIEW_MAX_LENGTH = 120
+DEFAULT_PREVIEW_MAX_LENGTH: int | None = None
 FILE_CAPTION_TASK_PREFIX = "Пользователь отправил файл с подписью: "
 FILE_TASK_PATH_MARKER = ". Файл: "
 FILE_WITHOUT_CAPTION_TASK_PREFIX = "Пользователь отправил файл без подписи."
@@ -41,12 +41,12 @@ def _extract_original_request_text(raw_text: str) -> str:
 
 def clean_session_request_preview(
     raw_text: str,
-    max_length: int = DEFAULT_PREVIEW_MAX_LENGTH,
+    max_length: int | None = DEFAULT_PREVIEW_MAX_LENGTH,
 ) -> str:
     """Return cleaned text for one session-list preview."""
     request_text = _extract_original_request_text(raw_text)
     text_without_xml_tags = XML_TAG_PATTERN.sub("", request_text)
     collapsed_text = WHITESPACE_PATTERN.sub(" ", text_without_xml_tags).strip()
-    if len(collapsed_text) > max_length:
+    if max_length is not None and len(collapsed_text) > max_length:
         return collapsed_text[:max_length] + "..."
     return collapsed_text

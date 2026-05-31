@@ -28,7 +28,7 @@ BUSY_EVENT_TYPES = frozenset({"assistant", "progress", "queue-operation"})
 RAW_RECORD_INDEX_KEY = "_raw_record_index"
 
 MAX_RECENT_SESSIONS = 15
-PREVIEW_MAX_LENGTH = 120
+PREVIEW_MAX_LENGTH: int | None = None
 MAX_LINES_FOR_PREVIEW = 50
 MIN_MESSAGE_LENGTH = 2
 COMMAND_XML_TAGS = frozenset((

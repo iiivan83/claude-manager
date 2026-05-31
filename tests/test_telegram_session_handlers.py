@@ -281,7 +281,7 @@ class TestHandleSessions:
         _setup_application: MagicMock,
     ) -> None:
         """Команда /sessions читает recent rows и не сканирует backend напрямую."""
-        row = self._row("codex-new", BackendName.CODEX, "Codex new", 20.0)
+        row = self._row("codex-new", BackendName.CODEX, "Смержить ветку", 20.0)
         mock_recent = AsyncMock(return_value=self._recent_result([row]))
         direct_backend = self._direct_listing_guard(
             BackendName.CODEX,
@@ -300,7 +300,7 @@ class TestHandleSessions:
         mock_register.assert_awaited_once_with("codex-new", BackendName.CODEX)
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert sent_text == "/1 ⚡ Codex Codex new"
+        assert sent_text == "/1 ⚡ Смержить ветку"
         assert sent.call_args[1].get("parse_mode") is None
 
     @pytest.mark.asyncio()
@@ -367,7 +367,7 @@ class TestHandleSessions:
         mock_get_summary.assert_awaited_once_with("id-1", BackendName.CLAUDE)
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "/1 🤖 Claude Загрузка отзывов за период" in sent_text
+        assert "/1 🤖 Загрузка отзывов за период" in sent_text
         assert "инициализирующий скрипт" not in sent_text
 
     @pytest.mark.asyncio()
@@ -477,7 +477,7 @@ class TestHandleSessions:
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
         assert sent_text.splitlines() == [
-            "/1 🤖 Claude Первая сессия",
+            "/1 🤖 Первая сессия",
             "codex failed for /tmp/test_working_dir",
         ]
 

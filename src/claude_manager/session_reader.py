@@ -23,8 +23,8 @@ CLAUDE_PROJECTS_DIR = ".claude/projects"
 # Максимум сессий, возвращаемых из get_recent_sessions (из BRD CJM-05)
 MAX_RECENT_SESSIONS = 15
 
-# Максимальная длина превью первого сообщения в символах (из BRD CJM-05)
-PREVIEW_MAX_LENGTH = 120
+# Лимит длины превью: None означает показывать полный очищенный текст без "..."
+PREVIEW_MAX_LENGTH: int | None = None
 
 # Сколько строк JSONL-файла читать при поиске первого сообщения пользователя
 MAX_LINES_FOR_PREVIEW = 50

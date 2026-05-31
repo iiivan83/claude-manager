@@ -20,10 +20,19 @@ def test_file_caption_task_preview_uses_user_caption() -> None:
 
 
 def test_regular_prompt_preview_stays_unchanged_except_cleanup() -> None:
-    """Normal text prompts keep the previous collapse-and-truncate behavior."""
+    """Normal text prompts are cleaned without changing user-authored content."""
     preview = clean_session_request_preview("Посмотри   файл\nmain.py")
 
     assert preview == "Посмотри файл main.py"
+
+
+def test_long_prompt_preview_is_not_truncated() -> None:
+    """Long session-list previews keep the full cleaned request text."""
+    long_text = "А" * 200
+
+    preview = clean_session_request_preview(long_text)
+
+    assert preview == long_text
 
 
 def test_without_caption_file_task_has_short_human_preview() -> None:
