@@ -1,0 +1,28 @@
+{
+  "iteration": 1,
+  "verdict": "approved",
+  "summary": "Спецификация соответствует контексту проекта и требованиям Stage 2. Ключевые блокирующие риски закрыты: hot path для /sessions и /all не выполняет full historical scan, /all имеет default global cap 80, cursor/read state не хранится только в prunable recent_sessions rows, empty/stale/degraded состояния переводятся в bounded refresh или degraded response, SQLite описан как non-blocking, а тест-план содержит forbidden-scan assertions. Есть один неблокирующий нюанс по явному упоминанию лимита top-level публичных функций в file-size constraints.",
+  "changes": [
+    {
+      "id": "R1",
+      "section": "File-size constraints",
+      "severity": "minor",
+      "issue": "Раздел фиксирует пороги 300/500/700/1000 строк, но не упоминает проектное правило про проверку более 10 top-level публичных функций как риск god-module.",
+      "reason": "AGENTS.md требует при правке кода считать не только строки, но и top-level публичные функции. Спецификация уже хорошо защищает крупные существующие модули от раздувания, однако новый storage/refresh слой тоже может стать слишком широким публичным API, если этот критерий не назвать явно.",
+      "suggestion": "Добавить в раздел File-size constraints одну строку: при создании или правке code modules разработчик также проверяет число top-level публичных функций; если их больше 10, нужно явно оценить риск god-module и предложить разбиение по ответственности."
+    }
+  ],
+  "strengths": [
+    "Чётко разделены storage, safety-refresh, Telegram handler integration, /all monitor integration и backend/file-reader contracts.",
+    "Сохранены текущие пользовательские контракты: plain-text /sessions commands, daily_session_registry summaries, /3s12 link registry и pending semantics через unread_buffer.",
+    "Запрет full historical scan описан не только как принцип, но и как проверяемое поведение для /sessions, /all enable, /all poll и safety-refresh.",
+    "Cursor/read state отделён от prunable header rows через companion table session_cursor_state или требование доказанного независимого state-store.",
+    "/all default global cap 80 указан в требованиях, storage contract, /all contract, критериях приёмки и тест-плане.",
+    "Empty, stale, locked, corrupt, missing-file и missing-project states описаны как recoverable/degraded состояния без синхронного full scan в hot path.",
+    "SQLite non-blocking contract детализирован: asyncio.to_thread или dedicated worker, write lock, short transactions, busy_timeout и typed degraded results.",
+    "File-size section учитывает реальные размеры рискованных модулей и направляет новую логику в отдельные небольшие модули."
+  ],
+  "critical_count": 0,
+  "major_count": 0,
+  "minor_count": 1
+}

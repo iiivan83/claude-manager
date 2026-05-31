@@ -1,7 +1,7 @@
 """Tests for global all-project monitoring."""
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -90,19 +90,31 @@ class FakeBackend:
             self.active_reads -= 1
 
 
-class FailingBackend:
-    """Backend double that fails while listing project session files."""
+def _recent_row(
+    project_path: str,
+    backend: BackendName,
+    session_id: str,
+    file_path: str,
+    mtime: float = 1.0,
+    preview: str = "preview",
+) -> MagicMock:
+    """Build a persisted recent-session row test value."""
+    row = MagicMock()
+    row.project_path = project_path
+    row.backend = backend
+    row.session_id = session_id
+    row.file_path = file_path
+    row.last_modified_at = mtime
+    row.preview = preview
+    return row
 
-    name = BackendName.CODEX
-    display_name = "Codex"
 
-    async def list_all_session_files_for_project(
-        self,
-        _project_dir: str,
-        lookback_days: int | None = None,
-    ) -> list[SessionFileInfo]:
-        del lookback_days
-        raise OSError("backend unavailable")
+def _recent_result(
+    rows: list[MagicMock],
+    degraded_messages: list[str] | None = None,
+) -> MagicMock:
+    """Build a recent-session query result."""
+    return MagicMock(rows=rows, degraded_messages=degraded_messages or [])
 
 
 def _project(
@@ -167,6 +179,72 @@ def _raw_message(role: str, text: str, raw_record_index: int) -> SessionMessage:
     )
 
 
+def _candidate_with_mtime(
+    project_session: all_projects_monitor._ProjectSession,
+    mtime: float,
+) -> all_projects_monitor._ProjectSession:
+    """Return the same candidate with a refreshed file mtime."""
+    file_info = project_session.file_info
+    return all_projects_monitor._ProjectSession(
+        project_number=project_session.project_number,
+        project_name=project_session.project_name,
+        project_path=project_session.project_path,
+        session_number=project_session.session_number,
+        file_info=SessionFileInfo(
+            session_id=file_info.session_id,
+            file_path=file_info.file_path,
+            last_modified_at=mtime,
+            preview=file_info.preview,
+        ),
+        backend=project_session.backend,
+    )
+
+
+async def _enable_with_recent(
+    rows: list[MagicMock],
+    backend: FakeBackend,
+    projects: list[project_manager.ProjectInfo],
+    degraded_messages: list[str] | None = None,
+    chat_id: int = CHAT_ID,
+) -> tuple[object, AsyncMock, MagicMock]:
+    """Enable all mode with recent-session rows patched in."""
+    recent_refresh = MagicMock()
+    recent_refresh.ALL_MODE_SESSION_CANDIDATE_LIMIT = 80
+    recent_refresh.get_global_recent_sessions = AsyncMock(
+        return_value=_recent_result(rows, degraded_messages)
+    )
+    get_all_backends = MagicMock(return_value=[backend])
+
+    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
+        project_manager,
+        "scan_available_projects",
+        new=AsyncMock(return_value=projects),
+    ), patch.object(
+        all_projects_monitor,
+        "recent_sessions_refresh",
+        recent_refresh,
+        create=True,
+    ), patch(
+        "claude_manager.all_projects_monitor.coding_agent_backend.get_backend",
+        return_value=backend,
+    ), patch(
+        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
+        get_all_backends,
+    ), patch(
+        "claude_manager.all_projects_monitor.session_watcher.pause_all",
+    ), patch(
+        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
+        return_value={},
+    ):
+        enable_result = await all_projects_monitor.enable_for_chat(chat_id)
+
+    return (
+        enable_result,
+        recent_refresh.get_global_recent_sessions,
+        get_all_backends,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_monitor_state():
     """Keep module globals isolated between tests."""
@@ -178,65 +256,117 @@ def _reset_monitor_state():
 
 
 @pytest.mark.asyncio()
-async def test_enable_for_chat_pauses_current_watcher_and_marks_mode() -> None:
-    """Enabling all mode pauses normal watcher so it cannot mark messages as read."""
-    backend = FakeBackend(BackendName.CLAUDE, {"/projects/alpha": []})
-    projects = [_project("alpha", "/projects/alpha", is_current=True)]
+async def test_enable_for_chat_uses_recent_sessions_global_query() -> None:
+    """All mode builds candidates from recent rows, not backend bulk listing."""
+    row = _recent_row(
+        "/projects/beta",
+        BackendName.CODEX,
+        "sess-beta",
+        "/sessions/beta.jsonl",
+        mtime=20.0,
+    )
+    backend = FakeBackend(BackendName.CODEX, {})
+    backend.snapshots[row.file_path] = _snapshot([_message("user", "task")])
+    projects = [_project("beta", "/projects/beta")]
+
+    enable_result, recent_query, get_all_backends = await _enable_with_recent(
+        [row], backend, projects,
+    )
+
+    assert enable_result.enabled is True
+    assert "all" in enable_result.message.lower()
+    assert "проект" in enable_result.message.lower()
+    recent_query.assert_awaited_once_with(
+        ["/projects/beta"],
+        limit=80,
+    )
+    get_all_backends.assert_not_called()
+    assert backend.bulk_project_dir_calls == []
+    assert all_projects_monitor.resolve_link(1, 1).session_id == "sess-beta"
+    assert all_projects_monitor.is_enabled_for_chat(CHAT_ID) is True
+
+
+@pytest.mark.asyncio()
+async def test_enable_for_chat_returns_disabled_when_recent_index_is_empty() -> None:
+    """Empty recent index resumes normal watcher and does not enable all mode."""
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    projects = [_project("alpha", "/projects/alpha")]
+    recent_refresh = MagicMock()
+    recent_refresh.ALL_MODE_SESSION_CANDIDATE_LIMIT = 80
+    recent_refresh.get_global_recent_sessions = AsyncMock(
+        return_value=_recent_result([], ["codex index unavailable"])
+    )
 
     with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
         project_manager,
         "scan_available_projects",
         new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
+    ), patch.object(
+        all_projects_monitor,
+        "recent_sessions_refresh",
+        recent_refresh,
+        create=True,
     ), patch(
         "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ) as pause_all_mock:
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
+    ) as pause_all_mock, patch(
+        "claude_manager.all_projects_monitor.session_watcher.resume_all",
+    ) as resume_all_mock:
+        enable_result = await all_projects_monitor.enable_for_chat(CHAT_ID)
 
     pause_all_mock.assert_called_once()
-    assert all_projects_monitor.is_enabled_for_chat(CHAT_ID) is True
+    resume_all_mock.assert_called_once()
+    assert enable_result.enabled is False
+    assert "сесс" in enable_result.message.lower()
+    assert "codex index unavailable" in enable_result.message
+    assert all_projects_monitor.is_enabled_for_chat(CHAT_ID) is False
 
 
 @pytest.mark.asyncio()
-async def test_collect_project_sessions_uses_bulk_backend_listing_once() -> None:
-    """All mode asks each backend for all project files in one bulk listing."""
-    alpha_file = _file("sess-alpha", "/sessions/alpha.jsonl", mtime=20.0)
-    beta_file = _file("sess-beta", "/sessions/beta.jsonl", mtime=10.0)
-    backend = FakeBackend(
+async def test_poll_uses_enabled_candidate_snapshot_without_refresh() -> None:
+    """Poll loop must not rebuild candidates or refresh recent sessions."""
+    row = _recent_row(
+        "/projects/beta",
         BackendName.CLAUDE,
-        {
-            "/projects/alpha": [alpha_file],
-            "/projects/beta": [beta_file],
-        },
+        "sess-beta",
+        "/sessions/beta.jsonl",
+        mtime=20.0,
     )
-    backend.snapshots[alpha_file.file_path] = _snapshot([])
-    backend.snapshots[beta_file.file_path] = _snapshot([])
-    projects = [
-        _project("alpha", "/projects/alpha"),
-        _project("beta", "/projects/beta"),
-    ]
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    backend.list_all_session_files_for_project = AsyncMock(
+        side_effect=AssertionError("poll backend discovery is forbidden")
+    )
+    backend.list_all_session_files_for_projects = AsyncMock(
+        side_effect=AssertionError("poll backend bulk discovery is forbidden")
+    )
+    backend.snapshots[row.file_path] = _snapshot([_message("user", "task")])
+    projects = [_project("beta", "/projects/beta")]
+    await _enable_with_recent([row], backend, projects)
 
+    callback = AsyncMock()
     with patch.object(
         project_manager,
         "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
+        new=AsyncMock(side_effect=AssertionError("poll discovery is forbidden")),
+    ), patch.object(
+        all_projects_monitor,
+        "recent_sessions_refresh",
+        MagicMock(
+            get_global_recent_sessions=AsyncMock(
+                side_effect=AssertionError("poll refresh is forbidden")
+            )
+        ),
+        create=True,
+    ), patch.object(
+        all_projects_monitor,
+        "_with_current_file_mtime",
+        new=AsyncMock(side_effect=lambda project_session: project_session),
+        create=True,
     ):
-        project_sessions = await all_projects_monitor._collect_project_sessions()
+        await all_projects_monitor.poll_once(callback)
 
-    assert backend.bulk_project_dir_calls == [[
-        "/projects/alpha",
-        "/projects/beta",
-    ]]
-    assert backend.individual_project_dir_calls == []
-    assert [session.file_info.session_id for session in project_sessions] == [
-        "sess-alpha",
-        "sess-beta",
-    ]
+    callback.assert_not_called()
+    backend.list_all_session_files_for_project.assert_not_awaited()
+    backend.list_all_session_files_for_projects.assert_not_awaited()
 
 
 @pytest.mark.asyncio()
@@ -247,7 +377,17 @@ async def test_enable_for_chat_reads_baseline_snapshots_concurrently() -> None:
         _file("sess-beta", "/sessions/beta.jsonl", mtime=10.0),
         _file("sess-gamma", "/sessions/gamma.jsonl", mtime=5.0),
     ]
-    backend = FakeBackend(BackendName.CLAUDE, {"/projects/alpha": files})
+    rows = [
+        _recent_row(
+            "/projects/alpha",
+            BackendName.CLAUDE,
+            file_info.session_id,
+            file_info.file_path,
+            file_info.last_modified_at,
+        )
+        for file_info in files
+    ]
+    backend = FakeBackend(BackendName.CLAUDE, {})
     backend.read_delay_seconds = 0.01
     for file_info in files:
         backend.snapshots[file_info.file_path] = _snapshot([
@@ -255,20 +395,7 @@ async def test_enable_for_chat_reads_baseline_snapshots_concurrently() -> None:
         ])
     projects = [_project("alpha", "/projects/alpha", is_current=True)]
 
-    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
-        project_manager,
-        "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
-        return_value={},
-    ):
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
+    await _enable_with_recent(rows, backend, projects)
 
     assert backend.max_active_reads > 1
 
@@ -277,49 +404,55 @@ async def test_enable_for_chat_reads_baseline_snapshots_concurrently() -> None:
 async def test_enable_for_chat_uses_lightweight_cursors_for_baseline() -> None:
     """All mode baselines files through lightweight cursors, not full snapshots."""
     file_info = _file("sess-alpha", "/sessions/alpha.jsonl", mtime=20.0)
-    backend = FakeBackend(BackendName.CLAUDE, {"/projects/alpha": [file_info]})
+    row = _recent_row(
+        "/projects/alpha",
+        BackendName.CLAUDE,
+        file_info.session_id,
+        file_info.file_path,
+        file_info.last_modified_at,
+    )
+    backend = FakeBackend(BackendName.CLAUDE, {})
     backend.snapshots[file_info.file_path] = _snapshot([
         _message("user", "task"),
         _message("assistant", "old answer"),
     ])
     projects = [_project("alpha", "/projects/alpha", is_current=True)]
 
-    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
-        project_manager,
-        "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
-        return_value={},
-    ):
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
+    await _enable_with_recent([row], backend, projects)
 
     assert backend.cursor_count_by_path[file_info.file_path] == 1
     assert backend.read_count_by_path.get(file_info.file_path, 0) == 0
 
 
 @pytest.mark.asyncio()
-async def test_enable_for_chat_resumes_watcher_when_baseline_fails() -> None:
-    """A failed all-mode entry must not leave the normal watcher globally paused."""
+async def test_enable_for_chat_returns_disabled_when_recent_query_fails() -> None:
+    """A failed recent query must restore watcher and return a degraded result."""
+    recent_refresh = MagicMock()
+    recent_refresh.ALL_MODE_SESSION_CANDIDATE_LIMIT = 80
+    recent_refresh.get_global_recent_sessions = AsyncMock(
+        side_effect=RuntimeError("recent store failed")
+    )
+
     with patch.object(
         project_manager,
         "scan_available_projects",
-        new=AsyncMock(side_effect=RuntimeError("scan failed")),
+        new=AsyncMock(return_value=[_project("alpha", "/projects/alpha")]),
+    ), patch.object(
+        all_projects_monitor,
+        "recent_sessions_refresh",
+        recent_refresh,
+        create=True,
     ), patch(
         "claude_manager.all_projects_monitor.session_watcher.pause_all",
     ) as pause_all_mock, patch(
         "claude_manager.all_projects_monitor.session_watcher.resume_all",
     ) as resume_all_mock:
-        with pytest.raises(RuntimeError, match="scan failed"):
-            await all_projects_monitor.enable_for_chat(CHAT_ID)
+        enable_result = await all_projects_monitor.enable_for_chat(CHAT_ID)
 
     pause_all_mock.assert_called_once()
     resume_all_mock.assert_called_once()
+    assert enable_result.enabled is False
+    assert "временно недоступен" in enable_result.message
     assert all_projects_monitor.is_enabled_for_chat(CHAT_ID) is False
 
 
@@ -327,36 +460,32 @@ async def test_enable_for_chat_resumes_watcher_when_baseline_fails() -> None:
 async def test_poll_skips_snapshot_read_when_session_mtime_is_unchanged() -> None:
     """Polling all mode does not reread unchanged session files."""
     file_info = _file("sess-beta", "/sessions/beta.jsonl", mtime=20.0)
-    backend = FakeBackend(BackendName.CLAUDE, {"/projects/beta": [file_info]})
+    row = _recent_row(
+        "/projects/beta",
+        BackendName.CLAUDE,
+        file_info.session_id,
+        file_info.file_path,
+        file_info.last_modified_at,
+    )
+    backend = FakeBackend(BackendName.CLAUDE, {})
     backend.snapshots[file_info.file_path] = _snapshot([
         _message("user", "task"),
         _message("assistant", "old answer"),
     ])
     projects = [_project("beta", "/projects/beta")]
 
-    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
-        project_manager,
-        "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
-        return_value={},
-    ):
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
+    await _enable_with_recent([row], backend, projects)
 
     callback = AsyncMock()
     with patch.object(
         project_manager,
         "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
+        new=AsyncMock(side_effect=AssertionError("poll discovery is forbidden")),
+    ), patch.object(
+        all_projects_monitor,
+        "_with_current_file_mtime",
+        new=AsyncMock(side_effect=lambda project_session: project_session),
+        create=True,
     ):
         await all_projects_monitor.poll_once(callback)
 
@@ -396,43 +525,40 @@ def test_candidate_indices_do_not_fall_back_when_raw_cursor_has_no_new_messages(
 async def test_poll_delivers_all_project_message_and_keeps_unread_snapshot() -> None:
     """All monitor delivers a new assistant message and leaves it unread for project switch."""
     file_info = _file("sess-beta", "/sessions/beta.jsonl", mtime=20.0)
-    backend = FakeBackend(BackendName.CLAUDE, {"/projects/beta": [file_info]})
+    row = _recent_row(
+        "/projects/beta",
+        BackendName.CLAUDE,
+        file_info.session_id,
+        file_info.file_path,
+        file_info.last_modified_at,
+    )
+    backend = FakeBackend(BackendName.CLAUDE, {})
     backend.snapshots[file_info.file_path] = _snapshot([
         _message("user", "task"),
     ])
     projects = [_project("beta", "/projects/beta")]
 
-    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
-        project_manager,
-        "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
-        return_value={},
-    ):
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
+    await _enable_with_recent([row], backend, projects)
 
     backend.snapshots[file_info.file_path] = _snapshot([
         _message("user", "task"),
         _message("assistant", "answer"),
     ])
-    backend.files_by_project["/projects/beta"] = [
-        _file("sess-beta", "/sessions/beta.jsonl", mtime=30.0)
-    ]
     callback = AsyncMock()
 
     with patch.object(
         project_manager,
         "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
+        new=AsyncMock(side_effect=AssertionError("poll discovery is forbidden")),
+    ), patch.object(
+        all_projects_monitor,
+        "_with_current_file_mtime",
+        new=AsyncMock(
+            side_effect=lambda project_session: _candidate_with_mtime(
+                project_session, 30.0,
+            )
+        ),
+        create=True,
     ):
         await all_projects_monitor.poll_once(callback)
 
@@ -464,27 +590,21 @@ async def test_existing_unread_snapshot_is_not_overwritten() -> None:
         last_delivered_idx=2,
     )
     file_info = _file("sess-beta", "/sessions/beta.jsonl")
-    backend = FakeBackend(BackendName.CLAUDE, {"/projects/beta": [file_info]})
+    row = _recent_row(
+        "/projects/beta",
+        BackendName.CLAUDE,
+        file_info.session_id,
+        file_info.file_path,
+        file_info.last_modified_at,
+    )
+    backend = FakeBackend(BackendName.CLAUDE, {})
     backend.snapshots[file_info.file_path] = _snapshot([
         _message("user", "old"),
         _message("assistant", "old answer"),
     ])
     projects = [_project("beta", "/projects/beta")]
 
-    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
-        project_manager,
-        "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
-        return_value={},
-    ):
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
+    await _enable_with_recent([row], backend, projects)
 
     assert unread_buffer.restore_snapshot(
         "sess-beta",
@@ -496,85 +616,59 @@ async def test_existing_unread_snapshot_is_not_overwritten() -> None:
 
 
 @pytest.mark.asyncio()
-async def test_resolve_link_returns_project_and_session_target() -> None:
-    """The displayed /<project>s<session> command resolves back to the exact session."""
-    file_info = _file("sess-beta", "/sessions/beta.jsonl")
-    backend = FakeBackend(BackendName.CLAUDE, {"/projects/beta": [file_info]})
-    backend.snapshots[file_info.file_path] = _snapshot([
-        _message("user", "task"),
+async def test_missing_candidate_file_is_non_fatal_without_discovery() -> None:
+    """A disappeared candidate is skipped while other known files are delivered."""
+    missing_file = _file("sess-missing", "/sessions/missing.jsonl")
+    valid_file = _file("sess-alpha", "/sessions/alpha.jsonl")
+    rows = [
+        _recent_row(
+            "/projects/alpha",
+            BackendName.CLAUDE,
+            missing_file.session_id,
+            missing_file.file_path,
+            missing_file.last_modified_at,
+        ),
+        _recent_row(
+            "/projects/alpha",
+            BackendName.CLAUDE,
+            valid_file.session_id,
+            valid_file.file_path,
+            valid_file.last_modified_at,
+        ),
+    ]
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    backend.snapshots[missing_file.file_path] = _snapshot([
+        _message("user", "missing"),
     ])
-    projects = [_project("beta", "/projects/beta")]
-
-    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
-        project_manager,
-        "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[backend],
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
-        return_value={},
-    ):
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
-
-    target = all_projects_monitor.resolve_link(
-        project_number=1,
-        session_number=1,
-    )
-    assert target == all_projects_monitor.AllProjectSessionLink(
-        project_number=1,
-        session_number=1,
-        project_name="beta",
-        project_path="/projects/beta",
-        session_id="sess-beta",
-        backend=BackendName.CLAUDE,
-    )
-
-
-@pytest.mark.asyncio()
-async def test_poll_continues_when_one_backend_scan_fails() -> None:
-    """A failing backend does not prevent other backends from delivering messages."""
-    file_info = _file("sess-alpha", "/sessions/alpha.jsonl")
-    working_backend = FakeBackend(BackendName.CLAUDE, {"/projects/alpha": [file_info]})
-    working_backend.snapshots[file_info.file_path] = _snapshot([
+    backend.snapshots[valid_file.file_path] = _snapshot([
         _message("user", "task"),
     ])
     projects = [_project("alpha", "/projects/alpha")]
 
-    with patch.object(config, "WORKING_DIR", "/projects/alpha"), patch.object(
-        project_manager,
-        "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[FailingBackend(), working_backend],
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.pause_all",
-    ), patch(
-        "claude_manager.all_projects_monitor.session_watcher.get_seen_counts_snapshot",
-        return_value={},
-    ):
-        await all_projects_monitor.enable_for_chat(CHAT_ID)
+    await _enable_with_recent(rows, backend, projects)
 
-    working_backend.snapshots[file_info.file_path] = _snapshot([
+    backend.snapshots[valid_file.file_path] = _snapshot([
         _message("user", "task"),
         _message("assistant", "answer"),
     ])
-    working_backend.files_by_project["/projects/alpha"] = [
-        _file("sess-alpha", "/sessions/alpha.jsonl", mtime=2.0)
-    ]
     callback = AsyncMock()
+
+    def refresh_candidate(
+        project_session: all_projects_monitor._ProjectSession,
+    ) -> all_projects_monitor._ProjectSession | None:
+        if project_session.file_info.session_id == "sess-missing":
+            return None
+        return _candidate_with_mtime(project_session, 2.0)
 
     with patch.object(
         project_manager,
         "scan_available_projects",
-        new=AsyncMock(return_value=projects),
-    ), patch(
-        "claude_manager.all_projects_monitor.coding_agent_backend.get_all_backends",
-        return_value=[FailingBackend(), working_backend],
+        new=AsyncMock(side_effect=AssertionError("poll discovery is forbidden")),
+    ), patch.object(
+        all_projects_monitor,
+        "_with_current_file_mtime",
+        new=AsyncMock(side_effect=refresh_candidate),
+        create=True,
     ):
         await all_projects_monitor.poll_once(callback)
 

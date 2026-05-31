@@ -13,6 +13,7 @@ from claude_manager import (
     current_backend_registry,
     daily_session_registry,
     process_manager,
+    recent_sessions_refresh,
     reply_anchor_registry,
     session_manager,
     telegram_sender,
@@ -117,55 +118,39 @@ async def handle_sessions(
         return
 
     chat_id = update.effective_chat.id
-    sessions_with_backend = []
-    error_lines: list[str] = []
-    for backend in coding_agent_backend.get_all_backends():
-        try:
-            sessions = await backend.list_session_files_for_project(
-                config.WORKING_DIR
-            )
-        except Exception:
-            logger.warning(
-                "Не удалось прочитать список сессий backend-а %s",
-                backend.name.value,
-                exc_info=True,
-            )
-            error_lines.append(
-                f"{backend.display_name}: не удалось прочитать список сессий"
-            )
-            continue
-        for session in sessions:
-            sessions_with_backend.append((session, backend))
-
-    if not sessions_with_backend and not error_lines:
+    try:
+        result = await recent_sessions_refresh.get_project_recent_sessions(
+            config.WORKING_DIR,
+            limit=SESSION_LIST_LIMIT,
+            refresh_on_hit=True,
+        )
+    except Exception:
+        logger.warning("Не удалось прочитать список сессий", exc_info=True)
         await telegram_sender.send_telegram_message(
             _get_application().bot,
             chat_id,
-            "Нет сессий",
+            "Не удалось прочитать список сессий. Попробуйте ещё раз",
             parse_mode=None,
         )
         return
 
     lines: list[str] = []
-    sessions_with_backend.sort(
-        key=lambda item: item[0].last_modified_at,
-        reverse=True,
-    )
-    for session, backend in sessions_with_backend[:SESSION_LIST_LIMIT]:
+    for row in result.rows[:SESSION_LIST_LIMIT]:
+        backend = coding_agent_backend.get_backend(row.backend)
         day_number = await daily_session_registry.register_session(
-            session.session_id,
-            backend.name,
+            row.session_id,
+            row.backend,
         )
         session_summary = await daily_session_registry.get_session_summary(
-            session.session_id,
-            backend.name,
+            row.session_id,
+            row.backend,
         )
-        session_label = session_summary or session.preview
+        session_label = session_summary or row.preview
         lines.append(f"/{day_number} {backend.display_name} {session_label}")
 
-    lines.extend(error_lines)
     if not lines:
         lines.append("Нет сессий")
+    lines.extend(result.degraded_messages)
 
     text = "\n".join(lines)
     # Отправляем без HTML, чтобы /1 /2 /3 были кликабельными командами
@@ -239,12 +224,13 @@ async def handle_all(
         return
 
     chat_id = update.effective_chat.id
-    await session_manager.unbind_session(chat_id)
-    await all_projects_monitor.enable_for_chat(chat_id)
+    enable_result = await all_projects_monitor.enable_for_chat(chat_id)
+    if enable_result.enabled:
+        await session_manager.unbind_session(chat_id)
     await telegram_sender.send_telegram_message(
         _get_application().bot,
         chat_id,
-        ALL_PROJECTS_MODE_ENABLED_MESSAGE,
+        enable_result.message,
         parse_mode=None,
     )
 

@@ -1,5 +1,6 @@
 """Тесты Telegram handlers для управления сессиями."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +14,7 @@ from claude_manager import (
     session_manager,
     telegram_session_handlers as session_handlers,
 )
-from claude_manager.coding_agent_backend import BackendName, SessionFileInfo
+from claude_manager.coding_agent_backend import BackendName
 from claude_manager.process_manager import StopResult
 from claude_manager.session_manager import (
     ActiveSession,
@@ -37,7 +38,7 @@ class FakeBackendForSessionList:
         self,
         name: BackendName,
         display_name: str,
-        session_files: list[SessionFileInfo],
+        session_files: list[object],
     ) -> None:
         self.name = name
         self.display_name = display_name
@@ -46,23 +47,9 @@ class FakeBackendForSessionList:
     async def list_session_files_for_project(
         self,
         _project_dir: str,
-    ) -> list[SessionFileInfo]:
+    ) -> list[object]:
         """Возвращает заранее заданные файлы сессий."""
         return self.session_files
-
-
-def _session_file(
-    session_id: str,
-    last_modified_at: float,
-    preview: str,
-) -> SessionFileInfo:
-    """Создаёт session metadata для списка /sessions."""
-    return SessionFileInfo(
-        session_id=session_id,
-        file_path=f"/tmp/{session_id}.jsonl",
-        last_modified_at=last_modified_at,
-        preview=preview,
-    )
 
 
 @pytest.fixture(autouse=True)
@@ -223,47 +210,132 @@ class TestHandleNew:
 class TestHandleSessions:
     """Тесты команды /sessions."""
 
-    @pytest.mark.asyncio()
-    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
-    async def test_handle_sessions_merges_backends_before_limiting(
-        self,
-        mock_register: AsyncMock,
-        _setup_application: MagicMock,
-    ) -> None:
-        """Команда /sessions объединяет Claude и Codex перед ограничением списка."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [_session_file("claude-old", 10.0, "Claude old")],
+    @staticmethod
+    def _row(
+        session_id: str,
+        backend: BackendName = BackendName.CLAUDE,
+        preview: str = "Preview",
+        last_modified_at: float = 10.0,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            session_id=session_id,
+            backend=backend,
+            preview=preview,
+            last_modified_at=last_modified_at,
         )
-        codex_backend = FakeBackendForSessionList(
-            BackendName.CODEX,
-            "⚡ Codex",
-            [_session_file("codex-new", 20.0, "Codex new")],
-        )
-        mock_register.side_effect = [1, 2]
 
+    @staticmethod
+    def _recent_result(
+        rows: list[SimpleNamespace],
+        degraded_messages: list[str] | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            rows=rows,
+            degraded_messages=degraded_messages or [],
+        )
+
+    @staticmethod
+    def _direct_listing_guard(
+        backend: BackendName = BackendName.CLAUDE,
+    ) -> FakeBackendForSessionList:
+        direct_backend = FakeBackendForSessionList(backend, "unused", [])
+        direct_backend.list_session_files_for_project = AsyncMock(
+            side_effect=AssertionError("direct backend listing is obsolete")
+        )
+        return direct_backend
+
+    async def _handle_with_recent(
+        self,
+        mock_recent: AsyncMock,
+        direct_backend: FakeBackendForSessionList,
+    ) -> None:
         update = _make_update(text="/sessions")
         context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend, codex_backend],
+        with (
+            patch.object(
+                session_handlers,
+                "recent_sessions_refresh",
+                SimpleNamespace(get_project_recent_sessions=mock_recent),
+                create=True,
+            ),
+            patch.object(
+                coding_agent_backend,
+                "get_all_backends",
+                return_value=[direct_backend],
+            ),
         ):
             await session_handlers.handle_sessions(update, context)
 
-        assert mock_register.call_args_list[0].args == (
-            "codex-new",
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(
+        daily_session_registry,
+        "get_session_summary",
+        new_callable=AsyncMock,
+        create=True,
+    )
+    async def test_handle_sessions_reads_recent_rows_without_backend_listing(
+        self,
+        mock_get_summary: AsyncMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Команда /sessions читает recent rows и не сканирует backend напрямую."""
+        row = self._row("codex-new", BackendName.CODEX, "Codex new", 20.0)
+        mock_recent = AsyncMock(return_value=self._recent_result([row]))
+        direct_backend = self._direct_listing_guard(
             BackendName.CODEX,
         )
-        assert mock_register.call_args_list[1].args == (
-            "claude-old",
-            BackendName.CLAUDE,
+        mock_register.return_value = 1
+        mock_get_summary.return_value = ""
+
+        await self._handle_with_recent(mock_recent, direct_backend)
+
+        mock_recent.assert_awaited_once_with(
+            config_module.WORKING_DIR,
+            limit=session_handlers.SESSION_LIST_LIMIT,
+            refresh_on_hit=True,
         )
+        direct_backend.list_session_files_for_project.assert_not_awaited()
+        mock_register.assert_awaited_once_with("codex-new", BackendName.CODEX)
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert sent_text.splitlines()[0].startswith("/1 ⚡ Codex")
-        assert sent_text.splitlines()[1].startswith("/2 🤖 Claude")
+        assert sent_text == "/1 ⚡ Codex Codex new"
+        assert sent.call_args[1].get("parse_mode") is None
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(
+        daily_session_registry,
+        "get_session_summary",
+        new_callable=AsyncMock,
+        create=True,
+    )
+    async def test_handle_sessions_caps_recent_rows_to_session_limit(
+        self,
+        mock_get_summary: AsyncMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Команда /sessions показывает не больше SESSION_LIST_LIMIT строк."""
+        rows = [
+            self._row(f"id-{number}", preview=f"Preview {number}", last_modified_at=float(number))
+            for number in range(30)
+        ]
+        mock_recent = AsyncMock(return_value=self._recent_result(rows))
+        direct_backend = self._direct_listing_guard()
+        mock_register.side_effect = range(1, 31)
+        mock_get_summary.return_value = ""
+
+        await self._handle_with_recent(mock_recent, direct_backend)
+
+        direct_backend.list_session_files_for_project.assert_not_awaited()
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        lines = sent_text.splitlines()
+        assert len(lines) == session_handlers.SESSION_LIST_LIMIT
+        assert lines[0].endswith("Preview 0")
+        assert lines[-1].endswith("Preview 14")
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
@@ -280,29 +352,18 @@ class TestHandleSessions:
         _setup_application: MagicMock,
     ) -> None:
         """Команда /sessions показывает сохранённую краткую суть вместо длинного preview."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [
-                _session_file(
-                    "id-1",
-                    10.0,
-                    "Давай доработаем инициализирующий скрипт загрузки данных по отзывам",
-                ),
-            ],
+        row = self._row(
+            "id-1",
+            preview="Давай доработаем инициализирующий скрипт загрузки данных по отзывам",
         )
+        mock_recent = AsyncMock(return_value=self._recent_result([row]))
+        direct_backend = self._direct_listing_guard()
         mock_register.return_value = 1
         mock_get_summary.return_value = "Загрузка отзывов за период"
 
-        update = _make_update(text="/sessions")
-        context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend],
-        ):
-            await session_handlers.handle_sessions(update, context)
+        await self._handle_with_recent(mock_recent, direct_backend)
 
+        direct_backend.list_session_files_for_project.assert_not_awaited()
         mock_get_summary.assert_awaited_once_with("id-1", BackendName.CLAUDE)
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
@@ -311,32 +372,32 @@ class TestHandleSessions:
 
     @pytest.mark.asyncio()
     @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(
+        daily_session_registry,
+        "get_session_summary",
+        new_callable=AsyncMock,
+        create=True,
+    )
     async def test_handle_sessions_shows_list(
         self,
+        mock_get_summary: AsyncMock,
         mock_register: AsyncMock,
         _setup_application: MagicMock,
     ) -> None:
         """Команда /sessions показывает список сессий."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [
-                _session_file("id-1", 10.0, "Первая сессия"),
-                _session_file("id-2", 11.0, "Вторая сессия"),
-                _session_file("id-3", 12.0, "Третья сессия"),
-            ],
-        )
+        rows = [
+            self._row("id-1", preview="Первая сессия"),
+            self._row("id-2", BackendName.CODEX, "Вторая сессия", 11.0),
+            self._row("id-3", preview="Третья сессия", last_modified_at=12.0),
+        ]
+        mock_recent = AsyncMock(return_value=self._recent_result(rows))
+        direct_backend = self._direct_listing_guard()
         mock_register.side_effect = [1, 2, 3]
+        mock_get_summary.return_value = ""
 
-        update = _make_update(text="/sessions")
-        context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend],
-        ):
-            await session_handlers.handle_sessions(update, context)
+        await self._handle_with_recent(mock_recent, direct_backend)
 
+        direct_backend.list_session_files_for_project.assert_not_awaited()
         sent = _setup_application.bot.send_message
         sent.assert_called_once()
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
@@ -350,26 +411,75 @@ class TestHandleSessions:
         self,
         _setup_application: MagicMock,
     ) -> None:
-        """Пустой список сессий."""
-        claude_backend = FakeBackendForSessionList(
-            BackendName.CLAUDE,
-            "🤖 Claude",
-            [],
+        """Пустой список сессий сохраняет смысл даже с degraded warning."""
+        mock_recent = AsyncMock(
+            return_value=self._recent_result([], ["codex temporarily unavailable"])
         )
+        direct_backend = self._direct_listing_guard()
 
-        update = _make_update(text="/sessions")
-        context = _make_context()
-        with patch.object(
-            coding_agent_backend,
-            "get_all_backends",
-            return_value=[claude_backend],
-        ):
-            await session_handlers.handle_sessions(update, context)
+        await self._handle_with_recent(mock_recent, direct_backend)
 
+        direct_backend.list_session_files_for_project.assert_not_awaited()
         sent = _setup_application.bot.send_message
         sent.assert_called_once()
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "Нет сессий" in sent_text
+        assert sent_text.splitlines() == [
+            "Нет сессий",
+            "codex temporarily unavailable",
+        ]
+
+    @pytest.mark.asyncio()
+    async def test_handle_sessions_reports_recent_query_failure(
+        self,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Сбой recent store не должен оставлять пользователя без ответа."""
+        mock_recent = AsyncMock(side_effect=RuntimeError("store locked"))
+        direct_backend = self._direct_listing_guard()
+
+        await self._handle_with_recent(mock_recent, direct_backend)
+
+        direct_backend.list_session_files_for_project.assert_not_awaited()
+        sent = _setup_application.bot.send_message
+        sent.assert_called_once()
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert sent_text == "Не удалось прочитать список сессий. Попробуйте ещё раз"
+        assert sent.call_args[1].get("parse_mode") is None
+
+    @pytest.mark.asyncio()
+    @patch.object(daily_session_registry, "register_session", new_callable=AsyncMock)
+    @patch.object(
+        daily_session_registry,
+        "get_session_summary",
+        new_callable=AsyncMock,
+        create=True,
+    )
+    async def test_handle_sessions_appends_degraded_messages(
+        self,
+        mock_get_summary: AsyncMock,
+        mock_register: AsyncMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """Команда /sessions добавляет предупреждения из recent refresh."""
+        row = self._row("id-1", preview="Первая сессия")
+        mock_recent = AsyncMock(
+            return_value=self._recent_result(
+                [row], ["codex failed for /tmp/test_working_dir"]
+            )
+        )
+        direct_backend = self._direct_listing_guard()
+        mock_register.return_value = 1
+        mock_get_summary.return_value = ""
+
+        await self._handle_with_recent(mock_recent, direct_backend)
+
+        direct_backend.list_session_files_for_project.assert_not_awaited()
+        sent = _setup_application.bot.send_message
+        sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+        assert sent_text.splitlines() == [
+            "/1 🤖 Claude Первая сессия",
+            "codex failed for /tmp/test_working_dir",
+        ]
 
 
 class TestHandleStop:
@@ -489,6 +599,10 @@ class TestHandleAll:
         _setup_application: MagicMock,
     ) -> None:
         """Command /all enables global monitoring across projects."""
+        mock_enable_all_projects.return_value = SimpleNamespace(
+            enabled=True,
+            message="custom all project message",
+        )
         update = _make_update(text="/all")
         context = _make_context()
         await session_handlers.handle_all(update, context)
@@ -497,8 +611,8 @@ class TestHandleAll:
         mock_enable_all_projects.assert_awaited_once_with(TEST_CHAT_ID)
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "all" in sent_text.lower()
-        assert "проект" in sent_text.lower()
+        assert sent_text == "custom all project message"
+        assert sent.call_args[1].get("parse_mode") is None
 
     @pytest.mark.asyncio()
     @patch.object(all_projects_monitor, "enable_for_chat", new_callable=AsyncMock)
@@ -509,17 +623,21 @@ class TestHandleAll:
         mock_enable_all_projects: AsyncMock,
         _setup_application: MagicMock,
     ) -> None:
-        """Command /all_projects enables global monitoring across projects."""
+        """Failed /all_projects entry keeps the current session binding."""
+        mock_enable_all_projects.return_value = SimpleNamespace(
+            enabled=False,
+            message="no indexed recent sessions",
+        )
         update = _make_update(text="/all_projects")
         context = _make_context()
         await session_handlers.handle_all(update, context)
 
-        mock_unbind.assert_called_once_with(TEST_CHAT_ID)
+        mock_unbind.assert_not_called()
         mock_enable_all_projects.assert_awaited_once_with(TEST_CHAT_ID)
         sent = _setup_application.bot.send_message
         sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
-        assert "all" in sent_text.lower()
-        assert "проект" in sent_text.lower()
+        assert sent_text == "no indexed recent sessions"
+        assert sent.call_args[1].get("parse_mode") is None
 
 
 class TestHandleSwitchSession:

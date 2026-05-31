@@ -1,0 +1,214 @@
+{
+  "task_description": "Спецификация v1 для таблицы recent_sessions: последние 30 сессий на проект, быстрые /sessions и /all без повторного полного scan-а истории.",
+  "refined_requirements": [
+    {
+      "id": "REQ-1",
+      "original": "Создать спецификацию v1 для таблицы recent_sessions.",
+      "refined": "Спецификация должна описать отдельный lightweight storage-слой для таблицы recent_sessions, а не расширять крупные существующие модули. Таблица хранит быстрые session headers: project_path, backend, session_id, file_path, last_modified_at, preview, индексный cursor/raw_record_count, created_at/updated_at. Уникальный ключ: project_path + backend + session_id.",
+      "rationale": "Stage 1 показал, что all_projects_monitor.py, daily_session_registry.py, codex_session_file_listing.py, session_reader.py и coding_agent_backend.py уже близки к размерным порогам или выше них. Новая таблица является cross-backend инфраструктурой, а не ответственностью Telegram handler-а или backend adapter-а."
+    },
+    {
+      "id": "REQ-2",
+      "original": "Хранить последние 30 сессий на проект.",
+      "refined": "Лимит 30 должен применяться на project_path across all backends, то есть общий top-30 по last_modified_at для проекта после объединения Claude и Codex. Backend всё равно остаётся частью ключа и отображения, чтобы одинаковые session_id в разных backend-ах не конфликтовали.",
+      "rationale": "Формулировка задачи и handoff говорят «на проект», а не «на backend». Это сохраняет пользовательский смысл: /sessions показывает последние диалоги проекта независимо от CLI-бэкенда. UI-лимит /sessions остаётся отдельным: показывать 15 строк, как сейчас, из сохранённых 30."
+    },
+    {
+      "id": "REQ-3",
+      "original": "Сделать быстрый /sessions без повторного полного scan-а истории.",
+      "refined": "/sessions должен читать candidates из recent_sessions для текущего config.WORKING_DIR, сортировать по last_modified_at, показывать не больше SESSION_LIST_LIMIT = 15 и регистрировать показанные строки через daily_session_registry. Handler не должен напрямую вызывать backend.list_session_files_for_project() как основной путь. При пустой или устаревшей таблице допускается только bounded safety-refresh, без полного historical scan-а Codex sessions root.",
+      "rationale": "Текущий /sessions повторно запускает backend listing, а для Codex даже сокращённое окно остаётся повторным filesystem/meta scan-ом. Цель v1 состоит в том, чтобы горячая команда читала уже подготовленные metadata."
+    },
+    {
+      "id": "REQ-4",
+      "original": "Сделать быстрый /all без повторного полного scan-а истории.",
+      "refined": "/all enable и /all poll должны получать session candidates из recent_sessions, а не пересобирать список через backend bulk full listing. enable_for_chat() может построить lightweight baseline cursor для выбранных candidates. poll_once() каждые 2 секунды не должен запускать discovery/refresh таблицы; он проверяет только уже выбранные active files через mtime/cursor-first путь.",
+      "rationale": "Stage 1 показал, что Codex bulk all-project listing сейчас является главным риском: он может сканировать все rollout-файлы. Если poll_once() продолжит делать discovery каждые 2 секунды, таблица не решит проблему."
+    },
+    {
+      "id": "REQ-5",
+      "original": "Определить, должен ли /all иметь global cap.",
+      "refined": "/all должен иметь отдельный global cap для monitored candidates, например ALL_MODE_SESSION_CANDIDATE_LIMIT = 80 по умолчанию. Этот cap применяется после global сортировки recent_sessions по last_modified_at desc across projects and backends. Storage cap 30 per project не заменяет global cap, потому что при большом числе проектов 30 на каждый проект всё равно может дать сотни poll targets.",
+      "rationale": "Глобальный режим работает каждые 2 секунды. Без общего лимита стоимость poll-а будет расти от числа проектов, даже если каждый проект ограничен 30 строками. Это противоречит цели «быстрый /all»."
+    },
+    {
+      "id": "REQ-6",
+      "original": "Разобраться, где хранить старые cursor/state после pruning.",
+      "refined": "Pruning recent_sessions должен удалять только быстрые header/candidate rows. Delivery/read state, который нужен для корректной baseline-семантики и защиты от replay после удаления header row, должен храниться отдельно: либо в отдельной таблице session_cursor_state keyed by project_path + backend + session_id, либо в существующем cursor-state механизме, если спецификация докажет, что он переживает pruning. Нельзя хранить единственную копию cursor/state только в prunable recent_sessions row.",
+      "rationale": "Если cursor удалить вместе с 31-й сессией проекта, старая session при повторной активности после рестарта может либо переотправить старую историю, либо потерять новые сообщения при baseline-at-end. Поэтому header retention и cursor retention должны быть разными контрактами."
+    },
+    {
+      "id": "REQ-7",
+      "original": "Определить поведение при пустой или устаревшей таблице.",
+      "refined": "При пустой таблице /sessions делает один bounded project refresh текущего проекта и затем отвечает из таблицы; если данных всё ещё нет, показывает обычное «сессии не найдены» без полного scan-а. При пустой таблице /all делает bounded all-project refresh с timeout и global cap; если кандидатов нет, включает режим без candidates или отвечает понятным degraded-сообщением. При устаревшей таблице команда может запланировать background refresh, но не должна блокировать пользователя полным historical scan-ом.",
+      "rationale": "Первый запуск после внедрения таблицы не должен возвращать silent empty list, но и не должен повторить старую задержку на полном обходе 14106+ Codex файлов."
+    },
+    {
+      "id": "REQ-8",
+      "original": "Добавить safety-refresh, но без новых файловых событий в v1.",
+      "refined": "Refresh должен быть отдельным от storage и hot path. Он может запускаться при успешном создании/продолжении session, при known session update, при stale updated_at, при пустой таблице и периодически в фоне. Для Codex refresh обязан использовать bounded source: codex_session_index/lookback или known UUIDv7 candidate path, а не list_all_session_file_infos_by_project() с full scan.",
+      "rationale": "Handoff говорит, что event-driven слой откладывается. Значит v1 нужна практичная страховка, но discovery не должен возвращаться в каждую пользовательскую команду."
+    },
+    {
+      "id": "REQ-9",
+      "original": "Избежать блокирующего SQLite в event loop.",
+      "refined": "Если recent_sessions реализуется на sqlite3, все DB-операции должны выполняться вне event loop через asyncio.to_thread или через dedicated async wrapper/worker. Синхронный слой должен открывать короткоживущие соединения или явно управлять thread ownership, использовать busy_timeout, атомарные транзакции, WAL при необходимости и async lock для сериализации write/prune операций.",
+      "rationale": "Проект async-first, а Telegram handlers и pollers не должны зависать из-за sqlite file lock или синхронного I/O. Стандартный sqlite3 в Python синхронный, поэтому прямой вызов из async handler-а нарушит архитектурное правило."
+    },
+    {
+      "id": "REQ-10",
+      "original": "Сохранить текущие пользовательские контракты /sessions и /all.",
+      "refined": "/sessions должен остаться plain text response, чтобы Telegram команды /1, /2, /3 были кликабельными. daily_session_registry остаётся владельцем дневных номеров и summary preference. /all должен сохранить отдельные cursors, link registry /<project>s<session> и unread_buffer snapshot, чтобы сообщения из /all оставались pending при входе в исходный проект.",
+      "rationale": "recent_sessions является быстрым источником candidates, но не заменяет UI-numbering, unread/pending semantics и полный текст session files как источник правды."
+    },
+    {
+      "id": "REQ-11",
+      "original": "Сделать таблицу источником быстрых данных, но не источником истины для истории.",
+      "refined": "recent_sessions хранит metadata и preview cache. Полные сообщения продолжают читаться из session files только при доставке, pending-сборе или явном открытии session. Preview должен инвалидироваться по file_path + last_modified_at или по raw_record_count, чтобы /sessions не открывал JSONL повторно для неизменившихся сессий.",
+      "rationale": "RCA медленного /sessions показал, что preview нужен только для видимых строк. Хранение всего текста в таблице усложнит консистентность и противоречит существующему file-as-source-of-truth подходу."
+    },
+    {
+      "id": "REQ-12",
+      "original": "Доказать отсутствие повторного historical scan-а тестами.",
+      "refined": "Спецификация должна требовать тесты не только на корректный текст ответа, но и на алгоритмическую цену: повторный /sessions не вызывает backend listing/full scan; /all enable не вызывает Codex full global listing; /all poll_once не запускает discovery; unchanged mtime не читает snapshot; refresh использует bounded источники; pruning оставляет 30 recent rows per project and preserves cursor state outside pruned rows.",
+      "rationale": "Текущие тесты проверяют поведение, но fake backend не различает bounded query и full historical scan. Без тестовых counters на forbidden calls регрессия может вернуться незаметно."
+    }
+  ],
+  "edge_cases": [
+    {
+      "id": "EDGE-1",
+      "scenario": "Проект имеет 30 свежих Codex sessions и 10 свежих Claude sessions.",
+      "impact": "Если лимит применить per backend, в таблице будет 60 строк на проект и /sessions начнёт зависеть от числа backend-ов. Если ключ сделать без backend, возможны коллизии session_id.",
+      "recommendation": "Хранить общий top-30 per project across backend-ов, но включить backend в уникальный ключ, сортировку и UI registration."
+    },
+    {
+      "id": "EDGE-2",
+      "scenario": "31-я сессия проекта pruned из recent_sessions, но по ней есть старый delivery cursor или /all baseline state.",
+      "impact": "Удаление единственной копии cursor/state может привести к повторной доставке старой истории или к пропуску новых сообщений при повторном baseline.",
+      "recommendation": "Разнести recent header retention и cursor retention. Старые cursor/state хранить в отдельном durable state keyed by project_path + backend + session_id или в доказанно совместимом существующем state-store."
+    },
+    {
+      "id": "EDGE-3",
+      "scenario": "Таблица пустая после первого запуска новой версии, после удаления DB-файла или после миграции.",
+      "impact": "/sessions может показать пустой список при наличии сессий, а /all может включиться без мониторинга.",
+      "recommendation": "На пустое состояние запускать bounded refresh. Если bounded refresh ничего не нашёл, отвечать понятным empty/degraded результатом и не делать полный historical scan в пользовательском запросе."
+    },
+    {
+      "id": "EDGE-4",
+      "scenario": "Таблица устарела: бот был выключен, а session files менялись извне.",
+      "impact": "Порядок /sessions станет stale, /all может не следить за активной session, preview может быть старым.",
+      "recommendation": "Хранить updated_at/last_refreshed_at и запускать stale-triggered bounded refresh. Для известных строк перед чтением snapshot сверять last_modified_at и cursor."
+    },
+    {
+      "id": "EDGE-5",
+      "scenario": "В /all много проектов, и каждый хранит до 30 recent sessions.",
+      "impact": "Даже без full scan poll может проверять сотни файлов каждые 2 секунды.",
+      "recommendation": "Добавить global cap для /all candidates и сортировать candidates globally by last_modified_at desc before cap. Cap должен быть отдельной настройкой от per-project storage cap."
+    },
+    {
+      "id": "EDGE-6",
+      "scenario": "SQLite database locked или медленный диск во время Telegram handler-а.",
+      "impact": "Если sqlite3 вызвать прямо из async-кода, event loop может зависнуть, и бот перестанет отвечать на другие команды.",
+      "recommendation": "Все sqlite операции выполнять через asyncio.to_thread или dedicated worker, ограничить write transactions, задать busy_timeout и логировать fallback/degraded behavior."
+    },
+    {
+      "id": "EDGE-7",
+      "scenario": "DB-файл corrupt или schema version не совпадает.",
+      "impact": "Горячие команды могут падать вместо ответа пользователю.",
+      "recommendation": "Спецификация должна описать migration/schema init, recoverable error path и понятный fallback: bounded refresh или empty/degraded response без full scan."
+    },
+    {
+      "id": "EDGE-8",
+      "scenario": "Session file удалён, перемещён или project path больше не существует.",
+      "impact": "recent_sessions может вернуть битую ссылку, а /all будет пытаться polling несуществующий файл.",
+      "recommendation": "Refresh/poll должен помечать missing file как stale и удалять только header row, не трогая независимый cursor state без отдельной retention policy."
+    },
+    {
+      "id": "EDGE-9",
+      "scenario": "last_modified_at у нескольких sessions одинаковый или filesystem mtime имеет низкое разрешение.",
+      "impact": "Порядок /sessions и pruning могут быть нестабильными между вызовами.",
+      "recommendation": "Использовать стабильный tie-breaker: last_modified_at desc, updated_at desc, backend, session_id или file_path. Для changed detection дополнительно учитывать raw_record_count при доступности."
+    },
+    {
+      "id": "EDGE-10",
+      "scenario": "/all уже включён, а background refresh меняет recent_sessions.",
+      "impact": "Link registry и enabled chat state могут рассинхронизироваться с таблицей.",
+      "recommendation": "poll_once() должен работать со snapshot candidates enabled state. Изменения recent_sessions применяются при следующем controlled refresh/rebuild candidates, а не посреди доставки одного poll."
+    },
+    {
+      "id": "EDGE-11",
+      "scenario": "Сообщение уже показано в /all, затем пользователь входит в исходный проект.",
+      "impact": "Если recent_sessions обновит общий cursor неправильно, pending-доставка может потерять сообщение.",
+      "recommendation": "Сохранить текущий контракт: /all двигает только собственный cursor и пишет unread_buffer snapshot. Обычный watcher/project_pending_delivery cursor не должен продвигаться из recent_sessions."
+    },
+    {
+      "id": "EDGE-12",
+      "scenario": "Повторный /sessions сразу после первого вызова на Codex-проекте.",
+      "impact": "Если реализация опять читает session_meta у всех rollout-файлов, пользователь увидит старую задержку, но функциональные тесты строк могут пройти.",
+      "recommendation": "Добавить fake backend/index counters, которые падают при повторном historical scan. Второй вызов должен читать recent_sessions и, максимум, дешёвые mtime/cursor данные для известных rows."
+    }
+  ],
+  "critical_gaps": [],
+  "resolved_assumptions": [
+    {
+      "id": "ASSUME-1",
+      "assumption": "Лимит 30 recent sessions считается на проект across all backends, а не per backend.",
+      "rationale": "Так буквально сформулирована задача, и это лучше совпадает с пользовательским ожиданием «последние сессии проекта». Backend-aware ключ сохраняет техническую корректность без увеличения пользовательского списка.",
+      "override_instruction": "Если Иван хочет отдельный лимит на каждый backend, в спецификации нужно явно заменить storage cap на 30 per project + backend и добавить global merged cap для /sessions."
+    },
+    {
+      "id": "ASSUME-2",
+      "assumption": "Старые cursor/state после pruning не хранятся в recent_sessions как единственная копия; для них нужен отдельный durable state или существующий state-store с независимой retention policy.",
+      "rationale": "Pruning header rows и retention read/delivery state имеют разные жизненные циклы. Их смешивание создаёт риск replay/loss при повторной активности старой session.",
+      "override_instruction": "Если v1 принципиально должна иметь только одну таблицу, спецификация должна заменить hard delete на soft-pruned rows или tombstone rows для cursor/state и отдельно ограничить их TTL."
+    },
+    {
+      "id": "ASSUME-3",
+      "assumption": "/all получает global cap, рекомендуемый default 80 monitored candidates.",
+      "rationale": "Per-project cap не ограничивает стоимость global polling. Значение 80 достаточно выше обычного числа активных диалогов, но не даёт poll_once() расти линейно от всей истории проектов.",
+      "override_instruction": "Если Иван хочет другой default, в спецификации достаточно поменять значение ALL_MODE_SESSION_CANDIDATE_LIMIT и тесты на cap."
+    },
+    {
+      "id": "ASSUME-4",
+      "assumption": "Пустая или stale таблица не является поводом для синхронного полного historical scan-а в /sessions или /all.",
+      "rationale": "Именно полный scan истории является корневой причиной задержек. Лучше вернуть bounded/degraded ответ и обновить индекс ограниченно, чем снова блокировать горячий путь.",
+      "override_instruction": "Если нужен разовый migration-backfill всей истории, его следует описать как отдельную offline/maintenance команду, не вызываемую из Telegram hot path."
+    },
+    {
+      "id": "ASSUME-5",
+      "assumption": "SQLite допустим как реализация таблицы, если доступ к нему обёрнут так, чтобы не блокировать event loop.",
+      "rationale": "Пользователь прямо просит учесть блокирующий SQLite. В проекте нет async DB зависимости, поэтому самый простой v1 путь: stdlib sqlite3 в синхронном storage-слое, вызванном через asyncio.to_thread.",
+      "override_instruction": "Если Иван предпочитает JSON или другой persistence backend, spec author должен сохранить те же контракты: атомарность, индексы/быстрые queries, non-blocking async wrapper и тесты на отсутствие full scan."
+    },
+    {
+      "id": "ASSUME-6",
+      "assumption": "recent_sessions не становится источником истины для полного текста сообщений.",
+      "rationale": "Существующая архитектура читает полный JSONL только когда нужно доставить сообщения. Таблица нужна для быстрых candidates, preview и cursor metadata, а не для дублирования истории.",
+      "override_instruction": "Если в будущей версии нужно хранить message bodies, это должна быть отдельная спецификация с миграцией, retention и consistency rules."
+    },
+    {
+      "id": "ASSUME-7",
+      "assumption": "В v1 refresh является safety-refresh, а не полноценным event-driven файловым индексатором.",
+      "rationale": "Handoff явно говорит, что новые файловые события откладываются. Значит спецификация должна описать bounded refresh triggers и future extension point, но не требовать inotify/watchdog слой прямо сейчас.",
+      "override_instruction": "Если Иван хочет сразу event-driven архитектуру, текущую v1 нужно расширить отдельным discovery/observer компонентом и пересмотреть тест-план."
+    }
+  ],
+  "recommendations_for_spec_author": [
+    "Начать спецификацию с простой формулировки роли recent_sessions: быстрый persistent список candidates, а не новый источник истины для истории сообщений.",
+    "Явно разделить три слоя: storage module для schema/upsert/query/prune, refresh module для bounded обновлений, integration points в /sessions и /all.",
+    "Зафиксировать schema и индексы: unique(project_path, backend, session_id), index(project_path, last_modified_at desc), index(last_modified_at desc), возможно отдельная schema_version/meta table.",
+    "Отдельно описать cursor retention: pruned recent rows не должны уничтожать единственную копию read/delivery state. Предпочтительно добавить companion table session_cursor_state или явно сослаться на существующий независимый механизм.",
+    "В разделе /sessions указать: основной путь query recent_sessions, UI cap 15, daily_session_registry остаётся владельцем номеров, response остаётся plain text.",
+    "В разделе /all указать: global candidate cap, enable baseline по table snapshot, poll_once без discovery, refresh только отдельно от 2-секундного poll loop.",
+    "Для empty/stale cases описать degraded behavior человечески: пользователь получает быстрый ответ, а система запускает bounded refresh или сообщает, что свежих сессий пока нет.",
+    "Для SQLite включить non-blocking contract: все операции через asyncio.to_thread/dedicated worker, write lock, short transactions, busy_timeout, recoverable handling of locked/corrupt DB.",
+    "Не просить разработчика добавлять новую бизнес-логику в all_projects_monitor.py, codex_session_file_listing.py, session_reader.py или daily_session_registry.py. Там допустима только тонкая интеграция.",
+    "Тест-план должен иметь отдельные forbidden-scan assertions: counters/spies на Codex full listing, backend.list_session_files_for_project, list_all_session_file_infos_by_project и snapshot reads.",
+    "Добавить тест pruning across backends: при 31+ sessions одного project_path таблица оставляет 30 самых свежих суммарно, но backend-aware uniqueness сохраняется.",
+    "Добавить тест cursor survives pruning: после удаления header row cursor-state остаётся доступным или soft-pruned row сохраняет cursor, в зависимости от выбранной реализации.",
+    "Добавить тест empty table path: /sessions и /all запускают только bounded refresh, не full scan, и возвращают быстрый понятный результат.",
+    "Добавить тест stale table path: stale updated_at приводит к background/bounded refresh, но не блокирует poll_once полным historical scan-ом.",
+    "Добавить performance-oriented regression test для /all poll_once: два последовательных poll-а при неизменном mtime не вызывают discovery и не читают full snapshot."
+  ],
+  "analysis_summary": "Уточнены 12 требований, найдено 12 edge cases, критических вопросов к Ивану не задано: спорные места можно безопасно закрыть допущениями. Главные решения для spec author: лимит 30 считать на проект across backends, /all обязан иметь отдельный global cap, cursor/state нельзя хранить только в prunable recent_sessions, пустая или stale таблица лечится bounded refresh без полного historical scan-а, а SQLite должен работать вне event loop."
+}

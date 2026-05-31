@@ -64,6 +64,8 @@
 - [specs/31.05_04.56-reply-routing-v1-spec.md](specs/31.05_04.56-reply-routing-v1-spec.md) — пользовательское и архитектурное поведение адресных text reply на сообщения бота
 - [specs/31.05_05.02-reply-routing-v1-implementation-plan.md](specs/31.05_05.02-reply-routing-v1-implementation-plan.md) — план реализации reply-routing v1 по слоям: registry, delivery, input и тесты
 - [specs/31.05_05.28-reply-anchor-busy-hardening-spec.md](specs/31.05_05.28-reply-anchor-busy-hardening-spec.md) — доработка busy-сценариев reply-anchor: busy-ответы не должны стирать anchor активного хода и могут отдельно стать Telegram reply к rejected-сообщению
+- [specs/31.05_19.43-recent-sessions-v1-spec.md](specs/31.05_19.43-recent-sessions-v1-spec.md) — спецификация `recent_sessions` v1: таблица последних 30 сессий на проект, быстрые `/sessions` и `/all`, запрет повторного full scan в hot path
+- [specs/31.05_20.27-recent-sessions-v1-implementation-plan.md](specs/31.05_20.27-recent-sessions-v1-implementation-plan.md) — план реализации `recent_sessions` v1: storage, bounded refresh, интеграция `/sessions` и `/all`, forbidden-scan тесты и size-gate
 
 ### Реализованные
 
@@ -99,7 +101,7 @@
 - **session-reports/14-05/** — реализация и стабилизация глобального режима `/all`: мониторинг всех проектов, кликабельные команды `/3s12`, сохранение pending-доставки и восстановление all-mode после неудачного переключения проекта
 - **session-reports/15-05/** — handoff по ветке `codex-support-spec-implementation-cycle`: состояние уже влитой Codex-support работы, незакоммиченные summary `/sessions` и оптимизация `/all`, план стабилизации и отдельного фикса `/restart`
 - **session-reports/30-05/** — handoff по RCA медленного переключения проектов: причина 7-17 секунд, решение через 4-дневный Codex session index, ограничения по pending и план продолжения; handoff по дизайну reply-якорей для Telegram-ответов, watcher-сообщений, `/all`, `/stop`, переключения проектов и сессий
-- **session-reports/31-05/** — handoff по текущему состоянию подготовки reply-якорей: перенос доставки Telegram-ответов из `bot.py` в `telegram_response_delivery.py`, целевая проверка `172 passed`, size gate для больших файлов и следующие шаги реализации
+- **session-reports/31-05/** — handoff по текущему состоянию подготовки reply-якорей: перенос доставки Telegram-ответов из `bot.py` в `telegram_response_delivery.py`, целевая проверка `172 passed`, size gate для больших файлов и следующие шаги реализации; handoff по ускорению `/all` и `/sessions` через metadata-first/event-driven session index вместо повторного scan-а всей истории; уточнение v1 через простую таблицу `recent_sessions` с последними 30 сессиями на проект; завершённая спецификация `recent_sessions` v1 с финальной проверкой spec-creator
 
 ## Логи
 

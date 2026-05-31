@@ -125,8 +125,8 @@ async def _switch_to_project(
     result = await project_manager.switch_project(target_project.absolute_path)
     all_mode_restored = False
     if not result.success and was_all_projects_mode:
-        await all_projects_monitor.enable_for_chat(chat_id)
-        all_mode_restored = True
+        enable_result = await all_projects_monitor.enable_for_chat(chat_id)
+        all_mode_restored = enable_result.enabled
     result = await project_pending_delivery.include_pending_for_all_mode_same_project(
         result, target_project, was_all_projects_mode,
     )

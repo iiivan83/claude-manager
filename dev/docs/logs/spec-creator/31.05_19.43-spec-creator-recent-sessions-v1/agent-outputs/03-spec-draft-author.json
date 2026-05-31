@@ -1,0 +1,52 @@
+{
+  "spec_path": "dev/docs/logs/spec-creator/31.05_19.43-spec-creator-recent-sessions-v1/spec-draft.md",
+  "task_type": "code_change",
+  "sections_written": [
+    "контекст",
+    "glossary / terms",
+    "цели",
+    "границы",
+    "требования",
+    "технический дизайн",
+    "schema",
+    "storage contract",
+    "safety-refresh contract",
+    "/sessions contract",
+    "/all contract",
+    "empty stale degraded behavior",
+    "non-blocking sqlite contract",
+    "file-size constraints",
+    "зависимости",
+    "ограничения и риски",
+    "критерии приёмки",
+    "тест-план"
+  ],
+  "requirements_count": {
+    "must_have": 20,
+    "nice_to_have": 3
+  },
+  "risks_addressed": [
+    "Повторный full historical scan Codex history в пользовательских hot paths.",
+    "Смешивание prunable recent header rows и cursor/read state.",
+    "Рост стоимости /all от количества проектов без отдельного global cap.",
+    "Возврат старой задержки через preview reread полного JSONL для неизменившихся сессий.",
+    "Блокировка asyncio event loop синхронными sqlite3 операциями.",
+    "Silent empty list или падение бота при empty, stale, locked, corrupt и missing-file состояниях.",
+    "Поломка daily_session_registry, /3s12 link registry и unread/pending semantics.",
+    "Раздувание крупных модулей all_projects_monitor.py, codex_session_file_listing.py, session_reader.py, daily_session_registry.py, coding_agent_backend.py и telegram_session_handlers.py.",
+    "Недостаточные функциональные тесты без assertions на запрещённые scan-вызовы."
+  ],
+  "context_rules_applied": [
+    "Горячие пользовательские пути не должны повторно обходить глобальную историю внешних CLI.",
+    "recent_sessions является быстрым источником candidates, а не источником истины для полного текста сообщений.",
+    "Storage cap 30 применяется на project_path across all backends, UI cap /sessions остаётся 15.",
+    "/all получает отдельный default global cap 80.",
+    "all_projects_monitor сохраняет отдельные cursors и unread_buffer semantics.",
+    "daily_session_registry остаётся владельцем дневной нумерации и summary preference.",
+    "SQLite access должен быть non-blocking для async Telegram-бота.",
+    "Новая логика должна жить в новых небольших модулях, а большие существующие файлы получают только тонкую интеграцию.",
+    "Markdown-таблицы и ASCII-таблицы не использовались."
+  ],
+  "confidence": "high",
+  "confidence_note": "Спецификация опирается на оба входных артефакта, закрывает все refined requirements, edge cases и recommendations_for_spec_author. Критических gaps у Stage 2 нет; спорные места зафиксированы как явные контракты: cap 30 across backends, cursor retention вне prunable rows, /all cap 80, bounded safety-refresh и запрет full historical scan в hot path."
+}

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date
@@ -20,6 +21,7 @@ from claude_manager import (
     coding_agent_backend,
     config,
     project_manager,
+    recent_sessions_refresh,
     session_watcher,
     unread_buffer,
 )
@@ -58,6 +60,14 @@ class AllProjectSessionLink:
 
 
 @dataclass(frozen=True)
+class AllProjectsEnableResult:
+    """Outcome of entering global all-project mode."""
+
+    enabled: bool
+    message: str
+
+
+@dataclass(frozen=True)
 class _ProjectSession:
     """One visible session with all numbering needed for display and routing."""
 
@@ -83,6 +93,7 @@ class _AllMonitorState:
 _enabled_chat_ids: set[int] = set()
 _states: dict[tuple[str, str, BackendName], _AllMonitorState] = {}
 _links: dict[tuple[int, int], AllProjectSessionLink] = {}
+_candidate_sessions: list[_ProjectSession] = []
 _lock = asyncio.Lock()
 
 
@@ -91,6 +102,7 @@ def reset_state() -> None:
     _enabled_chat_ids.clear()
     _states.clear()
     _links.clear()
+    _candidate_sessions.clear()
 
 
 def is_enabled_for_chat(chat_id: int) -> bool:
@@ -221,82 +233,42 @@ def _assign_session_numbers(
     return result
 
 
-async def _collect_backend_sessions_individually(
-    backend: CodingAgentBackend,
-    projects: list[project_manager.ProjectInfo],
-) -> dict[str, list[SessionFileInfo]]:
-    """Collect backend session files one project at a time as a fallback."""
-    files_by_project: dict[str, list[SessionFileInfo]] = {}
-    for project in projects:
-        try:
-            files_by_project[project.absolute_path] = (
-                await backend.list_all_session_files_for_project(
-                    project.absolute_path
-                )
-            )
-        except Exception:
-            logger.warning(
-                "Failed to read sessions for project %s (%s)",
-                project.absolute_path,
-                backend.name.value,
-                exc_info=True,
-            )
-            files_by_project[project.absolute_path] = []
-    return files_by_project
-
-
-async def _collect_backend_sessions_by_project(
-    backend: CodingAgentBackend,
-    projects: list[project_manager.ProjectInfo],
-) -> dict[str, list[SessionFileInfo]]:
-    """Collect backend session files for all projects in one backend call."""
-    project_paths = [project.absolute_path for project in projects]
-    bulk_lister = getattr(backend, "list_all_session_files_for_projects", None)
-    if bulk_lister is None:
-        return await _collect_backend_sessions_individually(backend, projects)
-
-    try:
-        files_by_project = await bulk_lister(project_paths)
-    except Exception:
-        logger.warning(
-            "Failed to bulk-read sessions for backend %s",
-            backend.name.value,
-            exc_info=True,
-        )
-        return await _collect_backend_sessions_individually(backend, projects)
-
-    return {
-        project_path: files_by_project.get(project_path, [])
-        for project_path in project_paths
-    }
-
-
-async def _collect_project_sessions() -> list[_ProjectSession]:
-    """Collect numbered session files across every visible project."""
+async def _collect_project_sessions() -> tuple[
+    list[_ProjectSession],
+    dict[tuple[int, int], AllProjectSessionLink],
+    list[str],
+]:
+    """Collect numbered recent-session candidates across visible projects."""
     projects = await project_manager.scan_available_projects()
+    project_by_path = {project.absolute_path: project for project in projects}
+    result = await recent_sessions_refresh.get_global_recent_sessions(
+        [project.absolute_path for project in projects],
+        limit=recent_sessions_refresh.ALL_MODE_SESSION_CANDIDATE_LIMIT,
+    )
+
+    sessions_by_project: dict[
+        str, list[tuple[SessionFileInfo, CodingAgentBackend]]
+    ] = {project.absolute_path: [] for project in projects}
+    for row in result.rows:
+        project = project_by_path.get(row.project_path)
+        if project is None:
+            continue
+        backend = coding_agent_backend.get_backend(row.backend)
+        file_info = SessionFileInfo(
+            session_id=row.session_id,
+            file_path=row.file_path,
+            last_modified_at=row.last_modified_at,
+            preview=row.preview,
+        )
+        sessions_by_project[project.absolute_path].append((file_info, backend))
+
     project_sessions: list[_ProjectSession] = []
     links: dict[tuple[int, int], AllProjectSessionLink] = {}
-    backend_files_by_project = [
-        (
-            backend,
-            await _collect_backend_sessions_by_project(backend, projects),
-        )
-        for backend in coding_agent_backend.get_all_backends()
-    ]
-
     for project_number, project in enumerate(projects, start=1):
-        sessions_with_backend: list[tuple[SessionFileInfo, CodingAgentBackend]] = []
-
-        for backend, files_by_project in backend_files_by_project:
-            files = files_by_project.get(project.absolute_path, [])
-            sessions_with_backend.extend(
-                (file_info, backend) for file_info in files
-            )
-
         registry_numbers = await _load_project_today_numbers(project.absolute_path)
         numbered_sessions = _assign_session_numbers(
             project.absolute_path,
-            sessions_with_backend,
+            sessions_by_project[project.absolute_path],
             registry_numbers,
         )
 
@@ -319,9 +291,7 @@ async def _collect_project_sessions() -> list[_ProjectSession]:
                 backend=backend.name,
             )
 
-    _links.clear()
-    _links.update(links)
-    return project_sessions
+    return project_sessions, links, result.degraded_messages
 
 
 def _watcher_state_for_project_session(
@@ -424,21 +394,75 @@ async def _build_baseline_states(
     }
 
 
-async def enable_for_chat(chat_id: int) -> None:
-    """Enable all-project monitoring and baseline all visible sessions."""
+async def enable_for_chat(chat_id: int) -> AllProjectsEnableResult:
+    """Enable all-project monitoring and baseline recent candidates."""
     session_watcher.pause_all()
     try:
-        project_sessions = await _collect_project_sessions()
+        project_sessions, links, degraded_messages = await _collect_project_sessions()
+        if not project_sessions:
+            if not _enabled_chat_ids:
+                session_watcher.resume_all()
+            message = (
+                "Режим all недоступен: пока нет проиндексированных "
+                "недавних сессий"
+            )
+            if degraded_messages:
+                message = message + "\n" + "\n".join(degraded_messages)
+            return AllProjectsEnableResult(enabled=False, message=message)
+
         baseline_states = await _build_baseline_states(project_sessions)
+        baseline_keys = set(baseline_states)
+        project_sessions = [
+            session
+            for session in project_sessions
+            if _state_key(
+                session.project_path,
+                session.file_info.session_id,
+                session.backend.name,
+            )
+            in baseline_keys
+        ]
+        links = {
+            (session.project_number, session.session_number): links[
+                (session.project_number, session.session_number)
+            ]
+            for session in project_sessions
+        }
+        if not project_sessions:
+            if not _enabled_chat_ids:
+                session_watcher.resume_all()
+            return AllProjectsEnableResult(
+                enabled=False,
+                message="Режим all временно недоступен: не удалось прочитать сессии",
+            )
         async with _lock:
             _states.clear()
             _states.update(baseline_states)
+            _candidate_sessions.clear()
+            _candidate_sessions.extend(project_sessions)
+            _links.clear()
+            _links.update(links)
             _enabled_chat_ids.add(chat_id)
     except Exception:
-        session_watcher.resume_all()
-        raise
+        if not _enabled_chat_ids:
+            session_watcher.resume_all()
+        logger.warning("Failed to enable all-project mode", exc_info=True)
+        return AllProjectsEnableResult(
+            enabled=False,
+            message=(
+                "Режим all временно недоступен: не удалось прочитать "
+                "индекс недавних сессий"
+            ),
+        )
 
     logger.info("Chat %d enabled global all-project mode", chat_id)
+    return AllProjectsEnableResult(
+        enabled=True,
+        message=(
+            "Режим all включён: показываю сообщения из всех проектов.\n"
+            "Писать агенту отсюда нельзя — сначала выберите проект и сессию."
+        ),
+    )
 
 
 def _candidate_indices(
@@ -543,6 +567,39 @@ async def _deliver_project_session_delta(
             )
 
 
+async def _with_current_file_mtime(
+    project_session: _ProjectSession,
+) -> _ProjectSession | None:
+    """Return candidate with current mtime, or None when the file disappeared."""
+    try:
+        current_mtime = await asyncio.to_thread(
+            os.path.getmtime,
+            project_session.file_info.file_path,
+        )
+    except OSError:
+        logger.warning(
+            "All-project candidate file disappeared: %s",
+            project_session.file_info.file_path,
+            exc_info=True,
+        )
+        return None
+
+    file_info = project_session.file_info
+    return _ProjectSession(
+        project_number=project_session.project_number,
+        project_name=project_session.project_name,
+        project_path=project_session.project_path,
+        session_number=project_session.session_number,
+        file_info=SessionFileInfo(
+            session_id=file_info.session_id,
+            file_path=file_info.file_path,
+            last_modified_at=current_mtime,
+            preview=file_info.preview,
+        ),
+        backend=project_session.backend,
+    )
+
+
 async def _check_project_session(
     chat_ids: list[int],
     project_session: _ProjectSession,
@@ -552,7 +609,14 @@ async def _check_project_session(
     file_info = project_session.file_info
     backend = project_session.backend
     key = _state_key(project_session.project_path, file_info.session_id, backend.name)
-    previous = _states.get(key, _AllMonitorState())
+    previous = _states.get(key)
+    if previous is None:
+        logger.warning(
+            "Skipping all-project candidate without baseline: %s (%s)",
+            file_info.session_id,
+            backend.name.value,
+        )
+        return
     if previous.last_modified_at >= file_info.last_modified_at:
         return
 
@@ -582,26 +646,24 @@ async def _check_project_session(
 
 
 async def poll_once(callback: AllProjectsMessageCallback) -> None:
-    """Run one all-project scan and deliver new messages to enabled chats."""
+    """Poll known all-project candidate files and deliver new messages."""
     async with _lock:
         chat_ids = sorted(_enabled_chat_ids)
+        project_sessions = list(_candidate_sessions)
     if not chat_ids:
         return
 
-    project_sessions = await _collect_project_sessions()
-    active_keys = {
-        _state_key(
-            session.project_path,
-            session.file_info.session_id,
-            session.backend.name,
-        )
-        for session in project_sessions
-    }
-
-    for stale_key in [key for key in _states if key not in active_keys]:
-        del _states[stale_key]
-
+    refreshed_sessions = []
     for project_session in project_sessions:
+        refreshed = await _with_current_file_mtime(project_session)
+        if refreshed is not None:
+            refreshed_sessions.append(refreshed)
+    if len(refreshed_sessions) != len(project_sessions):
+        async with _lock:
+            if _candidate_sessions == project_sessions:
+                _candidate_sessions[:] = refreshed_sessions
+
+    for project_session in refreshed_sessions:
         try:
             await _check_project_session(chat_ids, project_session, callback)
         except Exception:

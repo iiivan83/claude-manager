@@ -1,0 +1,362 @@
+{
+  "task_description": "Спецификация v1 для таблицы recent_sessions: последние 30 сессий на проект, быстрые /sessions и /all без повторного полного scan-а истории.",
+  "task_type": "code_change",
+  "project_rules": {
+    "critical_rules": [
+      "Горячие пользовательские пути Telegram-бота не должны повторно обходить глобальную историю внешних CLI. В CLAUDE.md это уже зафиксировано для /pN, session_watcher.reset_state, watcher poll_once и pending-сбора; для этой спецификации правило нужно явно применить к /sessions и /all.",
+      "Проект Claude-first: CLAUDE.md и .claude/skills/** остаются источником истины, а .agents/skills/** являются generated mirror runtime copies. Для этой Stage 1 задачи нельзя менять .claude/**, .agents/** вне заданного output_path и нельзя конвертировать Claude-конфигурацию в Codex-конфигурацию.",
+      "Результат Stage 1 должен быть записан только в dev/docs/logs/spec-creator/31.05_19.43-spec-creator-recent-sessions-v1/agent-outputs/01-project-context-researcher.json как валидный JSON. Продуктовый код и документацию вне output_path менять нельзя.",
+      "Markdown-таблицы и ASCII-таблицы запрещены во всех пользовательских и проектных текстах.",
+      "Бот однопользовательский: config.WORKING_DIR является глобальным текущим проектом процесса, а ALLOWED_USER_IDS допускает несколько устройств одного человека, но не нескольких независимых пользователей.",
+      "При работе с внешними контрактами нельзя полагаться на догадки. Формат путей Claude Code, расположение Codex rollout-файлов и cursor-семантика должны опираться на уже проверенные контракты или покрываться тестами."
+    ],
+    "code_standards": [
+      "Python 3.13, async/await, type hints для публичных функций и однострочные docstring для публичных функций.",
+      "Блокирующие операции с файловой системой должны уходить в asyncio.to_thread; time.sleep в async-коде запрещён.",
+      "Ошибки внешних систем и файловой системы логируются через logging и не должны валить независимые проекты, backend-ы или session files, если можно продолжить безопасно.",
+      "Состояние и persistence пишутся атомарно или транзакционно; существующие JSON-state модули защищают loaded-from-disk флагами от затирания валидных данных.",
+      "Нужно активно учитывать размер файлов: больше 300 строк требует warning, больше 500 строк является техдолгом, больше 700 строк stop-порогом, больше 10 top-level публичных функций требует проверки на god-module."
+    ],
+    "architectural_constraints": [
+      "Слоёная архитектура: Telegram handler-модули являются транспортным слоем; session_manager, daily_session_registry и project_manager держат бизнес-состояние; process_manager, process_state и backend adapters являются инфраструктурой; session_reader, file readers, watcher и all_projects_monitor являются утилитами и мониторингом. Нижние слои не должны импортировать верхние.",
+      "all_projects_monitor имеет собственные delivery cursors и не продвигает обычный watcher state. Сообщения, показанные в /all, должны оставаться pending для исходного проекта.",
+      "Codex хранит сессии в общей папке ~/.codex/sessions/YYYY/MM/DD/, а проект определяется только через session_meta.payload.cwd внутри JSONL. Любой повторный global scan этой папки в пользовательском hot path является архитектурным риском.",
+      "Claude хранит session files в project-specific папке ~/.claude/projects/<encoded_path>/, поэтому его listing дешевле, но всё равно должен быть bounded для UI-сценариев.",
+      "daily_session_registry отвечает за кликабельные дневные номера /1, /2 и /3s12; таблица recent_sessions не должна молча заменить этот контракт, а должна давать быстрый источник session candidates и preview.",
+      "project_pending_delivery уже задаёт правильный mtime/cursor-first паттерн: сначала сравнить last_modified_at, затем прочитать лёгкий cursor, и только при реальном росте читать полный snapshot."
+    ],
+    "naming_conventions": [
+      "Имена новых сущностей должны прямо показывать ответственность: storage-модуль для recent sessions, refresh-модуль для обновления recent sessions, query-функции для /sessions и /all должны быть названы по сценариям, а не generic helper/manager.",
+      "Python имена в snake_case, классы в PascalCase, константы в UPPER_SNAKE.",
+      "Для backend-aware данных сохранять явный backend рядом с session_id; session_id без backend не является достаточным ключом после Codex-support."
+    ]
+  },
+  "relevant_code": {
+    "files": [
+      {
+        "path": "src/claude_manager/all_projects_monitor.py",
+        "purpose": "Глобальный режим /all: собирает session files по всем проектам и backend-ам, держит собственные cursors и link registry для команд вида /3s12.",
+        "key_elements": [
+          "Текущий размер и риск: 633 строки, 8 top-level публичных функций. Файл уже выше 500 строк, это техдолг; до stop-порога 700 остаётся 67 строк. Новую бизнес-логику recent_sessions сюда добавлять нельзя, допустима только тонкая интеграция.",
+          "_collect_project_sessions() вызывает project_manager.scan_available_projects(), затем для каждого backend вызывает _collect_backend_sessions_by_project(). Именно этот путь сейчас формирует candidates для /all.",
+          "_collect_backend_sessions_by_project() предпочитает bulk method backend.list_all_session_files_for_projects(project_paths), но для Codex эта bulk-ветка сейчас уходит в полный global listing всех rollout-файлов.",
+          "enable_for_chat() ставит обычный watcher на глобальную паузу, собирает все видимые sessions и строит baseline через read_session_file_cursor(). Если candidates слишком много, вход в /all блокируется.",
+          "poll_once() каждые 2 секунды заново вызывает _collect_project_sessions(), чистит stale keys и проверяет каждую session. Перед полным snapshot есть mtime guard: previous.last_modified_at >= file_info.last_modified_at пропускает чтение файла.",
+          "_ensure_unread_snapshot() сохраняет unread snapshot так, чтобы сообщения, показанные в /all, остались pending при входе в исходный проект."
+        ]
+      },
+      {
+        "path": "src/claude_manager/telegram_session_handlers.py",
+        "purpose": "Транспортный слой Telegram-команд /new, /sessions, /all, /stop и /N.",
+        "key_elements": [
+          "Текущий размер и риск: 280 строк, 6 top-level публичных функций. Файл ниже 300, но до warning-порога остаётся 20 строк; новую логику recent_sessions лучше не размещать здесь.",
+          "handle_sessions() последовательно вызывает backend.list_session_files_for_project(config.WORKING_DIR) для всех backend-ов, объединяет результаты, сортирует по last_modified_at и режет до SESSION_LIST_LIMIT = 15.",
+          "handle_sessions() регистрирует каждую показанную session через daily_session_registry.register_session(), затем предпочитает daily_session_registry.get_session_summary() над preview из SessionFileInfo.",
+          "handle_sessions() отправляет plain text parse_mode=None, чтобы команды /1, /2, /3 были кликабельны в Telegram.",
+          "handle_all() отвязывает текущую session, вызывает all_projects_monitor.enable_for_chat(chat_id) и только потом отправляет подтверждение. Если enable_for_chat долго baseline-ит sessions, пользователь ждёт."
+        ]
+      },
+      {
+        "path": "src/claude_manager/session_reader.py",
+        "purpose": "Legacy/Claude-only чтение JSONL-файлов сессий Claude Code и построение SessionInfo для старых потребителей.",
+        "key_elements": [
+          "Текущий размер и риск: 328 строк, 3 top-level публичные функции. Файл выше 300 строк, это warning; новую cross-backend recent_sessions логику сюда добавлять нельзя.",
+          "build_sessions_path() кодирует путь проекта по контракту Claude Code sanitizePath и умеет fallback для длинных путей по prefix.",
+          "get_recent_sessions() строит путь проекта, сортирует JSONL-файлы по mtime, ограничивает MAX_RECENT_SESSIONS = 15 и читает первые строки файлов для preview.",
+          "get_session_messages() читает полный JSONL конкретной Claude-сессии. Для recent_sessions это не hot path и не должно использоваться для простого списка."
+        ]
+      },
+      {
+        "path": "src/claude_manager/coding_agent_backend.py",
+        "purpose": "Общий backend-aware контракт для Claude Code и Codex CLI, включая SessionFileInfo, SessionFileSnapshot и cursor-состояние.",
+        "key_elements": [
+          "Текущий размер и риск: 319 строк, 2 top-level публичные функции, но много abstract methods в интерфейсе. Файл выше 300 строк, это warning; добавление нового широкого API сюда должно быть минимальным и обоснованным.",
+          "SessionFileInfo уже содержит session_id, file_path, last_modified_at и preview. Это естественный DTO для наполнения recent_sessions.",
+          "SessionUnreadState хранит raw_record_count, last_delivered_idx и last_modified_at. Эти поля нужны для mtime/cursor-first подхода и могут лечь в recent_sessions как read cursor metadata, если спецификация решит хранить позицию чтения в таблице.",
+          "CodingAgentBackend разделяет UI API list_session_files_for_project() и operational API list_all_session_files_for_project(..., lookback_days). Сейчас /sessions использует UI API, а /all использует bulk operational API через list_all_session_files_for_projects().",
+          "Default list_all_session_files_for_projects() просто вызывает per-project API в цикле; Codex переопределяет его bulk-реализацией."
+        ]
+      },
+      {
+        "path": "src/claude_manager/codex_session_index.py",
+        "purpose": "In-memory operational index для Codex rollout-файлов за bounded lookback-окно.",
+        "key_elements": [
+          "Текущий размер и риск: 295 строк, 2 top-level публичные функции. До warning-порога 300 остаётся 5 строк; расширять этот файл под recent_sessions нельзя без выноса новой логики.",
+          "list_project_session_file_infos() строит/переиспользует индекс project_dir -> list[SessionFileInfo] за lookback_days и обновляет mtime только для файлов выбранного проекта.",
+          "Индекс инвалидируется по TTL 30 секунд и directory signature, затем возвращает SessionFileInfo с пустым preview.",
+          "refresh_known_session() умеет обновить один известный Codex session_id по UUIDv7 candidate path и upsert-нуть его в существующие in-memory states.",
+          "Этот индекс решает часть operational paths, но не решает /sessions preview и не решает bulk all-project listing."
+        ]
+      },
+      {
+        "path": "src/claude_manager/codex_session_file_listing.py",
+        "purpose": "Поиск Codex rollout-файлов, фильтрация по project_dir через session_meta.payload.cwd и сбор SessionFileInfo для UI и operational путей.",
+        "key_elements": [
+          "Текущий размер и риск: 499 строк, 5 top-level публичных функций. До порога 500 остаётся 1 строка; любой серьёзный код recent_sessions в этом файле сразу создаст техдолг выше 500 строк.",
+          "list_session_file_infos_for_project() является user-facing /sessions веткой: берёт LOOKBACK_DAYS_FOR_SESSION_LISTING = 2, читает session_meta у файлов в окне, сортирует по mtime, ограничивает MAX_RECENT_SESSIONS = 15 и только затем строит preview.",
+          "list_all_session_file_infos_for_project(..., lookback_days=N) делегирует в codex_session_index, но lookback_days=None оставляет legacy full scan.",
+          "list_all_session_file_infos_by_project() для bulk all-project сейчас вызывает _list_all_rollout_files_blocking(sessions_root), затем читает session_meta у всех rollout-файлов для known project_dirs. Это главный риск для /all.",
+          "session_file_exists_for_project() сначала пробует UUIDv7 date candidate path, но при промахе fallback-ит в полный scan всех rollout-файлов."
+        ]
+      },
+      {
+        "path": "src/claude_manager/project_pending_delivery.py",
+        "purpose": "Сбор и доставка pending-сообщений при переключении проекта и выходе из /all в активный проект.",
+        "key_elements": [
+          "Текущий размер и риск: 272 строки, 4 top-level публичные функции. До warning-порога 300 остаётся 28 строк; это хороший пример паттерна, но не место для storage-логики recent_sessions.",
+          "_collect_pending_for_session_file() сначала проверяет unread snapshot, затем last_modified_at, потом read_session_file_cursor(), и только при росте raw_record_count читает полный snapshot.",
+          "_collect_pending_for_backend() получает session files через list_all_session_files_for_project(project_path, lookback_days=config.OPERATIONAL_SESSION_LOOKBACK_DAYS) и читает изменившиеся файлы параллельно с лимитом 16.",
+          "include_pending_for_all_mode_same_project() сохраняет важный контракт: выход из /all даже в уже активный проект должен доставить pending."
+        ]
+      },
+      {
+        "path": "src/claude_manager/daily_session_registry.py",
+        "purpose": "Дневная нумерация session_id/backend в команды /1, /2 и summary для списка /sessions.",
+        "key_elements": [
+          "Дополнительный релевантный риск: файл 628 строк, то есть уже выше 500 строк и близко к 700. recent_sessions не должен расширять этот модуль, кроме минимального использования существующих register_session() и get_session_summary().",
+          "register_session() сохраняет backend-aware session entries в daily_sessions.json.",
+          "get_session_summary() возвращает сохранённое summary, которое /sessions предпочитает над preview из file listing.",
+          "recent_sessions не должен ломать стабильность дневных номеров и fallback команд /3s12."
+        ]
+      },
+      {
+        "path": "tests/test_all_projects_monitor.py",
+        "purpose": "Юнит-тесты режима /all: baseline, cursors, bulk listing, link resolving и pending-семантика.",
+        "key_elements": [
+          "Покрывает, что enable_for_chat() ставит watcher на паузу и при ошибке baseline возобновляет watcher.",
+          "Покрывает, что _collect_project_sessions() использует bulk backend listing один раз на backend.",
+          "Покрывает, что baseline читает lightweight cursors, а poll пропускает полный snapshot при неизменном mtime.",
+          "Покрывает, что all-mode доставка не перезаписывает старый unread snapshot и resolve_link() возвращает точную цель.",
+          "Пробел: нет теста, что /all не делает повторный полный global scan Codex-истории на каждом poll_once; fake backend сейчас не различает bounded store query и full scan."
+        ]
+      },
+      {
+        "path": "tests/test_telegram_session_handlers.py",
+        "purpose": "Юнит-тесты Telegram-команд /new, /sessions, /all, /stop и /N.",
+        "key_elements": [
+          "Покрывает merge backend-ов в /sessions до ограничения списка и сортировку по last_modified_at.",
+          "Покрывает предпочтение daily_session_registry summary над длинным preview.",
+          "Покрывает пустой список /sessions и включение /all через enable_for_chat().",
+          "Пробел: нет теста, что handle_sessions() читает recent_sessions store вместо прямого backend full/list scan; нет теста на параллельное или bounded поведение backend calls."
+        ]
+      },
+      {
+        "path": "tests/test_session_reader.py",
+        "purpose": "Юнит-тесты Claude session_reader: кодирование путей, preview cleanup, сортировка и лимит recent sessions.",
+        "key_elements": [
+          "Покрывает сортировку по mtime, лимит MAX_RECENT_SESSIONS = 15, пустые и повреждённые файлы.",
+          "Покрывает контракт sanitizePath для Claude Code.",
+          "Для recent_sessions это источник регрессий по Claude path/preview, но новый cross-backend store должен тестироваться отдельно."
+        ]
+      },
+      {
+        "path": "tests/test_codex_session_index.py",
+        "purpose": "Юнит-тесты operational Codex index: группировка по project, lookback, cache reuse, signature rebuild, mtime refresh и конкурентный cold start.",
+        "key_elements": [
+          "Покрывает, что повторные вызовы переиспользуют индекс без повторного чтения session_meta.",
+          "Покрывает refresh mtime без reread meta.",
+          "Покрывает concurrent callers share one rebuild.",
+          "Пробел: current index не хранит preview и не покрывает recent_sessions table, pruning last 30 per project, global /all cap и persistent store после restart."
+        ]
+      }
+    ],
+    "dependencies": [
+      "Путь /sessions: telegram_session_handlers.handle_sessions() -> coding_agent_backend.get_all_backends() -> backend.list_session_files_for_project(config.WORKING_DIR) -> ClaudeCodeBackend или CodexBackend -> file listing -> daily_session_registry.register_session() и get_session_summary() -> plain-text Telegram response.",
+      "Путь /all enable: telegram_session_handlers.handle_all() -> session_manager.unbind_session() -> all_projects_monitor.enable_for_chat() -> project_manager.scan_available_projects() -> backend bulk listing -> read_session_file_cursor() для baseline -> enabled chat state.",
+      "Путь /all poll: all_projects_monitor.poll_once() -> _collect_project_sessions() -> backend bulk listing -> mtime guard -> read_session_file_snapshot() только для изменившихся files -> callback delivery -> unread_buffer snapshot.",
+      "CodexBackend.list_all_session_files_for_projects() сейчас вызывает codex_session_file_listing.list_all_session_file_infos_by_project(), а та делает полный scan sessions_root без lookback и без codex_session_index.",
+      "CodexBackend.list_session_files_for_project() сейчас вызывает codex_session_file_listing.list_session_file_infos_for_project(); после hotfix окно 2 дня, но это всё ещё повторный scan окна на каждый /sessions.",
+      "project_pending_delivery.collect_pending_messages() уже использует bounded operational lookback через config.OPERATIONAL_SESSION_LOOKBACK_DAYS = 4 и mtime/cursor-first, поэтому это образец для recent_sessions refresh, а не место для реализации store.",
+      "daily_session_registry и all_projects_monitor link registry остаются отдельными источниками UI numbering; recent_sessions должен поставлять candidates и headers, но не заменять numbering semantics."
+    ],
+    "test_coverage": "Существующие тесты проверяют корректность /sessions merge/sort/summary, /all cursor/pending semantics, Claude session_reader и operational Codex index. Не хватает regression-тестов на recent_sessions table: upsert по (project_path, backend, session_id), pruning последних 30 на проект, preview invalidation по file_path + last_modified_at, отсутствие повторного global scan в /sessions, отсутствие full scan в каждом /all poll_once, bounded global cap для /all и поведение при пустой или устаревшей таблице. Stage 1 не запускал pytest, потому что задача была исследовательской и продуктовый код не менялся."
+  },
+  "relevant_docs": [
+    {
+      "path": "CLAUDE.md",
+      "relevance": "Главный проектный документ с архитектурой, командами разработки и уже добавленным принципом запрета повторного scan внешней истории в горячих путях.",
+      "key_points": [
+        "Claude Manager — локальный Telegram-бот для управления Claude Code/Codex CLI.",
+        "Код слоистый: Telegram handlers, бизнес-логика, инфраструктура, утилиты и мониторинг.",
+        "Горячие пути не должны повторно сканировать глобальную историю внешних CLI; для Codex это критично из-за общей папки ~/.codex/sessions/YYYY/MM/DD/.",
+        "Весь код async; блокирующее файловое чтение через asyncio.to_thread.",
+        "Для разработки используется Python 3.13, pytest и editable install."
+      ]
+    },
+    {
+      "path": "AGENTS.md",
+      "relevance": "Правила Codex runtime в этом Claude-first проекте.",
+      "key_points": [
+        "Canonical source: CLAUDE.md и .claude/skills/**.",
+        "Managed Codex mirrors в .agents/skills/** не поддерживаются руками.",
+        "Перед кодингом нужно читать CLAUDE.md, matching skill mirror и проектные проверки.",
+        "Codex Skill Adapter меняет только tool invocation, но не бизнес-логику, порядок pipeline, quality gates, artifacts или tests."
+      ]
+    },
+    {
+      "path": ".agents/codex-skill-adapter.md",
+      "relevance": "Контракт адаптации Claude-only терминов для Codex runtime.",
+      "key_points": [
+        "Adapter version codex-skill-adapter-v1.",
+        "Agent tool в Codex означает доступный механизм delegation, если он есть; иначе нужно явно report delegation_unavailable.",
+        "Skill tool означает читать .agents/skills/<skill-name>/SKILL.md для managed mirrors.",
+        "Adapter не меняет бизнес-логику и не разрешает менять generated mirrors вручную."
+      ]
+    },
+    {
+      "path": "dev/docs/docs-index.md",
+      "relevance": "Навигационный индекс документации, показывает связанные BRD, ADR, specs и session reports.",
+      "key_points": [
+        "BRD user journeys живёт в dev/docs/brd/brd-user-journeys.md.",
+        "ADR project_architecture.md фиксирует слоистую архитектуру.",
+        "Session reports 31-05 включают handoff по event-driven index и recent_sessions v1.",
+        "Активные specs уже включают backend-aware work; реализованные specs включают coding_agent_backend и session_reader."
+      ]
+    },
+    {
+      "path": "dev/docs/adr/project_architecture.md",
+      "relevance": "Архитектурное описание слоёв и потоков данных Telegram -> CLI -> Telegram.",
+      "key_points": [
+        "all_projects_monitor — отдельный монитор для /all, хранит cursors и link registry для /<project>s<session>.",
+        "telegram_session_handlers отвечает за /new, /sessions, /all, /stop и /N.",
+        "reply routing и unread/pending не должны ломаться от новых источников session metadata.",
+        "Нижние слои не должны импортировать Telegram-specific верхний слой."
+      ]
+    },
+    {
+      "path": "dev/docs/session-reports/31-05/19-34_recent-sessions-table-v1-handoff.md",
+      "relevance": "Непосредственный handoff для текущей спецификации recent_sessions v1.",
+      "key_points": [
+        "v1 должна быть проще, чем event-driven архитектура: одна лёгкая таблица recent_sessions.",
+        "Таблица хранит последние 30 сессий на проект.",
+        "Хранить нужно headers: backend, project path, session id, file path, last_modified_at, preview и позицию чтения.",
+        "/sessions и /all должны читать recent_sessions вместо повторного полного scan истории.",
+        "Новые файловые события откладываются; нужен safety-refresh.",
+        "Нельзя раздувать текущие большие модули; recent_sessions лучше вынести в отдельный модуль."
+      ]
+    },
+    {
+      "path": "dev/docs/session-reports/31-05/14-44_event-driven-session-index-handoff.md",
+      "relevance": "Предыдущий дизайн-направление, из которого recent_sessions v1 выбрал более простой первый шаг.",
+      "key_points": [
+        "Главная проблема — бот не должен каждый раз сканировать всю историю сессий.",
+        "Модель должна быть metadata-first: сначала session id, project path и mtime, полный текст только при изменении.",
+        "/all должен стать bounded inbox-mode по свежим активным sessions, а не по всем 1700+ candidates.",
+        "Fast poll и discovery должны быть разделены.",
+        "Event-driven слой желателен позже, но нужен fallback resync."
+      ]
+    },
+    {
+      "path": "dev/docs/session-reports/30-05/19-28_codex-operational-index-implementation.md",
+      "relevance": "Фикс, который уже реализовал operational Codex index и mtime/cursor-first pending.",
+      "key_points": [
+        "codex_session_index.py хранит in-memory индекс rollout-файлов за operational-окно.",
+        "pending-сбор вынесен в project_pending_delivery.py и стал mtime/cursor-first.",
+        "list_all_session_files_for_project(..., lookback_days=N) использует индекс; lookback_days=None оставлен как legacy full scan.",
+        "/all не был переписан на новый индекс и остаётся отдельным сценарием."
+      ]
+    },
+    {
+      "path": "dev/docs/brd/brd-user-journeys.md",
+      "relevance": "BRD для пользовательских контрактов /sessions и /all.",
+      "key_points": [
+        "CJM-05: /sessions показывает последние диалоги текущего проекта, выбирает свежие sessions, показывает номер и preview, отправляет plain text для кликабельных /1, /2, /3.",
+        "CJM-05 сейчас фиксирует временный hotfix: Codex-сессии старше двух дней могут не попасть в /sessions.",
+        "CJM-07: /all отвязывает чат от проекта и сессии, каждые 2 секунды проверяет все проекты и backend-ы, обычный watcher ставится на глобальную паузу.",
+        "Сообщение, показанное в /all, должно остаться непрочитанным для исходного проекта.",
+        "Из /all можно перейти по /3s12, а устаревшая ссылка должна давать понятную ошибку или fallback через дневной реестр."
+      ]
+    },
+    {
+      "path": "dev/docs/logs/root-cause-reports/31-05_02-47_slow-session-list.md",
+      "relevance": "RCA медленного /sessions, объясняет корень и почему hotfix не является v1-решением.",
+      "key_points": [
+        "/sessions раньше повторно читал session_meta у 14106 Codex rollout-файлов за 30 дней.",
+        "Preview нужен только для 15 видимых сессий, поэтому metadata можно индексировать, а preview дочитывать точечно.",
+        "Рекомендован user-facing index/cache и preview cache по file_path + last_modified_at.",
+        "codex_session_file_listing.py уже был 499 строк, поэтому новую логику нужно вынести."
+      ]
+    },
+    {
+      "path": "dev/docs/logs/root-cause-reports/30-05_18-32_slow-project-switch.md",
+      "relevance": "RCA медленного project switch с тем же физическим корнем: повторный global scan Codex-истории.",
+      "key_points": [
+        "Повторный global scan Codex rollout-файлов был причиной задержек 7-17 секунд.",
+        "Решение: общий index/cache и mtime/cursor-first pending.",
+        "Важный prevention пункт: горячие пользовательские пути не должны быть O(все недавние Codex-файлы)."
+      ]
+    },
+    {
+      "path": "dev/docs/adr/30.05_19.28-session-change-documenter-codex-operational-session-index.md",
+      "relevance": "ADR по принятому operational index и его ограничениям.",
+      "key_points": [
+        "Индекс хранит project_dir -> list[SessionFileInfo] и инвалидируется по TTL plus directory signature.",
+        "Индекс не хранит текст сообщений как источник правды.",
+        "/sessions не использует operational index, потому что ему нужен preview.",
+        "/all не переписан на этот индекс в той задаче."
+      ]
+    },
+    {
+      "path": "dev/docs/adr/31.05_03.37-session-change-documenter-codex-session-list-two-day-hotfix.md",
+      "relevance": "ADR временного ускорения /sessions, которое recent_sessions v1 должно заменить более правильным решением.",
+      "key_points": [
+        "LOOKBACK_DAYS_FOR_SESSION_LISTING временно уменьшен с 30 до 2.",
+        "Codex-сессии старше двух дней могут быть скрыты из /sessions, но не удаляются.",
+        "Правильный долгосрочный фикс — user-facing index/cache для /sessions.",
+        "Hotfix не устраняет корень: повторный scan окна всё ещё остаётся."
+      ]
+    },
+    {
+      "path": "pyproject.toml",
+      "relevance": "Конфигурация проекта и тестов.",
+      "key_points": [
+        "Python >= 3.13.",
+        "pytest, pytest-asyncio и pytest-mock используются для тестов.",
+        "asyncio_mode = auto, testpaths = tests, python_files = test_*.py.",
+        "Entry point claude-manager = claude_manager.main:main."
+      ]
+    }
+  ],
+  "existing_patterns": {
+    "description": "В проекте уже сложился metadata-first подход для быстрых путей: DTO SessionFileInfo несёт session_id/file_path/last_modified_at/preview, operational Codex index строит project -> files без текста сообщений, а pending-сбор читает полный snapshot только после mtime/cursor проверки. Telegram handlers остаются тонкими и собирают UI-ответы, а тяжёлая файловая логика живёт в отдельных модулях рядом с backend/file-reader кодом.",
+    "examples": [
+      "codex_session_index.py: in-memory project_dir -> list[SessionFileInfo] с TTL, directory signature и refresh mtime без повторного meta reread.",
+      "project_pending_delivery.py: mtime/cursor-first проверка old_state.last_modified_at, read_session_file_cursor() и только затем read_session_file_snapshot().",
+      "telegram_session_handlers.handle_sessions(): UI merge по backend-ам, сортировка по last_modified_at и plain text output для кликабельных команд.",
+      "all_projects_monitor._collect_project_sessions(): link registry для /<project_number>s<session_number> и отдельные cursors, чтобы /all не помечал сообщения прочитанными в обычном watcher.",
+      "daily_session_registry: backend-aware ключ session_id + backend и summary как UI-preferred краткое описание.",
+      "claude_code_session_file_reader.py и codex_session_file_listing.py: разделение user-facing metadata with preview и operational metadata with empty preview."
+    ]
+  },
+  "risks_and_constraints": [
+    "Если recent_sessions хранит только последние 30 сессий и удаляет всё старое без отдельного контракта, можно ухудшить fallback для старых /3s12 ссылок, восстановление дневных номеров или ручной выбор старой session.",
+    "Если preview не хранить или не кэшировать с invalidation по last_modified_at, /sessions снова начнёт открывать JSONL ради красивого списка, и задержка вернётся.",
+    "Если /all будет читать recent_sessions, но poll_once продолжит на каждом цикле пересобирать таблицу через backend full scan, задача не будет решена. Discovery/refresh должен быть отдельно от fast poll.",
+    "Если initial empty table будет синхронно backfill-иться полным scan-ом при первом /all, пользователь снова получит долгую задержку. Нужен bounded safety-refresh или background backfill с понятным degraded behavior.",
+    "Codex bulk all-project listing сейчас опаснее per-project operational index: list_all_session_file_infos_by_project() делает полный scan sessions_root без lookback и без index.",
+    "SQLite или другой table-store в async Telegram-боте нельзя вызывать блокирующе в event loop. Операции должны идти через asyncio.to_thread или отдельный небольшой sync слой под async wrapper с lock.",
+    "Нельзя раздувать all_projects_monitor.py, codex_session_file_listing.py, session_reader.py, coding_agent_backend.py, daily_session_registry.py и telegram_session_handlers.py: большинство уже выше 300 строк или близко к 500.",
+    "recent_sessions должен быть backend-aware: уникальный ключ не может быть только session_id, нужен backend и project_path.",
+    "last_modified_at должен обновляться дешёво, иначе таблица будет показывать stale порядок sessions и пропускать changed files.",
+    "Семантика /all pending обязательна: доставка в /all должна сохранять unread snapshot и не продвигать обычный watcher cursor.",
+    "Текущий BRD говорит, что /sessions показывает 15 строк, а v1 handoff говорит, что recent_sessions хранит 30 сессий на проект. Спецификация должна явно развести storage cap 30 и UI display cap 15.",
+    "Нужно решить, считается ли лимит 30 на проект общим across backend-ов или отдельным per backend. Handoff формулирует именно 30 на проект, значит default should be across all backends unless Stage 2 выявит критичный пробел."
+  ],
+  "recommendations_for_spec": [
+    "Разместить основную storage-логику recent_sessions в новом небольшом модуле рядом с session/index кодом, а не в all_projects_monitor.py или telegram_session_handlers.py. Практичная граница: отдельный модуль отвечает за таблицу, upsert, pruning и queries; существующие handler/monitor модули только вызывают его.",
+    "Разделить storage и refresh. Storage-модуль должен уметь: создать schema, upsert session header, query recent sessions for project, query recent sessions for all projects with global cap, prune last 30 per project. Refresh-модуль должен уметь: взять backend SessionFileInfo, обновить preview/cursor только при изменении mtime, сделать bounded safety-refresh проекта или всех проектов.",
+    "Не расширять codex_session_file_listing.py: файл 499 строк и находится в одном шаге от 500-line техдолга. Для Codex discovery лучше переиспользовать codex_session_index и вынести user-facing preview/cache слой в новый модуль.",
+    "Не добавлять широкие методы в CodingAgentBackend без необходимости. Если нужен новый контракт, он должен быть минимальным и описывать session-file metadata, а не persistence recent_sessions. Табличное хранение не является обязанностью backend adapter-а.",
+    "Сделать recent_sessions source of fast candidates, но не source of truth for message text. Полный текст сообщений по-прежнему читается из session files только при доставке или changed cursor.",
+    "Схему таблицы в спецификации описать явно: backend, project_path, session_id, file_path, last_modified_at, preview, raw_record_count или cursor position, last_delivered_idx если нужен для /all baseline, created_or_seen_at, updated_at. Уникальный ключ: project_path + backend + session_id.",
+    "Добавить индексы по project_path + last_modified_at desc и last_modified_at desc. Для /all нужен быстрый global query with cap после объединения проектов; для /sessions нужен быстрый per-project query.",
+    "Зафиксировать два лимита: storage cap last 30 sessions per project и UI cap SESSION_LIST_LIMIT = 15 для /sessions. Для /all добавить отдельный global cap, например 40-80 active sessions after merge, потому что 30 на каждый проект может дать слишком много candidates.",
+    "Для /sessions v1: handler должен сначала запросить recent_sessions для config.WORKING_DIR, при необходимости запустить bounded refresh текущего проекта, затем сохранить дневные номера через daily_session_registry и отправить plain text. Он не должен сам сканировать backend files.",
+    "Для /all v1: enable_for_chat() и poll_once() должны брать candidates из recent_sessions, а discovery/refresh не должен выполняться каждые 2 секунды. Fast poll должен проверять mtime/cursor только известных active files.",
+    "Safety-refresh описать как отдельный редкий или on-demand процесс: при пустой таблице, смене проекта, старом updated_at или обнаружении known session update. Он должен быть bounded и не блокировать hot path полным historical scan-ом.",
+    "Сохранять совместимость с pending: all_projects_monitor должен продолжать сохранять unread_buffer snapshot перед доставкой сообщения в /all, а project_pending_delivery должен оставаться mtime/cursor-first.",
+    "В спецификации явно описать degraded behavior: что пользователь видит, если таблица пустая, corrupt, locked или refresh упал. Без этого первый запуск после restart может превратиться в silent empty list.",
+    "Покрыть тестами алгоритмическую цену, а не только корректность строк: повторный /sessions не читает session_meta у всех Codex rollout-файлов; /all poll_once не вызывает bulk full scan; unchanged mtime не читает snapshot; changed mtime обновляет cursor/preview; pruning оставляет ровно последние 30 на проект.",
+    "Из-за размеров файлов план реализации должен требовать маленькие интеграционные diff-ы: all_projects_monitor.py только меняет источник candidates, telegram_session_handlers.py только меняет источник /sessions rows, codex_session_file_listing.py не получает новую persistent-логику."
+  ]
+}
