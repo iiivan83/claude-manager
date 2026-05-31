@@ -147,6 +147,7 @@ async def test_hidden_intermediate_pending_is_not_counted_or_delivered(
         "Готово",
         7,
         BackendName.CLAUDE,
+        session_id="session-final",
         is_final=True,
     )
     clear_snapshot.assert_called_once_with("session-final", BackendName.CLAUDE)
@@ -189,6 +190,7 @@ async def test_pending_delivery_uses_telegram_response_delivery_send_response(
         "Промежуточный ответ",
         12,
         BackendName.CODEX,
+        session_id="codex-session",
         is_final=False,
     )
 
@@ -245,5 +247,6 @@ async def test_leaving_all_mode_into_active_project_collects_pending_messages(
         "Ответ из all",
         5,
         BackendName.CODEX,
+        session_id="session-from-all",
         is_final=True,
     )

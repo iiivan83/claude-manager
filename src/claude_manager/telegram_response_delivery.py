@@ -9,6 +9,7 @@ from claude_manager import (
     file_delivery,
     message_splitter,
     reply_anchor_registry,
+    reply_route_registry,
     session_manager,
     silence_mode_registry,
     telegram_sender,
@@ -143,6 +144,50 @@ def _prepare_parts(text: str, is_final: bool) -> list[str]:
     return [f"<i>{part}</i>" for part in parts]
 
 
+def _message_id_from_sent_message(sent_message: object) -> int | None:
+    """Return Telegram message_id from a send result if it is available."""
+    message_id = getattr(sent_message, "message_id", None)
+    if isinstance(message_id, int):
+        return message_id
+    return None
+
+
+def _build_route_target(
+    *,
+    project_path: str | None,
+    session_id: str | None,
+    backend: BackendName,
+    session_number: int,
+    project_number: int | None = None,
+    project_name: str | None = None,
+) -> reply_route_registry.ReplyRouteTarget | None:
+    """Build a route target only when the source session is known."""
+    if project_path is None or session_id is None:
+        return None
+    return reply_route_registry.ReplyRouteTarget(
+        project_path=project_path,
+        session_id=session_id,
+        backend=backend,
+        session_number=session_number,
+        project_number=project_number,
+        project_name=project_name,
+    )
+
+
+def _register_sent_route(
+    chat_id: int,
+    sent_message: object,
+    route_target: reply_route_registry.ReplyRouteTarget | None,
+) -> None:
+    """Register one sent Telegram message as a reply-route source."""
+    if route_target is None:
+        return
+    message_id = _message_id_from_sent_message(sent_message)
+    if message_id is None:
+        return
+    reply_route_registry.register_route(chat_id, message_id, route_target)
+
+
 async def _send_parts(
     chat_id: int,
     parts: list[str],
@@ -150,6 +195,7 @@ async def _send_parts(
     reply_markup=None,
     attach_reply_markup: bool = False,
     reply_to_message_id: int | None = None,
+    route_target: reply_route_registry.ReplyRouteTarget | None = None,
 ) -> None:
     """Отправляет части сообщения в Telegram."""
     last_index = len(parts) - 1
@@ -160,7 +206,7 @@ async def _send_parts(
             kwargs["reply_to_message_id"] = part_reply_to_message_id
         if attach_reply_markup:
             markup = reply_markup if index == last_index else None
-            await telegram_sender.send_telegram_message(
+            sent_message = await telegram_sender.send_telegram_message(
                 _application.bot,
                 chat_id,
                 part,
@@ -168,12 +214,13 @@ async def _send_parts(
                 **kwargs,
             )
         else:
-            await telegram_sender.send_telegram_message(
+            sent_message = await telegram_sender.send_telegram_message(
                 _application.bot,
                 chat_id,
                 part,
                 **kwargs,
             )
+        _register_sent_route(chat_id, sent_message, route_target)
 
 
 def _build_watcher_header(
@@ -213,21 +260,37 @@ async def send_response(
     is_final: bool | None = None,
     reply_markup=None,
     reply_to_message_id: int | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Форматирует и отправляет ответ Claude в Telegram."""
     backend, is_final = _normalize_response_arguments(backend, is_final)
+    project_path = config.WORKING_DIR
     text = _replace_empty_response(text)
     if not is_final and silence_mode_registry.is_enabled():
         return
     text = await _process_final_file_markers(chat_id, text, is_final)
     parts = _prepare_parts(text, is_final)
-    parts[0] = _format_session_header(session_number, is_final, backend) + parts[0]
+    header = _format_session_header(session_number, is_final, backend)
+    if session_id is not None and not _is_current_session(
+        chat_id, session_id, backend,
+    ):
+        header = _format_clickable_session_header(
+            session_number, backend, is_final,
+        )
+    parts[0] = header + parts[0]
+    route_target = _build_route_target(
+        project_path=project_path,
+        session_id=session_id,
+        backend=backend,
+        session_number=session_number,
+    )
     await _send_parts(
         chat_id,
         parts,
         reply_markup=reply_markup,
         attach_reply_markup=True,
         reply_to_message_id=reply_to_message_id,
+        route_target=route_target,
     )
 
 
@@ -240,6 +303,7 @@ async def send_watcher_message(
     backend, session_number, is_final = _normalize_watcher_arguments(
         backend, session_number, is_final,
     )
+    project_path = config.WORKING_DIR
     if not is_final and silence_mode_registry.is_enabled():
         return
     text = await _process_final_file_markers(chat_id, text, is_final)
@@ -249,11 +313,22 @@ async def send_watcher_message(
     )
     parts[0] = header + parts[0]
     reply_to_message_id = reply_anchor_registry.get_anchor(
-        config.WORKING_DIR,
+        project_path,
         backend,
         session_id,
     )
-    await _send_parts(chat_id, parts, reply_to_message_id=reply_to_message_id)
+    route_target = _build_route_target(
+        project_path=project_path,
+        session_id=session_id,
+        backend=backend,
+        session_number=session_number,
+    )
+    await _send_parts(
+        chat_id,
+        parts,
+        reply_to_message_id=reply_to_message_id,
+        route_target=route_target,
+    )
 
 
 async def send_all_projects_watcher_message(
@@ -281,4 +356,17 @@ async def send_all_projects_watcher_message(
             backend,
             session_id,
         )
-    await _send_parts(chat_id, parts, reply_to_message_id=reply_to_message_id)
+    route_target = _build_route_target(
+        project_path=project_path,
+        session_id=session_id,
+        backend=backend,
+        session_number=session_number,
+        project_number=project_number,
+        project_name=project_name,
+    )
+    await _send_parts(
+        chat_id,
+        parts,
+        reply_to_message_id=reply_to_message_id,
+        route_target=route_target,
+    )

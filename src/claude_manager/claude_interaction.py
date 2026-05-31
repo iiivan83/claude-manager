@@ -396,7 +396,10 @@ async def handle_claude_result(
             chat_id, message_text, parse_mode=None,
         )
     else:
-        send_response_kwargs = {"is_final": True}
+        send_response_kwargs = {
+            "is_final": True,
+            "session_id": actual_session_id,
+        }
         if reply_to_message_id is not None:
             send_response_kwargs["reply_to_message_id"] = reply_to_message_id
         await _get_send_response()(
@@ -480,7 +483,10 @@ async def send_to_claude_and_respond(
             session_id,
             backend,
         )
-        send_response_kwargs = {"is_final": False}
+        send_response_kwargs = {
+            "is_final": False,
+            "session_id": session_id,
+        }
         anchor_message_id = reply_anchor_registry.get_anchor(
             original_project_path,
             backend,

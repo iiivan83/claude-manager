@@ -1689,6 +1689,7 @@ class TestHandleClaudeResultBehavior:
             3,
             BackendName.CLAUDE,
             is_final=True,
+            session_id=TEST_SESSION_ID,
         )
 
     @pytest.mark.asyncio()

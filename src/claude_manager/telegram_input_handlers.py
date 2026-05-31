@@ -13,6 +13,7 @@ from claude_manager import (
     claude_interaction,
     file_delivery,
     media_group_handler,
+    reply_route_handler,
     session_manager,
     silence_mode_registry,
     telegram_file_downloader,
@@ -104,6 +105,9 @@ async def handle_message(
         )
         return
 
+    if await reply_route_handler.try_handle_text_reply(update, context):
+        return
+
     if session_manager.is_monitoring_mode(chat_id):
         await telegram_sender.send_telegram_message(
             _get_application().bot,
@@ -181,6 +185,12 @@ async def handle_photo(
 
     chat_id = update.effective_chat.id
 
+    if await reply_route_handler.try_handle_unsupported_attachment_reply(
+        update,
+        context,
+    ):
+        return
+
     if session_manager.is_monitoring_mode(chat_id):
         await telegram_sender.send_telegram_message(
             _get_application().bot,
@@ -210,6 +220,12 @@ async def handle_document(
         return
 
     chat_id = update.effective_chat.id
+
+    if await reply_route_handler.try_handle_unsupported_attachment_reply(
+        update,
+        context,
+    ):
+        return
 
     if session_manager.is_monitoring_mode(chat_id):
         await telegram_sender.send_telegram_message(

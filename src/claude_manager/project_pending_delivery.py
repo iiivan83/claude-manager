@@ -102,7 +102,12 @@ async def deliver_pending_messages(
         if reply_to_message_id is not None:
             send_response_kwargs["reply_to_message_id"] = reply_to_message_id
         await telegram_response_delivery.send_response(
-            chat_id, pending.text, day_number, backend, **send_response_kwargs,
+            chat_id,
+            pending.text,
+            day_number,
+            backend,
+            session_id=pending.session_id,
+            **send_response_kwargs,
         )
         unread_buffer.clear_snapshot_for_session_backend_pair(
             pending.session_id,

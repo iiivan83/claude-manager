@@ -204,6 +204,7 @@ async def test_pending_delivery_uses_existing_reply_anchor(
         "pending text",
         5,
         BackendName.CLAUDE,
+        session_id=TEST_SESSION_ID,
         is_final=True,
         reply_to_message_id=707,
     )

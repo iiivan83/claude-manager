@@ -8,7 +8,7 @@
 import asyncio
 import logging
 
-from telegram import Bot, ReplyParameters
+from telegram import Bot, Message, ReplyParameters
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 
@@ -30,13 +30,13 @@ async def send_raw(
     parse_mode: str | None,
     reply_markup,
     reply_to_message_id: int | None = None,
-) -> None:
+) -> Message:
     """Вызывает Telegram API для отправки одного сообщения."""
     kwargs = {"parse_mode": parse_mode, "reply_markup": reply_markup}
     reply_parameters = _build_reply_parameters(reply_to_message_id)
     if reply_parameters is not None:
         kwargs["reply_parameters"] = reply_parameters
-    await bot.send_message(chat_id, text, **kwargs)
+    return await bot.send_message(chat_id, text, **kwargs)
 
 
 def _build_reply_parameters(reply_to_message_id: int | None) -> ReplyParameters | None:
@@ -62,12 +62,12 @@ async def fallback_to_plain_text(
     parse_mode: str | None,
     reply_markup,
     reply_to_message_id: int | None = None,
-) -> bool:
-    """Пробует отправить как plain text при HTML-ошибке. Возвращает True при успехе."""
+) -> Message | None:
+    """Пробует отправить как plain text при HTML-ошибке."""
     if parse_mode != ParseMode.HTML:
-        return False
+        return None
     plain_text = message_splitter.strip_html_tags(text)
-    await send_raw(
+    return await send_raw(
         bot,
         chat_id,
         plain_text,
@@ -75,21 +75,23 @@ async def fallback_to_plain_text(
         reply_markup=reply_markup,
         reply_to_message_id=reply_to_message_id,
     )
-    return True
 
 
 async def handle_retry_after(
     bot: Bot, chat_id: int, text: str, parse_mode: str | None, reply_markup,
     retry_after_seconds: int,
     reply_to_message_id: int | None = None,
-) -> None:
+) -> Message | None:
     """Обрабатывает RetryAfter: ждёт указанное Telegram время и повторяет."""
     logger.warning("RetryAfter от Telegram: ждём %d секунд", retry_after_seconds)
     await asyncio.sleep(retry_after_seconds)
     try:
-        await send_raw(bot, chat_id, text, parse_mode, reply_markup, reply_to_message_id)
+        return await send_raw(
+            bot, chat_id, text, parse_mode, reply_markup, reply_to_message_id,
+        )
     except Exception:
         logger.warning("Повторная отправка после RetryAfter не удалась", exc_info=True)
+        return None
 
 
 def handle_network_error(attempt: int, chat_id: int) -> bool:
@@ -114,33 +116,32 @@ async def send_telegram_message(
     parse_mode: str | None = ParseMode.HTML,
     reply_markup=None,
     reply_to_message_id: int | None = None,
-) -> None:
+) -> Message | None:
     """Отправляет одно сообщение в Telegram с обработкой ошибок."""
     for attempt in range(SEND_RETRY_COUNT):
         try:
-            await send_raw(
+            return await send_raw(
                 bot, chat_id, text, parse_mode, reply_markup, reply_to_message_id,
             )
-            return
         except BadRequest as error:
             if (
                 reply_to_message_id is not None
                 and _bad_request_is_reply_related(error)
             ):
-                await send_raw(bot, chat_id, text, parse_mode, reply_markup)
-                return
-            if await fallback_to_plain_text(
+                return await send_raw(bot, chat_id, text, parse_mode, reply_markup)
+            fallback_message = await fallback_to_plain_text(
                 bot,
                 chat_id,
                 text,
                 parse_mode,
                 reply_markup,
                 reply_to_message_id,
-            ):
-                return
+            )
+            if fallback_message is not None:
+                return fallback_message
             raise
         except RetryAfter as error:
-            await handle_retry_after(
+            return await handle_retry_after(
                 bot,
                 chat_id,
                 text,
@@ -149,7 +150,7 @@ async def send_telegram_message(
                 error.retry_after,
                 reply_to_message_id,
             )
-            return
         except (TimedOut, NetworkError):
             if handle_network_error(attempt, chat_id):
                 await asyncio.sleep(SEND_RETRY_DELAY_SECONDS)
+    return None

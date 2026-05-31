@@ -70,6 +70,20 @@ def _make_update(
     update.message.photo = None
     update.message.document = None
     update.message.media_group_id = None
+    update.message.reply_to_message = None
+    return update
+
+
+def _make_reply_update(
+    text: str = "reply text",
+    *,
+    bot_message_id: int = 8001,
+    message_id: int = 9001,
+) -> MagicMock:
+    """Create an update that replies to a bot message."""
+    update = _make_update(text=text, message_id=message_id)
+    update.message.reply_to_message = MagicMock()
+    update.message.reply_to_message.message_id = bot_message_id
     return update
 
 
@@ -328,6 +342,33 @@ class TestHandleMessage:
             reply_to_message_id=321,
         )
 
+    @pytest.mark.asyncio()
+    async def test_handle_message_routes_reply_before_all_mode_guard(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Routed text reply is handled before monitoring-mode warning."""
+        route_handler = AsyncMock(return_value=True)
+        send_to_claude = AsyncMock()
+        monkeypatch.setattr(
+            input_handlers.reply_route_handler,
+            "try_handle_text_reply",
+            route_handler,
+        )
+        monkeypatch.setattr(
+            input_handlers.claude_interaction,
+            "send_to_claude_and_respond",
+            send_to_claude,
+        )
+        monkeypatch.setattr(session_manager, "is_monitoring_mode", lambda _chat_id: True)
+
+        update = _make_reply_update("ответ")
+        context = _make_context()
+        await input_handlers.handle_message(update, context)
+
+        route_handler.assert_awaited_once_with(update, context)
+        send_to_claude.assert_not_awaited()
+
 
 class TestHandlePhoto:
     """Тесты обработки фотографий."""
@@ -432,6 +473,42 @@ class TestHandlePhoto:
         await input_handlers.handle_photo(update, _make_context())
 
         assert send_to_claude.await_args.kwargs["reply_to_message_id"] == 456
+
+    @pytest.mark.asyncio()
+    async def test_handle_photo_rejects_routed_reply_before_download(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Photo reply with route is rejected before file download."""
+        route_handler = AsyncMock(return_value=True)
+        download = AsyncMock()
+        add_update = AsyncMock()
+        monkeypatch.setattr(
+            input_handlers.reply_route_handler,
+            "try_handle_unsupported_attachment_reply",
+            route_handler,
+        )
+        monkeypatch.setattr(
+            input_handlers.telegram_file_downloader,
+            "download_and_save_file",
+            download,
+        )
+        monkeypatch.setattr(
+            input_handlers.media_group_handler.media_group_aggregator,
+            "add_update",
+            add_update,
+        )
+        monkeypatch.setattr(session_manager, "is_monitoring_mode", lambda _chat_id: True)
+
+        update = _make_reply_update()
+        update.message.photo = [MagicMock()]
+        update.message.media_group_id = "album-1"
+        context = _make_context()
+        await input_handlers.handle_photo(update, context)
+
+        route_handler.assert_awaited_once_with(update, context)
+        download.assert_not_awaited()
+        add_update.assert_not_awaited()
 
 
 class TestHandleDocument:
@@ -553,3 +630,32 @@ class TestHandleDocument:
         await input_handlers.handle_document(update, _make_context())
 
         assert send_to_claude.await_args.kwargs["reply_to_message_id"] == 457
+
+    @pytest.mark.asyncio()
+    async def test_handle_document_rejects_routed_reply_before_download(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Document reply with route is rejected before file download."""
+        route_handler = AsyncMock(return_value=True)
+        download = AsyncMock()
+        monkeypatch.setattr(
+            input_handlers.reply_route_handler,
+            "try_handle_unsupported_attachment_reply",
+            route_handler,
+        )
+        monkeypatch.setattr(
+            input_handlers.telegram_file_downloader,
+            "download_and_save_file",
+            download,
+        )
+        monkeypatch.setattr(session_manager, "is_monitoring_mode", lambda _chat_id: True)
+
+        update = _make_reply_update()
+        update.message.document = MagicMock()
+        update.message.document.file_name = "report.pdf"
+        context = _make_context()
+        await input_handlers.handle_document(update, context)
+
+        route_handler.assert_awaited_once_with(update, context)
+        download.assert_not_awaited()

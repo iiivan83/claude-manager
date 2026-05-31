@@ -149,6 +149,41 @@ class TestSendTelegramMessageExtended:
         mock_bot.send_message.assert_called_once()
 
     @pytest.mark.asyncio()
+    async def test_returns_sent_message_on_success(
+        self, mock_bot: MagicMock,
+    ) -> None:
+        """send_telegram_message returns Telegram's sent Message object."""
+        sent_message = MagicMock()
+        sent_message.message_id = 888
+        mock_bot.send_message.return_value = sent_message
+
+        result = await send_telegram_message(mock_bot, TEST_CHAT_ID, "текст")
+
+        assert result is sent_message
+
+    @pytest.mark.asyncio()
+    async def test_returns_plain_text_message_after_html_fallback(
+        self, mock_bot: MagicMock,
+    ) -> None:
+        """HTML fallback returns the message from the successful plain send."""
+        fallback_message = MagicMock()
+        fallback_message.message_id = 889
+        mock_bot.send_message = AsyncMock(
+            side_effect=[
+                BadRequest("Can't parse entities"),
+                fallback_message,
+            ],
+        )
+
+        result = await send_telegram_message(
+            mock_bot,
+            TEST_CHAT_ID,
+            "<b>broken",
+        )
+
+        assert result is fallback_message
+
+    @pytest.mark.asyncio()
     async def test_bad_request_non_html_reraises(
         self, mock_bot: MagicMock,
     ) -> None:
@@ -325,7 +360,7 @@ class TestFallbackToPlainText:
             TEST_CHAT_ID, "<b>жирный</b> текст", ParseMode.HTML, None,
         )
 
-        assert result is True
+        assert result is mock_bot.send_message.return_value
         call_kwargs = mock_bot.send_message.call_args[1]
         assert call_kwargs["parse_mode"] is None
         # Текст без HTML-тегов
@@ -337,24 +372,24 @@ class TestFallbackToPlainText:
     async def test_fallback_returns_false_for_non_html(
         self, mock_bot: MagicMock,
     ) -> None:
-        """Если parse_mode != HTML, возвращает False и ничего не отправляет."""
+        """Если parse_mode != HTML, возвращает None и ничего не отправляет."""
         result = await fallback_to_plain_text(mock_bot,
             TEST_CHAT_ID, "текст", None, None,
         )
 
-        assert result is False
+        assert result is None
         mock_bot.send_message.assert_not_called()
 
     @pytest.mark.asyncio()
     async def test_fallback_returns_false_for_markdown(
         self, mock_bot: MagicMock,
     ) -> None:
-        """Если parse_mode = Markdown (не HTML), возвращает False."""
+        """Если parse_mode = Markdown (не HTML), возвращает None."""
         result = await fallback_to_plain_text(mock_bot,
             TEST_CHAT_ID, "*bold*", ParseMode.MARKDOWN, None,
         )
 
-        assert result is False
+        assert result is None
         mock_bot.send_message.assert_not_called()
 
 

@@ -275,4 +275,5 @@ async def test_claude_interaction_resolves_send_response_callback_by_module_attr
         9,
         BackendName.CODEX,
         is_final=True,
+        session_id=TEST_SESSION_ID,
     )

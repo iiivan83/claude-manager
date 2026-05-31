@@ -179,7 +179,14 @@ async def test_successful_switch_delivers_pending_after_confirmation(
     await bot_module.handle_switch_project(_make_update("/p1"), MagicMock())
 
     assert _sent_texts(_handler_state) == ["Переключено на проект: beta\nНепрочитанных сообщений: 1"]
-    send_response.assert_awaited_once_with(TEST_CHAT_ID, "Ответ из фона", 17, BackendName.CODEX, is_final=True)
+    send_response.assert_awaited_once_with(
+        TEST_CHAT_ID,
+        "Ответ из фона",
+        17,
+        BackendName.CODEX,
+        session_id="codex-session",
+        is_final=True,
+    )
 
 
 async def test_project_session_link_uses_exact_target_and_binds_session(
