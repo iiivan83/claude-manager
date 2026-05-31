@@ -186,6 +186,15 @@ def _register_handlers(application: Application) -> None:
     application.add_handler(
         MessageHandler(filters.Regex(r"^/p\d+$"), handle_switch_project)
     )
+    # Copied watcher replies can start with clickable headers like "/8 ...".
+    # Telegram marks "/8" as a command entity, so route these prompts before
+    # the broad text handler excludes commands.
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.Regex(r"^/(?:\d+s\d+|\d+)\s+"),
+            handle_message,
+        )
+    )
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
