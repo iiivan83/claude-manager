@@ -61,6 +61,9 @@
 - [specs/telegram_agent_backend_integration_spec.md](specs/telegram_agent_backend_integration_spec.md) — integration spec для `bot.py`, `claude_interaction.py`, `claude_runner.py` и backend-aware контрактов
 - [specs/agent_backend_selection_user_journey_spec.md](specs/agent_backend_selection_user_journey_spec.md) — пользовательский сценарий `/agent`: выбор CLI-бэкенда для новых сессий
 - [specs/project_manager_spec.md](specs/project_manager_spec.md) — спецификация модуля `project_manager`: сканирование проектов, переключение, восстановление последнего выбора
+- [specs/31.05_04.56-reply-routing-v1-spec.md](specs/31.05_04.56-reply-routing-v1-spec.md) — пользовательское и архитектурное поведение адресных text reply на сообщения бота
+- [specs/31.05_05.02-reply-routing-v1-implementation-plan.md](specs/31.05_05.02-reply-routing-v1-implementation-plan.md) — план реализации reply-routing v1 по слоям: registry, delivery, input и тесты
+- [specs/31.05_05.28-reply-anchor-busy-hardening-spec.md](specs/31.05_05.28-reply-anchor-busy-hardening-spec.md) — доработка busy-сценариев reply-anchor: busy-ответы не должны стирать anchor активного хода и могут отдельно стать Telegram reply к rejected-сообщению
 
 ### Реализованные
 
