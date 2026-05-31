@@ -1,5 +1,6 @@
 """Tests for incoming Telegram reply-route handling."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,8 +27,19 @@ OTHER_PROJECT = "/tmp/other-project"
 def _reset_routes() -> None:
     """Reset routes around each test."""
     reply_route_registry.clear_all()
+    reply_route_handler._inflight_route_sends.clear()
     yield
+    for task in list(reply_route_handler._background_tasks):
+        task.cancel()
     reply_route_registry.clear_all()
+    reply_route_handler._inflight_route_sends.clear()
+
+
+async def _drain_background_tasks() -> None:
+    """Wait for routed background sends started by the handler."""
+    tasks = list(reply_route_handler._background_tasks)
+    if tasks:
+        await asyncio.gather(*tasks)
 
 
 @pytest.fixture
@@ -102,6 +114,7 @@ async def test_text_reply_from_all_routes_to_target_without_disabling_all(
         _update(),
         SimpleNamespace(bot=_bot),
     )
+    await _drain_background_tasks()
 
     assert handled is True
     send_message.assert_awaited_once_with(
@@ -251,6 +264,7 @@ async def test_busy_target_shows_busy_message(
         _update(),
         SimpleNamespace(bot=_bot),
     )
+    await _drain_background_tasks()
 
     assert handled is True
     assert _bot.send_message.await_args.args[1] == (
@@ -350,6 +364,7 @@ async def test_busy_error_from_send_message_becomes_busy_reply(
         _update(),
         SimpleNamespace(bot=_bot),
     )
+    await _drain_background_tasks()
 
     assert handled is True
     assert _bot.send_message.await_args.args[1] == (

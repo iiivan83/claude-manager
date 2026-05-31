@@ -1,5 +1,6 @@
 """Regression tests for reply-route SendResult errors."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,8 +25,19 @@ CURRENT_PROJECT = "/tmp/current-project"
 def _reset_routes() -> None:
     """Reset routes around each test."""
     reply_route_registry.clear_all()
+    reply_route_handler._inflight_route_sends.clear()
     yield
+    for task in list(reply_route_handler._background_tasks):
+        task.cancel()
     reply_route_registry.clear_all()
+    reply_route_handler._inflight_route_sends.clear()
+
+
+async def _drain_background_tasks() -> None:
+    """Wait for routed background sends started by the handler."""
+    tasks = list(reply_route_handler._background_tasks)
+    if tasks:
+        await asyncio.gather(*tasks)
 
 
 @pytest.fixture
@@ -84,6 +96,7 @@ async def _handle_error_result(
         _update(),
         SimpleNamespace(bot=bot),
     )
+    await _drain_background_tasks()
 
     assert handled is True
     return bot.send_message.await_args.args[1]

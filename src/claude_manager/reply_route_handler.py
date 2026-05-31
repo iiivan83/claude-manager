@@ -1,5 +1,6 @@
 """Incoming Telegram reply-route handling."""
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from claude_manager import (
     reply_route_registry,
     telegram_sender,
 )
-from claude_manager.coding_agent_backend import PermanentErrorKind
+from claude_manager.coding_agent_backend import BackendName, PermanentErrorKind
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,36 @@ UNSUPPORTED_ATTACHMENT_REASON = (
     "ответы с вложениями пока не работают, этот функционал ещё не сделали"
 )
 
+type _RouteSendKey = tuple[str, BackendName, str]
+
+_inflight_route_sends: set[_RouteSendKey] = set()
+_background_tasks: set[asyncio.Task[None]] = set()
+
 
 def _normalize_path(path: str) -> str:
     """Return a comparable absolute project path."""
     return str(Path(path).expanduser().resolve())
+
+
+def _route_send_key(
+    target: reply_route_registry.ReplyRouteTarget,
+) -> _RouteSendKey:
+    """Return a stable key for one routed send target."""
+    return (_normalize_path(target.project_path), target.backend, target.session_id)
+
+
+def _target_is_busy(target: reply_route_registry.ReplyRouteTarget) -> bool:
+    """Return whether the target already has a direct or routed send in flight."""
+    return (
+        _route_send_key(target) in _inflight_route_sends
+        or process_manager.is_busy(target.session_id, target.backend)
+    )
+
+
+def _track_background_task(task: asyncio.Task[None]) -> None:
+    """Keep a background routed send alive until it finishes."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def _reply_to_message_id(update: Update) -> int | None:
@@ -153,6 +180,55 @@ def _send_result_error_reason(result: process_manager.SendResult) -> str:
     return result.error_text or result.text or "сессия недоступна"
 
 
+async def _send_routed_text_in_background(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    link: str,
+    target: reply_route_registry.ReplyRouteTarget,
+    text: str,
+    send_key: _RouteSendKey,
+) -> None:
+    """Send routed text after the user-visible acknowledgement."""
+    try:
+        try:
+            result = await process_manager.send_message(
+                target.session_id,
+                text,
+                backend=target.backend,
+                cwd=target.project_path,
+            )
+        except process_manager.ProcessManagerError as error:
+            logger.warning("Reply-route send failed before acceptance: %s", error)
+            error_text = str(error).lower()
+            is_busy_error = (
+                process_manager.is_busy(target.session_id, target.backend)
+                or "busy" in error_text
+                or "занят" in error_text
+            )
+            reason = (
+                "сессия занята. Подождите или /stop"
+                if is_busy_error
+                else "не удалось запустить агент"
+            )
+            await _send_route_error(context, chat_id, link, reason)
+            return
+        except Exception:
+            logger.error("Reply-route send failed", exc_info=True)
+            await _send_route_error(context, chat_id, link, "не удалось передать")
+            return
+
+        if result.is_error:
+            await _send_route_error(
+                context,
+                chat_id,
+                link,
+                _send_result_error_reason(result),
+            )
+    finally:
+        _inflight_route_sends.discard(send_key)
+
+
 async def try_handle_text_reply(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -171,7 +247,8 @@ async def try_handle_text_reply(
         return False
 
     link = await _route_link(chat_id, target)
-    if process_manager.is_busy(target.session_id, target.backend):
+    send_key = _route_send_key(target)
+    if _target_is_busy(target):
         await _send_route_error(
             context,
             chat_id,
@@ -194,42 +271,23 @@ async def try_handle_text_reply(
         logger.warning("send_chat_action не удался в reply-route: %s", exc)
 
     try:
-        result = await process_manager.send_message(
-            target.session_id,
-            update.message.text,
-            backend=target.backend,
-            cwd=target.project_path,
-        )
-    except process_manager.ProcessManagerError as error:
-        logger.warning("Reply-route send failed before acceptance: %s", error)
-        error_text = str(error).lower()
-        is_busy_error = (
-            process_manager.is_busy(target.session_id, target.backend)
-            or "busy" in error_text
-            or "занят" in error_text
-        )
-        reason = (
-            "сессия занята. Подождите или /stop"
-            if is_busy_error
-            else "не удалось запустить агент"
-        )
-        await _send_route_error(context, chat_id, link, reason)
-        return True
+        _inflight_route_sends.add(send_key)
+        await _send_plain(context, chat_id, f"Передал в {link}")
     except Exception:
-        logger.error("Reply-route send failed", exc_info=True)
-        await _send_route_error(context, chat_id, link, "не удалось передать")
-        return True
+        _inflight_route_sends.discard(send_key)
+        raise
 
-    if result.is_error:
-        await _send_route_error(
-            context,
-            chat_id,
-            link,
-            _send_result_error_reason(result),
+    task = asyncio.create_task(
+        _send_routed_text_in_background(
+            context=context,
+            chat_id=chat_id,
+            link=link,
+            target=target,
+            text=update.message.text,
+            send_key=send_key,
         )
-        return True
-
-    await _send_plain(context, chat_id, f"Передал в {link}")
+    )
+    _track_background_task(task)
     return True
 
 
