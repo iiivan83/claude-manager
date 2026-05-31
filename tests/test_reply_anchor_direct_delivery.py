@@ -142,6 +142,74 @@ async def test_send_to_claude_sets_anchor_for_accepted_turn(
 
 
 @pytest.mark.asyncio()
+async def test_busy_rejected_turn_preserves_existing_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A busy rejected message must not erase the active turn reply anchor."""
+    original_working_dir = config_module.WORKING_DIR
+    original_send_response_ref = ci_module._send_response_ref
+    original_send_telegram_message_ref = ci_module._send_telegram_message_ref
+    callback_module = SimpleNamespace(
+        send_response=AsyncMock(),
+        send_telegram_message=AsyncMock(),
+    )
+    reply_anchor_registry.clear_all()
+    reply_anchor_registry.set_anchor(
+        TEST_PROJECT_PATH,
+        BackendName.CODEX,
+        TEST_SESSION_ID,
+        111,
+    )
+    config_module.WORKING_DIR = TEST_PROJECT_PATH
+    ci_module.init_callbacks(
+        send_response_module=callback_module,
+        send_response_attr="send_response",
+        send_telegram_message_module=callback_module,
+        send_telegram_message_attr="send_telegram_message",
+    )
+    monkeypatch.setattr(
+        session_manager,
+        "get_active_session",
+        lambda _chat_id: ActiveSession(TEST_SESSION_ID, BackendName.CODEX),
+    )
+    monkeypatch.setattr(
+        process_manager,
+        "is_busy",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        process_manager,
+        "send_message",
+        AsyncMock(side_effect=process_manager.ProcessManagerError("already busy")),
+    )
+    monkeypatch.setattr(session_watcher, "pause_session", MagicMock())
+    monkeypatch.setattr(session_watcher, "resume_session", AsyncMock())
+    monkeypatch.setattr(ci_module, "start_agent_silence_watchdog", MagicMock())
+    monkeypatch.setattr(ci_module, "cancel_agent_silence_watchdog", MagicMock())
+
+    try:
+        await ci_module.send_to_claude_and_respond(
+            TEST_CHAT_ID,
+            "late message",
+            reply_to_message_id=222,
+        )
+    finally:
+        config_module.WORKING_DIR = original_working_dir
+        ci_module._send_response_ref = original_send_response_ref
+        ci_module._send_telegram_message_ref = original_send_telegram_message_ref
+
+    assert (
+        reply_anchor_registry.get_anchor(
+            TEST_PROJECT_PATH,
+            BackendName.CODEX,
+            TEST_SESSION_ID,
+        )
+        == 111
+    )
+    callback_module.send_telegram_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio()
 async def test_session_id_change_moves_anchor_even_after_project_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

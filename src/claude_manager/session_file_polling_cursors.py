@@ -20,10 +20,10 @@ class SessionWatcherState:
     last_delivered_idx: int = -1
     last_modified_at: float | None = None
     paused_at: float | None = None
-    # True, пока запрос обрабатывает send_to_claude_and_respond: обработчик сам
-    # доставит финальный ответ этой сессии. Watcher в это время не доставляет финал,
-    # даже если agent-silence watchdog снял паузу для показа промежуточного прогресса —
-    # иначе финал придёт дважды (от обработчика и от watcher).
+    # True, пока финал, которым владеет send_to_claude_and_respond, не учтён в
+    # watcher-cursor. Watcher в это время не доставляет финал, даже если
+    # agent-silence watchdog снял паузу для показа прогресса — иначе финал придёт
+    # дважды: от обработчика и от watcher.
     handler_owns_final_delivery: bool = False
 
 

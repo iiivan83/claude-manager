@@ -1,9 +1,9 @@
 """Per-backend poller that watches session files of one coding-agent CLI.
 
-ВНИМАНИЕ: модуль сознательно держится на 608 строках, что превышает проектный
-порог в 500 строк ("error" в правиле размеров файлов). Превышение зафиксировано
-с явного согласия владельца после рефакторинга session_watcher.py (был 847 строк
-god-модуль → разрезан на 4 файла; этот — самый большой кусок).
+ВНИМАНИЕ: модуль сознательно держится выше 500 строк, что превышает проектный
+порог размера файлов. Превышение зафиксировано с явного согласия владельца после
+рефакторинга session_watcher.py (был 847 строк god-модуль → разрезан на 4 файла;
+этот — самый большой кусок).
 
 Класс SessionWatcher отвечает за одну цельную задачу — наблюдать за файлами
 сессий одного coding-agent backend'а — поэтому god-модулем не является, но его
@@ -304,6 +304,12 @@ class SessionWatcher:
         # 1) ход ещё активен — последнее сообщение дописывается;
         # 2) обработчик запроса владеет финалом — он сам его доставит, иначе финал
         #    придёт дважды, когда watchdog снял паузу для показа прогресса.
+        handler_owned_final_is_present = (
+            previous.handler_owns_final_delivery
+            and not snapshot.is_turn_active
+            and bool(messages)
+            and len(messages) - 1 > previous.last_delivered_idx
+        )
         hold_final_message = (
             snapshot.is_turn_active or previous.handler_owns_final_delivery
         )
@@ -367,13 +373,19 @@ class SessionWatcher:
                     get_current_session,
                 )
 
-        if hold_final_message and messages:
+        if handler_owned_final_is_present:
+            new_last_delivered_idx = len(messages) - 1
+        elif hold_final_message and messages:
             new_last_delivered_idx = max(
                 previous.last_delivered_idx,
                 len(messages) - 2,
             )
         else:
             new_last_delivered_idx = len(messages) - 1
+        handler_owns_final_delivery = (
+            previous.handler_owns_final_delivery
+            and not handler_owned_final_is_present
+        )
 
         self._states[session_id] = SessionWatcherState(
             raw_count=snapshot.raw_record_count,
@@ -382,7 +394,7 @@ class SessionWatcher:
             last_delivered_idx=new_last_delivered_idx,
             last_modified_at=file_info.last_modified_at,
             paused_at=previous.paused_at,
-            handler_owns_final_delivery=previous.handler_owns_final_delivery,
+            handler_owns_final_delivery=handler_owns_final_delivery,
         )
         self._missing_files.pop(session_id, None)
 
@@ -570,12 +582,7 @@ class SessionWatcher:
         )
 
     def clear_handler_owns_final_delivery(self, session_id: str) -> None:
-        """Снимает владение финалом: обработчик запроса завершил доставку.
-
-        Вызывается из finally в send_to_claude_and_respond после resume_session.
-        После этого watcher снова доставляет финалы этой сессии (например, поздние
-        терминальные обновления или следующий ход).
-        """
+        """Снимает владение финалом для ручных и legacy-сценариев."""
         state = self._states.get(session_id)
         if state is not None:
             state.handler_owns_final_delivery = False
@@ -599,6 +606,7 @@ class SessionWatcher:
         snapshot = await self.backend.read_session_file_snapshot(
             file_info.file_path
         )
+        previous_last_delivered_idx = state.last_delivered_idx
         state.raw_count = snapshot.raw_record_count
         state.parsed_message_count = len(snapshot.messages)
         state.cli_process_is_currently_writing_session_file = (
@@ -606,6 +614,12 @@ class SessionWatcher:
         )
         state.last_delivered_idx = len(snapshot.messages) - 1
         state.last_modified_at = file_info.last_modified_at
+        if (
+            state.handler_owns_final_delivery
+            and not snapshot.is_turn_active
+            and len(snapshot.messages) - 1 > previous_last_delivered_idx
+        ):
+            state.handler_owns_final_delivery = False
         self._missing_files.pop(session_id, None)
 
         logger.debug(

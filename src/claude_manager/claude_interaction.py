@@ -471,6 +471,15 @@ async def send_to_claude_and_respond(
     backend = active_session.backend
     should_generate_session_summary = session_id.startswith("_new_")
 
+    if process_manager.is_busy(session_id, backend):
+        display_name = _get_backend_display_name(backend)
+        await _get_send_telegram_message()(
+            chat_id,
+            f"{display_name} ещё обрабатывает предыдущее сообщение. Подождите или /stop",
+            parse_mode=None,
+        )
+        return
+
     session_watcher.pause_session(session_id, backend)
     start_agent_silence_watchdog(session_id, backend)
 
@@ -552,14 +561,22 @@ async def send_to_claude_and_respond(
         start_agent_silence_watchdog(new_id, backend)
         session_id = new_id
 
+    previous_reply_anchor: int | None = None
+    request_anchor_set = False
     try:
         if reply_to_message_id is not None:
+            previous_reply_anchor = reply_anchor_registry.get_anchor(
+                original_project_path,
+                backend,
+                session_id,
+            )
             reply_anchor_registry.set_anchor(
                 original_project_path,
                 backend,
                 session_id,
                 reply_to_message_id,
             )
+            request_anchor_set = True
         result = await process_manager.send_message(
             session_id, text,
             progress_callback=_on_progress, retry_callback=_on_retry,
@@ -612,7 +629,21 @@ async def send_to_claude_and_respond(
             parse_mode=None,
         )
     except process_manager.ProcessManagerError as error:
-        reply_anchor_registry.clear_anchor(original_project_path, backend, session_id)
+        if request_anchor_set:
+            # A rejected busy message must not steal or erase the accepted turn anchor.
+            if previous_reply_anchor is None:
+                reply_anchor_registry.clear_anchor(
+                    original_project_path,
+                    backend,
+                    session_id,
+                )
+            else:
+                reply_anchor_registry.set_anchor(
+                    original_project_path,
+                    backend,
+                    session_id,
+                    previous_reply_anchor,
+                )
         logger.warning(
             "Процесс занят (chat_id=%d): %s", chat_id, error,
         )
@@ -634,4 +665,3 @@ async def send_to_claude_and_respond(
         cancel_agent_silence_watchdog(session_id, backend)
         if config.WORKING_DIR == original_project_path:
             await session_watcher.resume_session(session_id, backend)
-            session_watcher.clear_handler_owns_final_delivery(session_id, backend)
