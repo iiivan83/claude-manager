@@ -251,6 +251,29 @@ async def test_unknown_route_in_all_mode_shows_unknown_message(
 
 
 @pytest.mark.asyncio()
+async def test_unknown_bot_reply_inside_project_shows_unknown_message(
+    monkeypatch: pytest.MonkeyPatch,
+    _bot: MagicMock,
+) -> None:
+    """Unknown reply to a bot message is not guessed from the active session."""
+    _bot.id = 777
+    update = _update()
+    update.message.reply_to_message.from_user.id = 777
+    monkeypatch.setattr(all_projects_monitor, "is_enabled_for_chat", lambda _chat_id: False)
+
+    handled = await reply_route_handler.try_handle_text_reply(
+        update,
+        SimpleNamespace(bot=_bot),
+    )
+
+    assert handled is True
+    assert _bot.send_message.await_args.args[1] == (
+        "Не понял, куда передать ответ. "
+        "Нажми ссылку на нужную сессию и отправь сообщение там"
+    )
+
+
+@pytest.mark.asyncio()
 async def test_busy_target_shows_busy_message(
     monkeypatch: pytest.MonkeyPatch,
     _bot: MagicMock,

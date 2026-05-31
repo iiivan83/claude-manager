@@ -25,11 +25,15 @@ CURRENT_PROJECT = "/tmp/current-project"
 def _reset_routes() -> None:
     """Reset routes and background tasks around each test."""
     reply_route_registry.clear_all()
+    reply_route_registry._routes_path = None
+    reply_route_registry._routes_loaded_from_disk = False
     reply_route_handler._inflight_route_sends.clear()
     yield
     for task in list(reply_route_handler._background_tasks):
         task.cancel()
     reply_route_registry.clear_all()
+    reply_route_registry._routes_path = None
+    reply_route_registry._routes_loaded_from_disk = False
     reply_route_handler._inflight_route_sends.clear()
 
 
@@ -94,6 +98,51 @@ async def test_text_reply_confirms_before_backend_result(
 ) -> None:
     """Routed reply confirms immediately instead of waiting for agent completion."""
     reply_route_registry.register_route(TEST_CHAT_ID, BOT_MESSAGE_ID, _target())
+    backend_can_finish = asyncio.Event()
+    backend_started = asyncio.Event()
+
+    async def slow_send_message(*_args, **_kwargs) -> SendResult:
+        backend_started.set()
+        await backend_can_finish.wait()
+        return SendResult(
+            text="accepted",
+            session_id="session-route",
+            is_error=False,
+            retries_used=0,
+            backend=BackendName.CODEX,
+        )
+
+    _patch_target_checks(monkeypatch)
+    monkeypatch.setattr(process_manager, "send_message", slow_send_message)
+
+    handled = await reply_route_handler.try_handle_text_reply(
+        _update(),
+        SimpleNamespace(bot=_bot),
+    )
+
+    assert handled is True
+    assert _bot.send_message.await_args.args[1] == "Передал в /3s12"
+    assert backend_started.is_set() is False
+
+    await asyncio.sleep(0)
+    assert backend_started.is_set() is True
+
+    backend_can_finish.set()
+    await _drain_background_tasks()
+
+
+@pytest.mark.asyncio()
+async def test_text_reply_after_registry_reload_confirms_before_backend_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    _bot: MagicMock,
+) -> None:
+    """Routed reply still works after the route registry is loaded from disk."""
+    routes_path = tmp_path / "reply_routes.json"
+    reply_route_registry.load_routes(routes_path)
+    reply_route_registry.register_route(TEST_CHAT_ID, BOT_MESSAGE_ID, _target())
+    reply_route_registry.clear_all()
+    reply_route_registry.load_routes(routes_path)
     backend_can_finish = asyncio.Event()
     backend_started = asyncio.Event()
 

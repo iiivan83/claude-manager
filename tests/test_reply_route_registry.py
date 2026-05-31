@@ -1,4 +1,6 @@
-"""Tests for in-memory Telegram reply routes."""
+"""Tests for Telegram reply routes."""
+
+from pathlib import Path
 
 from claude_manager import reply_route_registry
 from claude_manager.coding_agent_backend import BackendName
@@ -12,6 +14,15 @@ PROJECT_B = "/tmp/reply-route-b"
 def setup_function() -> None:
     """Clear route state between tests."""
     reply_route_registry.clear_all()
+    reply_route_registry._routes_path = None
+    reply_route_registry._routes_loaded_from_disk = False
+
+
+def teardown_function() -> None:
+    """Reset route storage state after tests."""
+    reply_route_registry.clear_all()
+    reply_route_registry._routes_path = None
+    reply_route_registry._routes_loaded_from_disk = False
 
 
 def test_register_and_get_route_by_chat_and_bot_message_id() -> None:
@@ -64,7 +75,7 @@ def test_same_message_id_in_different_chats_does_not_mix() -> None:
 
 
 def test_clear_all_removes_routes() -> None:
-    """Routes are memory-only and can be cleared to model restart behavior."""
+    """Routes can be cleared from memory without deleting persisted storage."""
     target = reply_route_registry.ReplyRouteTarget(
         project_path=PROJECT_A,
         session_id="session-1",
@@ -76,3 +87,60 @@ def test_clear_all_removes_routes() -> None:
     reply_route_registry.clear_all()
 
     assert reply_route_registry.get_route(TEST_CHAT_ID, 900) is None
+
+
+def test_registered_route_survives_registry_reload(tmp_path: Path) -> None:
+    """A bot message route survives an in-process restart reload."""
+    routes_path = tmp_path / "reply_routes.json"
+    target = reply_route_registry.ReplyRouteTarget(
+        project_path=PROJECT_A,
+        session_id="session-1",
+        backend=BackendName.CODEX,
+        session_number=12,
+        project_number=3,
+        project_name="alpha",
+    )
+
+    reply_route_registry.load_routes(routes_path)
+    reply_route_registry.register_route(TEST_CHAT_ID, 901, target)
+    reply_route_registry.clear_all()
+
+    reply_route_registry.load_routes(routes_path)
+    resolved = reply_route_registry.get_route(TEST_CHAT_ID, 901)
+
+    assert resolved == reply_route_registry.ReplyRouteTarget(
+        project_path=str(Path(PROJECT_A).resolve()),
+        session_id="session-1",
+        backend=BackendName.CODEX,
+        session_number=12,
+        project_number=3,
+        project_name="alpha",
+    )
+
+
+def test_register_route_keeps_only_last_200_routes(tmp_path: Path) -> None:
+    """Adding route 201 removes the oldest persisted route."""
+    routes_path = tmp_path / "reply_routes.json"
+    target = reply_route_registry.ReplyRouteTarget(
+        project_path=PROJECT_A,
+        session_id="session-1",
+        backend=BackendName.CODEX,
+        session_number=12,
+        project_number=3,
+        project_name="alpha",
+    )
+
+    reply_route_registry.load_routes(routes_path)
+    for message_id in range(1, 202):
+        reply_route_registry.register_route(TEST_CHAT_ID, message_id, target)
+
+    assert reply_route_registry.get_route(TEST_CHAT_ID, 1) is None
+    assert reply_route_registry.get_route(TEST_CHAT_ID, 2) == reply_route_registry.ReplyRouteTarget(
+        project_path=str(Path(PROJECT_A).resolve()),
+        session_id="session-1",
+        backend=BackendName.CODEX,
+        session_number=12,
+        project_number=3,
+        project_name="alpha",
+    )
+    assert reply_route_registry.get_route(TEST_CHAT_ID, 201) is not None

@@ -72,6 +72,33 @@ def _reply_to_message_id(update: Update) -> int | None:
     return None
 
 
+def _reply_is_to_current_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Return whether the incoming reply points at this bot's message."""
+    reply_to_message = getattr(update.message, "reply_to_message", None)
+    sender = getattr(reply_to_message, "from_user", None)
+    if sender is None:
+        return False
+
+    sender_id = getattr(sender, "id", None)
+    bot_id = getattr(getattr(context, "bot", None), "id", None)
+    if isinstance(sender_id, int) and isinstance(bot_id, int):
+        return sender_id == bot_id
+
+    return getattr(sender, "is_bot", None) is True
+
+
+def _unknown_route_should_be_handled(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+) -> bool:
+    """Return whether an unknown reply route should stop normal message handling."""
+    return (
+        all_projects_monitor.is_enabled_for_chat(chat_id)
+        or _reply_is_to_current_bot(update, context)
+    )
+
+
 def _route_from_update(
     update: Update,
 ) -> reply_route_registry.ReplyRouteTarget | None:
@@ -241,7 +268,7 @@ async def try_handle_text_reply(
 
     target = _route_from_update(update)
     if target is None:
-        if all_projects_monitor.is_enabled_for_chat(chat_id):
+        if _unknown_route_should_be_handled(update, context, chat_id):
             await _send_plain(context, chat_id, UNKNOWN_ROUTE_MESSAGE)
             return True
         return False
@@ -303,7 +330,7 @@ async def try_handle_unsupported_attachment_reply(
 
     target = _route_from_update(update)
     if target is None:
-        if all_projects_monitor.is_enabled_for_chat(chat_id):
+        if _unknown_route_should_be_handled(update, context, chat_id):
             await _send_plain(context, chat_id, UNKNOWN_ROUTE_MESSAGE)
             return True
         return False

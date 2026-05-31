@@ -8,6 +8,7 @@ import pytest
 from claude_manager import (
     current_backend_registry,
     daily_session_registry,
+    reply_route_registry,
     telegram_lifecycle_handlers as lifecycle_handlers,
 )
 import claude_manager.bot as bot_module
@@ -227,6 +228,32 @@ class TestPostInit:
         await lifecycle_handlers.post_init(mock_app)
 
         mock_silence.load_state.assert_called_once()
+
+    @pytest.mark.asyncio()
+    @patch.object(reply_route_registry, "load_routes")
+    @patch(
+        "claude_manager.telegram_lifecycle_handlers.telegram_file_downloader.clean_old_received_files",
+        new_callable=AsyncMock,
+    )
+    @patch("claude_manager.telegram_lifecycle_handlers.silence_mode_registry")
+    @patch("claude_manager.telegram_lifecycle_handlers.session_manager")
+    async def test_post_init_loads_reply_route_registry(
+        self,
+        mock_session_mgr: MagicMock,
+        mock_silence: MagicMock,
+        mock_clean: AsyncMock,
+        mock_load_routes: MagicMock,
+    ) -> None:
+        """post_init loads reply routes saved before restart."""
+        mock_session_mgr.load_bindings = AsyncMock()
+        mock_session_mgr.get_all_bindings.return_value = {}
+        mock_app = MagicMock()
+        mock_app.bot = MagicMock()
+        mock_app.bot.set_my_commands = AsyncMock()
+
+        await lifecycle_handlers.post_init(mock_app)
+
+        mock_load_routes.assert_called_once()
 
     @pytest.mark.asyncio()
     @patch(

@@ -13,6 +13,7 @@ from claude_manager import (
     config,
     current_backend_registry,
     daily_session_registry,
+    reply_route_registry,
     session_manager,
     session_watcher,
     silence_mode_registry,
@@ -116,6 +117,14 @@ async def post_init(application: Application) -> None:
     except Exception:
         logger.error(
             "Ошибка при загрузке current backend — используется Claude",
+            exc_info=True,
+        )
+
+    try:
+        reply_route_registry.load_routes()
+    except Exception:
+        logger.error(
+            "Ошибка при загрузке reply-route registry — старые reply не восстановлены",
             exc_info=True,
         )
 
