@@ -259,6 +259,7 @@ async def _send_routed_text_in_background(
 async def try_handle_text_reply(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    text: str | None = None,
 ) -> bool:
     """Handle a text reply to a routed bot message when possible."""
     chat_id = update.effective_chat.id
@@ -310,7 +311,7 @@ async def try_handle_text_reply(
             chat_id=chat_id,
             link=link,
             target=target,
-            text=update.message.text,
+            text=update.message.text if text is None else text,
             send_key=send_key,
         )
     )

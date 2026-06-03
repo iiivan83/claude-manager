@@ -288,14 +288,9 @@ async def handle_voice(
         return
 
     chat_id = update.effective_chat.id
+    is_reply_message = getattr(update.message, "reply_to_message", None) is not None
 
-    if await reply_route_handler.try_handle_unsupported_attachment_reply(
-        update,
-        context,
-    ):
-        return
-
-    if session_manager.is_monitoring_mode(chat_id):
+    if not is_reply_message and session_manager.is_monitoring_mode(chat_id):
         await telegram_sender.send_telegram_message(
             _get_application().bot,
             chat_id,
@@ -304,15 +299,16 @@ async def handle_voice(
         )
         return
 
-    busy_message = claude_interaction.build_busy_message_if_busy(chat_id)
-    if busy_message is not None:
-        await telegram_sender.send_telegram_message(
-            _get_application().bot,
-            chat_id,
-            busy_message,
-            parse_mode=None,
-        )
-        return
+    if not is_reply_message:
+        busy_message = claude_interaction.build_busy_message_if_busy(chat_id)
+        if busy_message is not None:
+            await telegram_sender.send_telegram_message(
+                _get_application().bot,
+                chat_id,
+                busy_message,
+                parse_mode=None,
+            )
+            return
 
     try:
         file_path = await telegram_file_downloader.download_and_save_file(
@@ -358,6 +354,29 @@ async def handle_voice(
             parse_mode=None,
         )
         return
+
+    if await reply_route_handler.try_handle_text_reply(update, context, text=transcript):
+        return
+
+    if is_reply_message and session_manager.is_monitoring_mode(chat_id):
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            _monitoring_mode_message_for_chat(chat_id),
+            parse_mode=None,
+        )
+        return
+
+    if is_reply_message:
+        busy_message = claude_interaction.build_busy_message_if_busy(chat_id)
+        if busy_message is not None:
+            await telegram_sender.send_telegram_message(
+                _get_application().bot,
+                chat_id,
+                busy_message,
+                parse_mode=None,
+            )
+            return
 
     await claude_interaction.send_to_claude_and_respond(
         chat_id,
