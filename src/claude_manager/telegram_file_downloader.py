@@ -49,6 +49,23 @@ FILE_RANDOM_SUFFIX_LENGTH = 6
 # Количество секунд в одном дне (для расчёта возраста файлов)
 SECONDS_PER_DAY = 86400
 
+AUDIO_MIME_EXTENSIONS = {
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/webm": "webm",
+}
+
+
+def _extension_from_mime_type(mime_type: str | None) -> str:
+    if not mime_type:
+        return "bin"
+    return AUDIO_MIME_EXTENSIONS.get(mime_type.lower(), "bin")
+
 
 def extract_file_info(update: Update) -> tuple[str, str, str | None]:
     """Извлекает file_id, расширение и оригинальное имя из сообщения Telegram."""
@@ -56,13 +73,26 @@ def extract_file_info(update: Update) -> tuple[str, str, str | None]:
         photo_size = update.message.photo[-1]
         return photo_size.file_id, "jpg", None
 
-    document = update.message.document
-    original_name = document.file_name
+    if update.message.document:
+        document = update.message.document
+        original_name = document.file_name
+        if original_name and "." in original_name:
+            extension = original_name.rsplit(".", maxsplit=1)[-1].lower()
+        else:
+            extension = "bin"
+        return document.file_id, extension, original_name
+
+    if update.message.voice:
+        voice = update.message.voice
+        return voice.file_id, _extension_from_mime_type(voice.mime_type), None
+
+    audio = update.message.audio
+    original_name = audio.file_name
     if original_name and "." in original_name:
         extension = original_name.rsplit(".", maxsplit=1)[-1].lower()
     else:
-        extension = "bin"
-    return document.file_id, extension, original_name
+        extension = _extension_from_mime_type(audio.mime_type)
+    return audio.file_id, extension, original_name
 
 
 def generate_file_name(original_name: str | None, extension: str) -> str:

@@ -13,6 +13,7 @@ from claude_manager import (
     claude_interaction,
     file_delivery,
     media_group_handler,
+    openai_transcription,
     reply_route_handler,
     session_manager,
     silence_mode_registry,
@@ -275,5 +276,91 @@ async def handle_document(
     await claude_interaction.send_to_claude_and_respond(
         chat_id,
         task_text,
+        **_reply_anchor_kwargs(update),
+    )
+
+
+async def handle_voice(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Обработчик voice/audio — распознаёт аудио и отправляет текст в Claude."""
+    if not _has_access(update):
+        return
+
+    chat_id = update.effective_chat.id
+
+    if await reply_route_handler.try_handle_unsupported_attachment_reply(
+        update,
+        context,
+    ):
+        return
+
+    if session_manager.is_monitoring_mode(chat_id):
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            _monitoring_mode_message_for_chat(chat_id),
+            parse_mode=None,
+        )
+        return
+
+    busy_message = claude_interaction.build_busy_message_if_busy(chat_id)
+    if busy_message is not None:
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            busy_message,
+            parse_mode=None,
+        )
+        return
+
+    try:
+        file_path = await telegram_file_downloader.download_and_save_file(
+            update,
+            _get_application().bot,
+        )
+    except Exception:
+        logger.error("Ошибка скачивания аудиофайла (chat_id=%d)", chat_id, exc_info=True)
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            "Не удалось скачать аудиофайл. Попробуйте отправить ещё раз",
+            parse_mode=None,
+        )
+        return
+
+    try:
+        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    except Exception as exc:
+        logger.warning("send_chat_action не удался в handle_voice: %s", exc)
+
+    try:
+        transcript = await openai_transcription.transcribe_audio_file(file_path)
+    except openai_transcription.OpenAITranscriptionConfigError:
+        logger.warning("OpenAI transcription не настроен для аудиофайла")
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            "Распознавание аудио не настроено: добавьте OPENAI_API_KEY в .env",
+            parse_mode=None,
+        )
+        return
+    except openai_transcription.OpenAITranscriptionError:
+        logger.error(
+            "Ошибка распознавания аудиофайла (chat_id=%d)",
+            chat_id,
+            exc_info=True,
+        )
+        await telegram_sender.send_telegram_message(
+            _get_application().bot,
+            chat_id,
+            "Не удалось распознать аудиофайл через OpenAI. Попробуйте отправить текстом",
+            parse_mode=None,
+        )
+        return
+
+    await claude_interaction.send_to_claude_and_respond(
+        chat_id,
+        transcript,
         **_reply_anchor_kwargs(update),
     )

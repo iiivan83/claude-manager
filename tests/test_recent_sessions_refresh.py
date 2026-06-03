@@ -293,6 +293,46 @@ async def test_global_query_filters_visible_projects_before_limit(
 
 
 @pytest.mark.asyncio()
+async def test_global_query_can_refresh_populated_store_before_returning_candidates(
+    tmp_path: Path,
+) -> None:
+    store = RecentSessionsStore(tmp_path / "recent.sqlite3")
+    await store.initialize()
+    await store.upsert_headers(
+        [
+            RecentSessionHeader(
+                project_path="/projects/alpha",
+                backend=BackendName.CLAUDE,
+                session_id="old",
+                file_path="/sessions/old.jsonl",
+                last_modified_at=1.0,
+            ),
+        ]
+    )
+    backend = FakeBackend(
+        BackendName.CLAUDE,
+        {
+            "/projects/alpha": [_file("old", 1.0)],
+            "/projects/beta": [_file("new", 2.0)],
+        },
+    )
+
+    result = await get_global_recent_sessions(
+        project_paths=["/projects/alpha", "/projects/beta"],
+        backends=[backend],
+        store=store,
+        limit=ALL_MODE_SESSION_CANDIDATE_LIMIT,
+        refresh_on_hit=True,
+    )
+
+    assert [row.session_id for row in result.rows] == ["new", "old"]
+    assert backend.operational_calls == [
+        ("/projects/alpha", config.OPERATIONAL_SESSION_LOOKBACK_DAYS),
+        ("/projects/beta", config.OPERATIONAL_SESSION_LOOKBACK_DAYS),
+    ]
+
+
+@pytest.mark.asyncio()
 async def test_project_refresh_updates_preview_when_mtime_changes(
     tmp_path: Path,
 ) -> None:

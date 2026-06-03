@@ -244,6 +244,7 @@ async def _collect_project_sessions() -> tuple[
     result = await recent_sessions_refresh.get_global_recent_sessions(
         [project.absolute_path for project in projects],
         limit=recent_sessions_refresh.ALL_MODE_SESSION_CANDIDATE_LIMIT,
+        refresh_on_hit=True,
     )
 
     sessions_by_project: dict[

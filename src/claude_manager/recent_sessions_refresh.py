@@ -151,6 +151,7 @@ async def get_global_recent_sessions(
     backends: list[CodingAgentBackend] | None = None,
     store: RecentSessionsStore | None = None,
     limit: int = ALL_MODE_SESSION_CANDIDATE_LIMIT,
+    refresh_on_hit: bool = False,
 ) -> RecentSessionsQueryResult:
     """Return global rows from store, with one bounded refresh if empty."""
     active_store = _resolve_store(store)
@@ -159,7 +160,7 @@ async def get_global_recent_sessions(
         active_store,
         await active_store.query_global_for_projects(project_paths, limit=limit),
     )
-    if rows:
+    if rows and not refresh_on_hit:
         return RecentSessionsQueryResult(rows=rows, degraded_messages=[])
 
     refresh_result = await refresh_global_sessions(

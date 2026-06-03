@@ -141,6 +141,7 @@ handle_switch_session = telegram_session_handlers.handle_switch_session
 handle_message = telegram_input_handlers.handle_message
 handle_photo = telegram_input_handlers.handle_photo
 handle_document = telegram_input_handlers.handle_document
+handle_voice = telegram_input_handlers.handle_voice
 BOT_COMMANDS = telegram_lifecycle_handlers.BOT_COMMANDS
 RESTART_DELAY_BEFORE_SYSTEMCTL_SECONDS = (
     telegram_lifecycle_handlers.RESTART_DELAY_BEFORE_SYSTEMCTL_SECONDS
@@ -199,6 +200,7 @@ def _register_handlers(application: Application) -> None:
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     application.add_handler(
         MessageHandler(filters.Document.ALL, handle_document)
     )

@@ -279,6 +279,7 @@ async def test_enable_for_chat_uses_recent_sessions_global_query() -> None:
     recent_query.assert_awaited_once_with(
         ["/projects/beta"],
         limit=80,
+        refresh_on_hit=True,
     )
     get_all_backends.assert_not_called()
     assert backend.bulk_project_dir_calls == []
