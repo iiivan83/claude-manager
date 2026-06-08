@@ -109,7 +109,7 @@ def test_compose_args_for_new_session_uses_exec_flags_and_cwd(
         [],
     )
 
-    assert command_args == [
+    assert command_args[:-1] == [
         "/bin/codex",
         "exec",
         CLI_FLAG_JSON,
@@ -117,8 +117,8 @@ def test_compose_args_for_new_session_uses_exec_flags_and_cwd(
         CLI_FLAG_SKIP_GIT_CHECK,
         "-C",
         "/tmp/my project",
-        "привет",
     ]
+    assert command_args[-1].endswith("привет")
     assert "resume" not in command_args
 
 
@@ -139,7 +139,7 @@ def test_compose_args_for_resume_session_uses_resume_without_cwd(
         [],
     )
 
-    assert command_args == [
+    assert command_args[:-1] == [
         "/bin/codex",
         "exec",
         "resume",
@@ -147,8 +147,8 @@ def test_compose_args_for_resume_session_uses_resume_without_cwd(
         CLI_FLAG_JSON,
         CLI_FLAG_BYPASS_APPROVALS,
         CLI_FLAG_SKIP_GIT_CHECK,
-        "still here?",
     ]
+    assert command_args[-1].endswith("still here?")
     assert "-C" not in command_args
 
 

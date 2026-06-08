@@ -54,6 +54,15 @@ BACKEND_DISPLAY_NAME_CODEX = "⚡ Codex"
 CODEX_BINARY_NAME = "codex"
 CODEX_CLI_DEFAULT_PATH = os.path.expanduser("~/.npm-global/bin/codex")
 CODEX_SESSIONS_RELATIVE_DIR = ".codex/sessions"
+BOT_MODE_FILE_DELIVERY_PROMPT_APPENDIX = (
+    "You are running inside a Telegram bot. The bot can deliver files from your "
+    "final answer when you include service markers. If the user asks you to send, "
+    "attach, or share a file, include [SEND_FILE:/absolute/path] with the real "
+    "absolute path. If the user asks you to show, read, or display file contents, "
+    "include [SHOW_FILE:/absolute/path] with the real absolute path. Do not explain "
+    "these markers to the user; the bot removes them and performs the action."
+)
+BOT_MODE_USER_PROMPT_HEADER = "User request:"
 
 STDOUT_EVENT_TYPE_THREAD_STARTED = "thread.started"
 STDOUT_EVENT_TYPE_TURN_STARTED = "turn.started"
@@ -103,6 +112,14 @@ def _resolve_codex_binary_path() -> str:
     )
 
 
+def _append_bot_mode_file_delivery_instructions(prompt_text: str) -> str:
+    """Append Telegram file-delivery marker rules to a Codex prompt."""
+    return (
+        f"{BOT_MODE_FILE_DELIVERY_PROMPT_APPENDIX}\n\n"
+        f"{BOT_MODE_USER_PROMPT_HEADER}\n{prompt_text}"
+    )
+
+
 class CodexBackend(CodingAgentBackend):
     """Adapter for Codex CLI protocol and rollout session files."""
 
@@ -125,6 +142,7 @@ class CodexBackend(CodingAgentBackend):
     ) -> list[str]:
         """Build Codex CLI argv for one turn."""
         del image_paths
+        prompt_text = _append_bot_mode_file_delivery_instructions(prompt_text)
         common_flags = [
             CLI_FLAG_JSON,
             CLI_FLAG_BYPASS_APPROVALS,

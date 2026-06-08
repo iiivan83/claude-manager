@@ -12,7 +12,7 @@ Telegram-бот, который служит пультом управления
 - Наблюдение за сессиями в реальном времени (watcher)
 - Глобальный режим `/all`: мониторинг сообщений из всех проектов с переходом по командам вида `/3s12`
 - Отправка фотографий и файлов (Claude сам читает файл)
-- Доставка файлов из ответа Claude пользователю — через маркеры `[SEND_FILE:path]` и `[SHOW_FILE:path]` в тексте ответа
+- Доставка файлов из ответа агента пользователю — через маркеры `[SEND_FILE:path]` и `[SHOW_FILE:path]` в тексте ответа
 - Дневная нумерация сессий (#1, #2, #3...)
 - Переключение между проектами прямо из Telegram (команда `/projects` и `/pN`)
 
@@ -73,7 +73,7 @@ claude_manager/
 │   ├── telegram_sender.py    # Отправка сообщений в Telegram с retry, fallback на plain text
 │   ├── telegram_file_downloader.py  # Скачивание файлов из Telegram на диск с retry при таймаутах
 │   ├── media_group_handler.py      # Агрегация фото-альбомов (media_group_id → единый пакет для Claude)
-│   ├── file_delivery.py      # Обработка маркеров [SEND_FILE:path] и [SHOW_FILE:path] в ответах Claude
+│   ├── file_delivery.py      # Обработка маркеров [SEND_FILE:path] и [SHOW_FILE:path] в ответах агента
 │   ├── claude_interaction.py  # Оркестрация запросов к Claude: занятость, progress, watchdog, финальный ответ
 │   ├── config.py             # Загрузка и валидация настроек из .env
 │   ├── claude_runner.py      # Обёртка для запуска Claude Code CLI (subprocess + stream-json)
@@ -119,7 +119,7 @@ claude_manager/
 
 Код организован по слоям с чёткими границами ответственности:
 
-- **Транспортный слой** (bot.py, telegram_agent_handlers, telegram_session_handlers, telegram_input_handlers, telegram_lifecycle_handlers, telegram_project_handlers, telegram_response_delivery, telegram_sender, telegram_file_downloader, media_group_handler, file_delivery, claude_interaction) — приём сообщений из Telegram, отправка ответов, скачивание файлов, агрегация альбомов, доставка файлов из ответа Claude, оркестрация запросов к Claude CLI. `bot.py` — facade-точка сборки: создаёт Application, регистрирует handlers, инициализирует callback-зависимости и сохраняет compatibility re-export старых имён. Реальная логика Telegram-сценариев живёт в handler-модулях по ответственности: agent, session, input, lifecycle и project. Остальные модули слоя не импортируют bot.py — зависимости разрешаются через callback-функции, которые bot.py передаёт при старте (init_callbacks). Знает о Telegram API, не знает внутренности Claude.
+- **Транспортный слой** (bot.py, telegram_agent_handlers, telegram_session_handlers, telegram_input_handlers, telegram_lifecycle_handlers, telegram_project_handlers, telegram_response_delivery, telegram_sender, telegram_file_downloader, media_group_handler, file_delivery, claude_interaction) — приём сообщений из Telegram, отправка ответов, скачивание файлов, агрегация альбомов, доставка файлов из ответа агента, оркестрация запросов к CLI. `bot.py` — facade-точка сборки: создаёт Application, регистрирует handlers, инициализирует callback-зависимости и сохраняет compatibility re-export старых имён. Реальная логика Telegram-сценариев живёт в handler-модулях по ответственности: agent, session, input, lifecycle и project. Остальные модули слоя не импортируют bot.py — зависимости разрешаются через callback-функции, которые bot.py передаёт при старте (init_callbacks). Знает о Telegram API, не знает внутренности Claude.
 - **Слой бизнес-логики** (session_manager, daily_session_registry, project_manager, silence_mode_registry) — управление сессиями, нумерация, переключение между проектами, режим тишины. Не знает ни про Telegram, ни про процессы.
 - **Слой инфраструктуры** (process_manager, process_state, claude_runner) — запуск процессов, хранение in-memory state процессов, чтение stdout, протокол stream-json. Не знает про Telegram.
 - **Утилиты** (message_splitter, session_reader, file_sender) — вспомогательные функции без состояния.
