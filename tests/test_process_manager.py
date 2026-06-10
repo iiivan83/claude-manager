@@ -39,6 +39,9 @@ from claude_manager.process_manager import (
     update_session_id,
 )
 import claude_manager.process_manager as pm_module
+import claude_manager.process_events as process_events_module
+import claude_manager.process_retry as process_retry_module
+import claude_manager.process_send as process_send_module
 
 
 # --- Фикстуры ---
@@ -303,7 +306,7 @@ class TestBackendAwareProcessState:
         backend_subprocess = _make_backend_subprocess(events=events)
 
         with patch(
-            "claude_manager.process_manager.start_subprocess_for_backend",
+            "claude_manager.process_lifecycle.start_subprocess_for_backend",
             new_callable=AsyncMock,
             create=True,
         ) as mock_start:
@@ -358,11 +361,11 @@ class TestBackendAwareProcessState:
 
         with (
             patch(
-                "claude_manager.process_manager.start_subprocess_for_backend",
+                "claude_manager.process_lifecycle.start_subprocess_for_backend",
                 new_callable=AsyncMock,
                 create=True,
             ) as mock_start,
-            patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock),
+            patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock),
         ):
             mock_start.side_effect = [failed_process, successful_process]
 
@@ -394,7 +397,7 @@ class TestBackendAwareProcessState:
         session_id = "codex-start-fails"
 
         with patch(
-            "claude_manager.process_manager.start_subprocess_for_backend",
+            "claude_manager.process_lifecycle.start_subprocess_for_backend",
             new_callable=AsyncMock,
             create=True,
         ) as mock_start:
@@ -501,7 +504,7 @@ class TestOrphanProcessPrevention:
         second_process = _make_backend_subprocess(pid=10002, events=second_events)
 
         with patch(
-            "claude_manager.process_manager.start_subprocess_for_backend",
+            "claude_manager.process_lifecycle.start_subprocess_for_backend",
             new_callable=AsyncMock,
             create=True,
         ) as mock_start:
@@ -539,7 +542,7 @@ class TestOrphanProcessPrevention:
         assert pm_module._processes[(session_id, BackendName.CODEX)] is second_process
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_create_process_new_session(mock_start):
     """Создание нового процесса без resume."""
     mock_process = _make_claude_process()
@@ -556,7 +559,7 @@ async def test_create_process_new_session(mock_start):
     assert session_id in pm_module._stop_events
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_create_process_with_temp_id_starts_without_resume(mock_start):
     """Процесс с временным ID (_new_XXXX) запускается без --resume."""
     mock_process = _make_claude_process()
@@ -571,7 +574,7 @@ async def test_create_process_with_temp_id_starts_without_resume(mock_start):
     assert pm_module._processes[temp_id] is mock_process
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_create_process_resume(mock_start):
     """Создание процесса с resume существующей сессии."""
     mock_process = _make_claude_process()
@@ -585,7 +588,7 @@ async def test_create_process_resume(mock_start):
     assert pm_module._processes[existing_id] is mock_process
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_create_process_claude_not_found(mock_start):
     """ProcessManagerError при отсутствии Claude CLI."""
     mock_start.side_effect = ClaudeStartError("Claude Code CLI не найден")
@@ -597,7 +600,7 @@ async def test_create_process_claude_not_found(mock_start):
 # --- Юнит-тесты: send_message ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_send_message_success(mock_start):
     """Успешная отправка сообщения и получение ответа."""
     events = [
@@ -624,7 +627,7 @@ async def test_send_message_success(mock_start):
     assert result.retries_used == 0
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_send_message_with_progress(mock_start):
     """Промежуточные обновления передаются через progress_callback."""
     events = [
@@ -666,7 +669,7 @@ async def test_send_message_with_progress(mock_start):
 # --- Юнит-тесты: stop_process ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_stop_process_running(mock_start):
     """Остановка работающего процесса."""
     mock_process = _make_claude_process()
@@ -682,7 +685,7 @@ async def test_stop_process_running(mock_start):
     assert session_id not in pm_module._processes
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_stop_process_already_stopped(mock_start):
     """Остановка уже завершённого процесса."""
     mock_process = _make_claude_process()
@@ -709,7 +712,7 @@ async def test_stop_nonexistent_session():
 # --- Юнит-тесты: is_busy ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_is_busy_after_completion(mock_start):
     """is_busy возвращает False после завершения запроса."""
     events = [
@@ -740,7 +743,7 @@ def test_is_busy_nonexistent_session():
 # --- Юнит-тесты: has_process ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_has_process_existing(mock_start):
     """Наличие запущенного процесса."""
     mock_process = _make_claude_process()
@@ -756,7 +759,7 @@ def test_has_process_nonexistent():
     assert has_process("nonexistent") is False
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_has_process_finished(mock_start):
     """has_process для завершившегося процесса возвращает False."""
     mock_process = _make_claude_process()
@@ -773,7 +776,7 @@ async def test_has_process_finished(mock_start):
 # --- Юнит-тесты: update_session_id ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_update_session_id(mock_start):
     """Обновление ключа сессии во всех словарях."""
     mock_process = _make_claude_process()
@@ -796,7 +799,7 @@ async def test_update_session_id(mock_start):
     assert pm_module._session_id_aliases[old_id] == new_id
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_stop_process_resolves_old_temp_id_after_remap(mock_start):
     """stop_process по старому temp-id останавливает реальный процесс после ремаппинга."""
     mock_process = _make_claude_process()
@@ -816,7 +819,7 @@ async def test_stop_process_resolves_old_temp_id_after_remap(mock_start):
     assert has_process(temp_id) is False
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_is_busy_resolves_old_temp_id_after_remap(mock_start):
     """is_busy по старому temp-id читает состояние реального session_id."""
     mock_start.return_value = _make_claude_process()
@@ -833,7 +836,7 @@ async def test_is_busy_resolves_old_temp_id_after_remap(mock_start):
 # --- Граничные случаи ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_send_message_empty_result(mock_start):
     """Обработка пустого ответа от Claude."""
     events = [
@@ -856,7 +859,7 @@ async def test_send_message_empty_result(mock_start):
     assert result.is_error is False
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_send_message_no_response_requested(mock_start):
     """Фильтрация служебного ответа."""
     events = [
@@ -879,7 +882,7 @@ async def test_send_message_no_response_requested(mock_start):
     assert result.is_error is False
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_progress_throttle_blocks_fast_updates(mock_start):
     """Промежуточные обновления не отправляются чаще раза в 30 секунд."""
     events = [
@@ -922,7 +925,7 @@ async def test_progress_throttle_blocks_fast_updates(mock_start):
     assert call_args[1] == "Первая мысль"
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_progress_throttle_allows_after_interval(mock_start):
     """Обновление отправляется через 30 секунд."""
     events = [
@@ -960,14 +963,14 @@ async def test_progress_throttle_allows_after_interval(mock_start):
     # Патчим _should_send_progress напрямую (всегда True), а не time.monotonic.
     # Причина: asyncio.wait_for (добавленный в claude_runner) тоже вызывает
     # time.monotonic() внутри, поэтому глобальный патч time.monotonic ломает asyncio.
-    with patch.object(pm_module, "_should_send_progress", return_value=True):
+    with patch.object(process_events_module, "_should_send_progress", return_value=True):
         await send_message(session_id, "Привет", progress_callback=progress_mock)
 
     # Оба обновления должны быть отправлены
     assert progress_mock.await_count == 2
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_session_id_updated_from_event(mock_start):
     """Обновление session_id из потока событий (временный -> настоящий)."""
     real_uuid = "84748107-a3de-4314-8c72-4c3b1b6e3605"
@@ -990,7 +993,7 @@ async def test_session_id_updated_from_event(mock_start):
     assert result.session_id == real_uuid
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_cleanup_uses_real_session_id_after_remap_then_stop(mock_start):
     """После temp→real remap и /stop cleanup удаляет stop_event реального ключа."""
     real_uuid = "84748107-a3de-4314-8c72-4c3b1b6e3605"
@@ -1023,7 +1026,7 @@ async def test_cleanup_uses_real_session_id_after_remap_then_stop(mock_start):
     assert real_uuid not in pm_module._stop_events
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_busy_flag_cleared_on_error(mock_start):
     """Флаг занятости снимается даже при ошибке."""
     mock_process = _make_claude_process()
@@ -1036,7 +1039,7 @@ async def test_busy_flag_cleared_on_error(mock_start):
     session_id = await create_process(session_id=None)
 
     # Патчим _retry_loop, чтобы не запускать реальные ретраи
-    with patch.object(pm_module, "_retry_loop") as mock_retry:
+    with patch.object(process_send_module, "_retry_loop") as mock_retry:
         error_result = SendResult(
             text="Error", session_id=session_id, is_error=True, retries_used=MAX_RETRIES,
         )
@@ -1055,7 +1058,7 @@ async def test_send_message_no_process():
         await send_message("nonexistent", "Привет")
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_send_message_retry_on_error(mock_start):
     """Автоматический ретрай при ошибке от Claude."""
     error_events = [
@@ -1085,7 +1088,7 @@ async def test_send_message_retry_on_error(mock_start):
     # 1-й вызов: create_process, 2-й вызов: _restart_process в retry_loop
     mock_start.side_effect = [initial_process, retry_process]
 
-    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+    with patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock):
         session_id = await create_process(session_id=None)
         result = await send_message(session_id, "Привет")
 
@@ -1094,7 +1097,7 @@ async def test_send_message_retry_on_error(mock_start):
     assert result.retries_used == 1
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_send_message_all_retries_exhausted(mock_start):
     """Исчерпание всех ретраев."""
     def make_error_events():
@@ -1116,7 +1119,7 @@ async def test_send_message_all_retries_exhausted(mock_start):
     ]
     mock_start.side_effect = processes
 
-    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+    with patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock):
         session_id = await create_process(session_id=None)
         result = await send_message(session_id, "Привет")
 
@@ -1124,7 +1127,7 @@ async def test_send_message_all_retries_exhausted(mock_start):
     assert result.retries_used == MAX_RETRIES
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_stop_interrupts_retry_loop(mock_start):
     """Прерывание цикла ретраев командой /stop."""
     error_events = [
@@ -1147,13 +1150,13 @@ async def test_stop_interrupts_retry_loop(mock_start):
     async def fake_wait(sid, duration):
         raise ProcessStoppedError("Ожидание ретрая прервано командой /stop")
 
-    with patch.object(pm_module, "_wait_with_stop_check", side_effect=fake_wait):
+    with patch.object(process_retry_module, "_wait_with_stop_check", side_effect=fake_wait):
         with pytest.raises(ProcessStoppedError):
             await send_message(session_id, "Привет")
 
 
 @patch(
-    "claude_manager.process_manager.start_subprocess_for_backend",
+    "claude_manager.process_lifecycle.start_subprocess_for_backend",
     new_callable=AsyncMock,
     create=True,
 )
@@ -1207,13 +1210,13 @@ async def test_claude_session_resumes_after_stop_during_retry(mock_start):
     # /stop приходит во время ожидания ретрая (как в реальном инциденте):
     # сначала stop_process ставит флаг отмены, затем wait это видит и бросает.
     async def stop_during_retry_wait(
-        sid, duration, backend=BackendName.CLAUDE,
+        sid, duration, backend=BackendName.CLAUDE, owner_stop_event=None,
     ):
         await stop_process(sid, BackendName.CLAUDE)
         raise ProcessStoppedError("Ожидание ретрая прервано командой /stop")
 
     with patch.object(
-        pm_module, "_wait_with_stop_check", side_effect=stop_during_retry_wait,
+        process_retry_module, "_wait_with_stop_check", side_effect=stop_during_retry_wait,
     ):
         with pytest.raises(ProcessStoppedError):
             await send_message(
@@ -1240,7 +1243,156 @@ async def test_claude_session_resumes_after_stop_during_retry(mock_start):
 
 
 @patch(
-    "claude_manager.process_manager.start_subprocess_for_backend",
+    "claude_manager.process_lifecycle.start_subprocess_for_backend",
+    new_callable=AsyncMock,
+    create=True,
+)
+async def test_stopped_retry_loop_does_not_revive_after_new_send_takes_over(mock_start):
+    """Остановленный retry loop не воскресает, когда новый send занял ту же сессию.
+
+    Воспроизводит инцидент 10-06 в проекте «Блогер»: пользователь послал /stop
+    во время цикла ретраев, затем сразу возобновил разговор (reply-route в ту же
+    сессию). Новый send перезаписывает _stop_events[process_key] свежим
+    несработавшим Event (process_manager.py:922). Старый retry loop проверяет
+    флаг отмены СВЕЖИМ поиском по ключу, читает чужой несработавший Event,
+    не прерывается и переотправляет своё сообщение — два параллельных цикла на
+    одной сессии перемешивают разговоры.
+
+    Старый turn обязан завершиться по СВОЕМУ сигналу отмены, а не воскресать.
+    """
+    session_id = "3f4ca4d4-1111-2222-3333-444455556666"
+    backend = BackendName.CLAUDE
+
+    turn1_error = _make_backend_subprocess(
+        pid=111,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "result": "Error",
+                "session_id": session_id,
+            },
+        ],
+    )
+    # Если остановленный loop ошибочно воскреснет — он перезапустится и
+    # переотправит сообщение, израсходовав вторую заглушку start.
+    turn1_revived = _make_backend_subprocess(
+        pid=222,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "ВОСКРЕСШИЙ ПОВТОР",
+                "session_id": session_id,
+            },
+        ],
+    )
+    mock_start.side_effect = [turn1_error, turn1_revived]
+
+    # Во время ожидания ретрая: /stop по S1, затем новый send (S2) занимает тот
+    # же process_key и перезаписывает _stop_events свежим Event — ровно как
+    # _send_message_backend_aware:922. Возвращаемся БЕЗ raise: старый loop обязан
+    # прерваться сам по своему сигналу отмены.
+    async def stop_then_new_send_takes_over(sid, duration, *args, **kwargs):
+        await stop_process(sid, backend)
+        process_key = pm_module._make_backend_process_key(sid, backend)
+        pm_module._busy_flags[process_key] = True
+        pm_module._stop_events[process_key] = asyncio.Event()
+
+    with patch.object(
+        process_retry_module, "_wait_with_stop_check", side_effect=stop_then_new_send_takes_over,
+    ):
+        with pytest.raises(ProcessStoppedError):
+            await send_message(
+                session_id, "первое сообщение", backend=backend, cwd="/tmp/p",
+            )
+
+    assert mock_start.call_count == 1, (
+        "Остановленный retry loop воскрес и переотправил сообщение: "
+        f"start вызван {mock_start.call_count} раз вместо 1"
+    )
+
+
+@patch(
+    "claude_manager.process_lifecycle.start_subprocess_for_backend",
+    new_callable=AsyncMock,
+    create=True,
+)
+async def test_stopped_turn_cleanup_does_not_clobber_new_send_state(mock_start):
+    """finally остановленного turn-а не стирает busy/stop_event нового send.
+
+    Вторая грань того же инцидента 10-06: даже когда старый turn завершается,
+    его finally чистит состояние по process_key безусловно. Если этот ключ уже
+    занял новый send, старый finally стирает busy-флаг и stop_event нового send —
+    защита от двойного запуска снова дырявая, а /stop по новому send уже
+    не находит сигнал отмены. Очистка обязана срабатывать только для своего
+    собственного turn-а (по идентичности Event), а не для перехватившего.
+    """
+    session_id = "a1b2c3d4-5555-6666-7777-888899990000"
+    backend = BackendName.CLAUDE
+    process_key = (session_id, backend)
+
+    turn1_error = _make_backend_subprocess(
+        pid=333,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
+                "result": "Error",
+                "session_id": session_id,
+            },
+        ],
+    )
+    turn1_revived = _make_backend_subprocess(
+        pid=444,
+        events=[
+            {"type": "system", "subtype": "init", "session_id": session_id},
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "ВОСКРЕСШИЙ ПОВТОР",
+                "session_id": session_id,
+            },
+        ],
+    )
+    mock_start.side_effect = [turn1_error, turn1_revived]
+
+    new_send_state = {}
+
+    async def stop_then_new_send_takes_over(sid, duration, *args, **kwargs):
+        await stop_process(sid, backend)
+        new_event = asyncio.Event()
+        pm_module._busy_flags[process_key] = True
+        pm_module._stop_events[process_key] = new_event
+        new_send_state["event"] = new_event
+
+    with patch.object(
+        process_retry_module, "_wait_with_stop_check", side_effect=stop_then_new_send_takes_over,
+    ):
+        try:
+            await send_message(
+                session_id, "первое сообщение", backend=backend, cwd="/tmp/p",
+            )
+        except ProcessStoppedError:
+            pass
+
+    assert pm_module._stop_events.get(process_key) is new_send_state["event"], (
+        "finally остановленного turn-а стёр stop_event нового send"
+    )
+    assert pm_module._busy_flags.get(process_key) is True, (
+        "finally остановленного turn-а сбросил busy-флаг нового send"
+    )
+
+
+@patch(
+    "claude_manager.process_lifecycle.start_subprocess_for_backend",
     new_callable=AsyncMock,
     create=True,
 )
@@ -1285,7 +1437,7 @@ async def test_permanent_overflow_error_skips_retries(mock_start):
     mock_start.side_effect = [overflow_turn, success_turn]
     retry_callback = AsyncMock()
 
-    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+    with patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock):
         result = await send_message(
             session_id, "прочитай файл",
             retry_callback=retry_callback,
@@ -1302,7 +1454,7 @@ async def test_permanent_overflow_error_skips_retries(mock_start):
 
 
 @patch(
-    "claude_manager.process_manager.start_subprocess_for_backend",
+    "claude_manager.process_lifecycle.start_subprocess_for_backend",
     new_callable=AsyncMock,
     create=True,
 )
@@ -1337,7 +1489,7 @@ async def test_transient_error_still_retries_backend_aware(mock_start):
     )
     mock_start.side_effect = [transient_turn, success_turn]
 
-    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+    with patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock):
         result = await send_message(
             session_id, "привет",
             backend=BackendName.CLAUDE, cwd="/tmp/p",
@@ -1349,7 +1501,7 @@ async def test_transient_error_still_retries_backend_aware(mock_start):
     assert result.permanent_error_kind is None
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_retry_callback_called(mock_start):
     """retry_callback вызывается перед каждой повторной попыткой."""
     error_events = [
@@ -1380,7 +1532,7 @@ async def test_retry_callback_called(mock_start):
 
     retry_mock = AsyncMock()
 
-    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+    with patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock):
         session_id = await create_process(session_id=None)
         await send_message(
             session_id, "Привет", retry_callback=retry_mock,
@@ -1395,7 +1547,7 @@ async def test_retry_callback_called(mock_start):
     assert call_args[3] == "Error"  # error_reason из первой ошибки
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_process_crash_during_events(mock_start):
     """Обработка неожиданного завершения процесса (нет события result)."""
     # Процесс завершается без result (stdout закрывается)
@@ -1418,7 +1570,7 @@ async def test_process_crash_during_events(mock_start):
     # 1-й: create_process, 2-й: _restart_process в retry_loop
     mock_start.side_effect = [initial_process, retry_process]
 
-    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+    with patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock):
         session_id = await create_process(session_id=None)
         result = await send_message(session_id, "Привет")
 
@@ -1427,7 +1579,7 @@ async def test_process_crash_during_events(mock_start):
     assert result.retries_used == 1
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_broken_pipe_triggers_retry(mock_start):
     """BrokenPipeError при отправке приводит к ретраю."""
     broken_process = _make_claude_process()
@@ -1448,7 +1600,7 @@ async def test_broken_pipe_triggers_retry(mock_start):
     # 1-й: create_process (broken_pipe), 2-й: _restart_process
     mock_start.side_effect = [broken_process, retry_process]
 
-    with patch.object(pm_module, "_wait_with_stop_check", new_callable=AsyncMock):
+    with patch.object(process_retry_module, "_wait_with_stop_check", new_callable=AsyncMock):
         session_id = await create_process(session_id=None)
         result = await send_message(session_id, "Привет")
 
@@ -1456,7 +1608,7 @@ async def test_broken_pipe_triggers_retry(mock_start):
     assert result.retries_used == 1
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_restart_process_reuses_existing_stop_event(mock_start):
     """Retry-перезапуск сохраняет тот же stop_event на весь turn."""
     session_id = "test-session"
@@ -1469,7 +1621,7 @@ async def test_restart_process_reuses_existing_stop_event(mock_start):
     assert pm_module._stop_events[session_id] is existing_stop_event
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_restart_process_aborts_when_stop_already_requested(mock_start):
     """Если /stop уже установлен, retry не запускает новый процесс."""
     session_id = "test-session"
@@ -1486,7 +1638,7 @@ async def test_restart_process_aborts_when_stop_already_requested(mock_start):
 # --- Тесты: is_busy во время обработки запроса ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_is_busy_during_request(mock_start):
     """is_busy возвращает True во время обработки запроса."""
     busy_checked = False
@@ -1509,7 +1661,7 @@ async def test_is_busy_during_request(mock_start):
     session_id = await create_process(session_id=None)
 
     # Оборачиваем _process_events, чтобы проверить is_busy внутри
-    original_process_events = pm_module._process_events
+    original_process_events = process_send_module._process_events
 
     async def wrapped_process_events(*args, **kwargs):
         nonlocal busy_checked
@@ -1518,7 +1670,7 @@ async def test_is_busy_during_request(mock_start):
         busy_checked = True
         return await original_process_events(*args, **kwargs)
 
-    with patch.object(pm_module, "_process_events", side_effect=wrapped_process_events):
+    with patch.object(process_send_module, "_process_events", side_effect=wrapped_process_events):
         await send_message(session_id, "Привет")
 
     assert busy_checked is True
@@ -1609,7 +1761,7 @@ class TestStopAllProcesses:
 # --- Тесты конкурентного доступа (Lock) ---
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_concurrent_two_sends_same_session(mock_start):
     """Два одновременных send_message для одной сессии — ровно один получает ошибку."""
     events = [
@@ -1645,7 +1797,7 @@ async def test_concurrent_two_sends_same_session(mock_start):
         except (ProcessManagerError, ProcessNotFoundError) as error:
             errors.append(error)
 
-    with patch.object(pm_module, "_process_events", side_effect=slow_process_events):
+    with patch.object(process_send_module, "_process_events", side_effect=slow_process_events):
         await asyncio.gather(safe_send("first"), safe_send("second"))
 
     # Ровно один успех и ровно одна ошибка «уже занят»
@@ -1654,7 +1806,7 @@ async def test_concurrent_two_sends_same_session(mock_start):
     assert "уже занят" in str(errors[0])
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_concurrent_send_and_stop(mock_start):
     """Одновременный send_message + stop_process — нет зомби в _busy_flags."""
     events = [
@@ -1694,7 +1846,7 @@ async def test_concurrent_send_and_stop(mock_start):
         await asyncio.sleep(0.01)
         await stop_process(session_id)
 
-    with patch.object(pm_module, "_process_events", side_effect=slow_process_events):
+    with patch.object(process_send_module, "_process_events", side_effect=slow_process_events):
         await asyncio.gather(do_send(), do_stop())
 
     # Главная проверка: после обоих операций — session_id НЕТ в _busy_flags (нет зомби)
@@ -1727,7 +1879,7 @@ async def test_stop_does_not_leave_zombie_busy_flag():
     assert session_id not in pm_module._busy_flags
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_update_session_id_atomic_under_lock(mock_start):
     """update_session_id переносит ключи атомарно во всех трёх словарях."""
     mock_process = _make_claude_process()
@@ -1929,7 +2081,7 @@ async def test_session_id_callback_not_called_when_id_unchanged():
     callback_mock.assert_not_awaited()
 
 
-@patch("claude_manager.process_manager.start_process")
+@patch("claude_manager.process_lifecycle.start_process")
 async def test_send_message_passes_callback_to_execute_send(mock_start):
     """send_message пробрасывает session_id_callback через цепочку вызовов."""
     events = [
@@ -1949,7 +2101,7 @@ async def test_send_message_passes_callback_to_execute_send(mock_start):
     callback_mock = AsyncMock()
 
     # Мокаем _execute_send, чтобы проверить что callback передаётся
-    with patch.object(pm_module, "_execute_send", new_callable=AsyncMock) as mock_execute:
+    with patch.object(process_send_module, "_execute_send", new_callable=AsyncMock) as mock_execute:
         mock_execute.return_value = SendResult(
             text="OK", session_id="abc-123", is_error=False, retries_used=0,
         )
@@ -2043,7 +2195,9 @@ async def test_update_session_id_called_inside_process_events():
     pm_module._busy_flags[temp_id] = True
     pm_module._stop_events[temp_id] = asyncio.Event()
 
-    with patch.object(pm_module, "update_session_id", new_callable=AsyncMock) as mock_update:
+    with patch.object(
+        process_events_module, "update_session_id", new_callable=AsyncMock,
+    ) as mock_update:
         await _process_events(
             claude_process, temp_id,
             progress_callback=None,
@@ -2087,8 +2241,8 @@ async def test_execute_send_passes_remapped_session_id_to_retry_loop():
     original_callback = AsyncMock()
 
     with (
-        patch.object(pm_module, "_process_events", side_effect=fake_process_events),
-        patch.object(pm_module, "_retry_loop", new_callable=AsyncMock) as mock_retry,
+        patch.object(process_send_module, "_process_events", side_effect=fake_process_events),
+        patch.object(process_send_module, "_retry_loop", new_callable=AsyncMock) as mock_retry,
     ):
         mock_retry.return_value = SendResult(
             text="OK после ретрая", session_id=real_id,

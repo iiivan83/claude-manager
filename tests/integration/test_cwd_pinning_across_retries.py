@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from claude_manager import config, process_manager
+from claude_manager import config, process_lifecycle, process_manager, process_retry
 from claude_manager.claude_runner import ClaudeProcessError
 from claude_manager.process_manager import SendResult, send_message
 
@@ -88,18 +88,18 @@ class TestCwdPinningAcrossRetries:
 
         with (
             patch.object(
-                process_manager, "start_process",
+                process_lifecycle, "start_process",
                 side_effect=fake_start_process,
             ),
             patch.object(
-                process_manager, "_process_events",
+                process_retry, "_process_events",
                 new_callable=AsyncMock, return_value=success_result,
             ),
             patch.object(
-                process_manager, "_wait_with_stop_check",
+                process_retry, "_wait_with_stop_check",
                 side_effect=fake_wait_switches_project,
             ),
-            patch.object(process_manager, "MAX_RETRIES", 1),
+            patch.object(process_retry, "MAX_RETRIES", 1),
         ):
             result = await send_message(SESSION_ID, "hello")
 

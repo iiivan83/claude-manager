@@ -25,6 +25,7 @@ from claude_manager.process_manager import (
     stop_process,
 )
 import claude_manager.process_manager as pm_module
+import claude_manager.process_retry as process_retry_module
 
 
 # --- Вспомогательные функции ---
@@ -98,7 +99,7 @@ class TestDev1StopEventSurvivesStopProcess:
         mock_process = _make_claude_process()
         mock_start = AsyncMock(return_value=mock_process)
 
-        with patch("claude_manager.process_manager.start_process", mock_start):
+        with patch("claude_manager.process_lifecycle.start_process", mock_start):
             session_id = await create_process()
 
         await stop_process(session_id)
@@ -119,7 +120,7 @@ class TestDev1StopEventSurvivesStopProcess:
         mock_process = _make_claude_process()
         mock_start = AsyncMock(return_value=mock_process)
 
-        with patch("claude_manager.process_manager.start_process", mock_start):
+        with patch("claude_manager.process_lifecycle.start_process", mock_start):
             session_id = await create_process()
 
         await stop_process(session_id)
@@ -143,7 +144,7 @@ class TestDev1StopEventSurvivesStopProcess:
         mock_process = _make_claude_process()
         mock_start = AsyncMock(return_value=mock_process)
 
-        with patch("claude_manager.process_manager.start_process", mock_start):
+        with patch("claude_manager.process_lifecycle.start_process", mock_start):
             await create_process(session_id=session_id)
 
         # Имитируем вызов stop_process (устанавливает флаг и удаляет записи)
@@ -176,7 +177,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_process = _make_claude_process()
         mock_start = AsyncMock(return_value=mock_process)
 
-        with patch("claude_manager.process_manager.start_process", mock_start):
+        with patch("claude_manager.process_lifecycle.start_process", mock_start):
             await pm_module._restart_process(session_id, "/test/cwd")
 
         assert session_id in pm_module._stop_events, (
@@ -195,7 +196,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_process = _make_claude_process()
         mock_start = AsyncMock(return_value=mock_process)
 
-        with patch("claude_manager.process_manager.start_process", mock_start):
+        with patch("claude_manager.process_lifecycle.start_process", mock_start):
             await pm_module._restart_process(session_id, "/test/cwd")
 
         assert session_id in pm_module._busy_flags, (
@@ -215,7 +216,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_process = _make_claude_process()
         mock_start = AsyncMock(return_value=mock_process)
 
-        with patch("claude_manager.process_manager.start_process", mock_start):
+        with patch("claude_manager.process_lifecycle.start_process", mock_start):
             await pm_module._restart_process(session_id, "/test/cwd")
 
         # Повторный stop_process должен работать
@@ -235,7 +236,7 @@ class TestDev2RestartProcessCreatesControlStructures:
         mock_process = _make_claude_process()
         mock_start = AsyncMock(return_value=mock_process)
 
-        with patch("claude_manager.process_manager.start_process", mock_start):
+        with patch("claude_manager.process_lifecycle.start_process", mock_start):
             await pm_module._restart_process(session_id, "/test/cwd")
 
         # Все три словаря содержат одинаковые ключи

@@ -1,0 +1,61 @@
+{
+  "skill": "test-guarded-refactoring",
+  "task_description": "Split oversized src/claude_manager/process_manager.py into focused modules without changing behavior.",
+  "target_files": [
+    "src/claude_manager/process_manager.py"
+  ],
+  "test_framework": "pytest",
+  "test_command": ".venv/bin/python -m pytest tests/test_process_manager.py tests/integration/test_message_path.py tests/integration/test_cwd_pinning_across_retries.py tests/test_stop_triggers_retry_whitebox.py tests/test_stop_triggers_retry_blackbox.py -q",
+  "started_at": "2026-06-10T14:17:00+05:00",
+  "environment_notes": [
+    "Working in current dirty checkout because target changes are already uncommitted.",
+    "Archived log-step.sh uses BSD date -j and fails on Linux; this log is maintained directly for this run."
+  ],
+  "steps": [
+    {
+      "step_id": "0-init",
+      "start_time": "2026-06-10T14:17:00+05:00",
+      "end_time": "2026-06-10T14:18:00+05:00",
+      "duration_seconds": 60,
+      "agent": "orchestrator",
+      "success": true,
+      "comment": "Identified Python/pytest target, confirmed baseline relevant tests: 107 passed."
+    },
+    {
+      "step_id": "1-refactoring-planner-cli-subprocess",
+      "start_time": "2026-06-10T14:18:00+05:00",
+      "end_time": "2026-06-10T14:24:00+05:00",
+      "duration_seconds": 360,
+      "agent": "codex-exec-refactoring-planner",
+      "success": false,
+      "comment": "Nested planner produced no artifacts and was terminated; continued direct test-guarded refactoring in current session."
+    },
+    {
+      "step_id": "2-refactor-split-process-manager",
+      "start_time": "2026-06-10T14:24:00+05:00",
+      "end_time": "2026-06-10T14:46:00+05:00",
+      "duration_seconds": 1320,
+      "agent": "orchestrator-direct",
+      "success": true,
+      "comment": "Split process_manager.py into process_types, process_events, process_stop, process_lifecycle, process_retry, process_send, and process_backend_send; relevant tests passed after each stage."
+    },
+    {
+      "step_id": "3-final-test-runner",
+      "start_time": "2026-06-10T14:46:00+05:00",
+      "end_time": "2026-06-10T14:48:00+05:00",
+      "duration_seconds": 120,
+      "agent": "orchestrator",
+      "success": true,
+      "comment": "Full test suite passed: 1198 passed, 4 skipped, 3 warnings."
+    },
+    {
+      "step_id": "3.5-quality-audit",
+      "start_time": "2026-06-10T14:48:00+05:00",
+      "end_time": "2026-06-10T14:49:00+05:00",
+      "duration_seconds": 60,
+      "agent": "orchestrator",
+      "success": true,
+      "comment": "All touched process_*.py files are below 300 lines; process_manager.py is 84 lines and has 0 public top-level functions."
+    }
+  ]
+}

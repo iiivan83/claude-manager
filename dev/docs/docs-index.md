@@ -8,7 +8,7 @@
 - **adr/** — записи архитектурных решений (ADR, Architecture Decision Records). Каждая запись фиксирует решение раз и навсегда — не редактируется
 - **specs/** — спецификации скиллов и модулей. После реализации переносятся в `specs/realised/`
 - **session-reports/** — отчёты по рабочим сессиям, сгруппированы по дате (`DD-MM/`)
-- **logs/** — логи работы пайплайнов: root-cause отчёты и артефакты тестирования
+- **logs/** — логи работы пайплайнов: root-cause отчёты, артефакты рефакторинга и результаты тестирования
 - **changelog/** — история изменений проекта
   - [changelog/2026-04.md](changelog/2026-04.md) — апрель 2026 (11.04–25.04): asyncio.Lock в process_manager, watcher уведомляет только владельца сессии, text-блоки в прогрессе, ConnectionError, /restart, MediaGroup, SHOW_FILE, watchdog тишины, EDEADLK retry, silence mode
   - [changelog/12.04_19.05-md-file-delivery.md](changelog/12.04_19.05-md-file-delivery.md) — 12.04.2026: отправка файлов из ответа Claude пользователю через маркеры `[SEND_FILE:path]` и telegramify-markdown
@@ -130,6 +130,10 @@
 - [logs/testing/e2e-test-results_10-04-19-02.md](logs/testing/e2e-test-results_10-04-19-02.md) — результаты прогона от 10.04, 19:02
 - [logs/testing/e2e-test-plan_13-04-16-50.md](logs/testing/e2e-test-plan_13-04-16-50.md) — план от 13.04, 16:50
 - [logs/testing/e2e-test-results_13-04-17-00.md](logs/testing/e2e-test-results_13-04-17-00.md) — результаты от 13.04, 17:00
+
+### Артефакты рефакторинга
+
+- **logs/refactoring/** — журналы test-guarded refactoring: что именно разрезали, какие проверки запускались и какие временные проблемы встретились
 
 ## Живые vs неизменяемые документы
 
