@@ -617,6 +617,135 @@ async def test_existing_unread_snapshot_is_not_overwritten() -> None:
 
 
 @pytest.mark.asyncio()
+async def test_enable_baselines_other_project_from_unread_cursor() -> None:
+    """All mode shows a backlog answer that already waited in another project."""
+    unread_buffer.save_snapshot(
+        "sess-video",
+        BackendName.CLAUDE,
+        raw_record_count=1,
+        last_delivered_idx=0,
+        last_modified_at=10.0,
+    )
+    file_info = _file("sess-video", "/sessions/video.jsonl", mtime=20.0)
+    row = _recent_row(
+        "/projects/video",
+        BackendName.CLAUDE,
+        file_info.session_id,
+        file_info.file_path,
+        file_info.last_modified_at,
+    )
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    backend.snapshots[file_info.file_path] = _snapshot([
+        _message("user", "task"),
+        _message("assistant", "waiting answer"),
+    ])
+    projects = [_project("video", "/projects/video")]
+
+    await _enable_with_recent([row], backend, projects)
+
+    callback = AsyncMock()
+    with patch.object(
+        project_manager,
+        "scan_available_projects",
+        new=AsyncMock(side_effect=AssertionError("poll discovery is forbidden")),
+    ), patch.object(
+        all_projects_monitor,
+        "_with_current_file_mtime",
+        new=AsyncMock(
+            side_effect=lambda project_session: _candidate_with_mtime(
+                project_session, 20.0,
+            )
+        ),
+        create=True,
+    ):
+        await all_projects_monitor.poll_once(callback)
+
+    callback.assert_awaited_once()
+    assert callback.call_args.args[7] == "waiting answer"
+
+    # The /all preview must not consume the unread cursor: entering the project
+    # later through /pN must still re-deliver the same backlog message.
+    assert unread_buffer.restore_snapshot(
+        "sess-video",
+        BackendName.CLAUDE,
+    ) == SessionUnreadState(
+        raw_record_count=1,
+        last_delivered_idx=0,
+        last_modified_at=10.0,
+    )
+
+
+async def _poll_with_mtime(callback: AsyncMock, mtime: float) -> None:
+    """Run a single all-mode poll with every candidate file at one mtime."""
+    with patch.object(
+        project_manager,
+        "scan_available_projects",
+        new=AsyncMock(side_effect=AssertionError("poll discovery is forbidden")),
+    ), patch.object(
+        all_projects_monitor,
+        "_with_current_file_mtime",
+        new=AsyncMock(
+            side_effect=lambda project_session: _candidate_with_mtime(
+                project_session, mtime,
+            )
+        ),
+        create=True,
+    ):
+        await all_projects_monitor.poll_once(callback)
+
+
+@pytest.mark.asyncio()
+async def test_reentering_all_mode_does_not_redeliver_shown_backlog() -> None:
+    """Re-entering /all keeps its own cursor and skips an already-shown answer."""
+    unread_buffer.save_snapshot(
+        "sess-video",
+        BackendName.CLAUDE,
+        raw_record_count=1,
+        last_delivered_idx=0,
+        last_modified_at=10.0,
+    )
+    file_info = _file("sess-video", "/sessions/video.jsonl", mtime=20.0)
+    row = _recent_row(
+        "/projects/video",
+        BackendName.CLAUDE,
+        file_info.session_id,
+        file_info.file_path,
+        file_info.last_modified_at,
+    )
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    backend.snapshots[file_info.file_path] = _snapshot([
+        _message("user", "task"),
+        _message("assistant", "waiting answer"),
+    ])
+    projects = [_project("video", "/projects/video")]
+
+    # First /all entry: the backlog answer is shown once.
+    await _enable_with_recent([row], backend, projects)
+    first_callback = AsyncMock()
+    await _poll_with_mtime(first_callback, 20.0)
+    first_callback.assert_awaited_once()
+    assert first_callback.call_args.args[7] == "waiting answer"
+
+    all_projects_monitor.disable_for_chat(CHAT_ID)
+
+    # Second /all entry without new file activity must not repeat the answer.
+    await _enable_with_recent([row], backend, projects)
+    second_callback = AsyncMock()
+    await _poll_with_mtime(second_callback, 20.0)
+    second_callback.assert_not_awaited()
+
+    # The unread snapshot stays intact for the real-project pending path.
+    assert unread_buffer.restore_snapshot(
+        "sess-video",
+        BackendName.CLAUDE,
+    ) == SessionUnreadState(
+        raw_record_count=1,
+        last_delivered_idx=0,
+        last_modified_at=10.0,
+    )
+
+
+@pytest.mark.asyncio()
 async def test_missing_candidate_file_is_non_fatal_without_discovery() -> None:
     """A disappeared candidate is skipped while other known files are delivered."""
     missing_file = _file("sess-missing", "/sessions/missing.jsonl")

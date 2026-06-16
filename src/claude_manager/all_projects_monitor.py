@@ -312,21 +312,43 @@ def _baseline_state_from_snapshot(
     project_session: _ProjectSession,
     snapshot: SessionFileSnapshot,
     watcher_state: object | None,
+    previous_all_mode_state: _AllMonitorState | None,
 ) -> _AllMonitorState:
     """Build an all-mode baseline cursor from one session-file snapshot."""
-    if watcher_state is None:
-        last_delivered_idx = len(snapshot.messages) - 1
-        raw_record_count = snapshot.raw_record_count
-    else:
+    last_delivered_idx = len(snapshot.messages) - 1
+    raw_record_count = snapshot.raw_record_count
+    baseline_modified_at = project_session.file_info.last_modified_at
+
+    if watcher_state is not None:
         last_delivered_idx = getattr(watcher_state, "last_delivered_idx")
         raw_record_count = getattr(watcher_state, "raw_record_count")
+    elif previous_all_mode_state is not None:
+        # All mode already delivered up to this cursor during an earlier session.
+        # Resume from its own progress so re-entering /all does not re-show those
+        # messages, and leave the unread snapshot untouched for the real-project
+        # pending path that consumes it on return.
+        last_delivered_idx = previous_all_mode_state.last_delivered_idx
+        raw_record_count = previous_all_mode_state.raw_record_count
+        baseline_modified_at = previous_all_mode_state.last_modified_at
+    else:
+        unread_state = unread_buffer.restore_snapshot(
+            project_session.file_info.session_id,
+            project_session.backend.name,
+        )
+        if unread_state is not None:
+            # Resume from the cursor a project switch saved earlier and rewind
+            # the baseline mtime, so the next poll re-reads the file and delivers
+            # the backlog the user had not yet seen in that other project.
+            last_delivered_idx = unread_state.last_delivered_idx
+            raw_record_count = unread_state.raw_record_count
+            baseline_modified_at = unread_state.last_modified_at or 0.0
 
     return _AllMonitorState(
         raw_record_count=raw_record_count,
         parsed_message_count=len(snapshot.messages),
         last_delivered_idx=last_delivered_idx,
         is_turn_active=snapshot.is_turn_active,
-        last_modified_at=project_session.file_info.last_modified_at,
+        last_modified_at=baseline_modified_at,
     )
 
 
@@ -334,6 +356,7 @@ async def _read_baseline_state(
     project_session: _ProjectSession,
     current_project_path: str,
     current_watcher_states: dict[BackendName, dict[str, object]],
+    previous_states: dict[tuple[str, str, BackendName], _AllMonitorState],
     semaphore: asyncio.Semaphore,
 ) -> tuple[tuple[str, str, BackendName], _AllMonitorState] | None:
     """Read one session baseline under a concurrency limit."""
@@ -351,23 +374,30 @@ async def _read_baseline_state(
         )
         return None
 
+    key = _state_key(
+        project_session.project_path,
+        file_info.session_id,
+        backend.name,
+    )
     watcher_state = _watcher_state_for_project_session(
         project_session,
         current_project_path,
         current_watcher_states,
     )
     return (
-        _state_key(
-            project_session.project_path,
-            file_info.session_id,
-            backend.name,
+        key,
+        _baseline_state_from_snapshot(
+            project_session,
+            snapshot,
+            watcher_state,
+            previous_states.get(key),
         ),
-        _baseline_state_from_snapshot(project_session, snapshot, watcher_state),
     )
 
 
 async def _build_baseline_states(
     project_sessions: list[_ProjectSession],
+    previous_states: dict[tuple[str, str, BackendName], _AllMonitorState],
 ) -> dict[tuple[str, str, BackendName], _AllMonitorState]:
     """Create initial cursors for the moment all-project mode is entered."""
     current_project_path = config.WORKING_DIR
@@ -382,6 +412,7 @@ async def _build_baseline_states(
                 project_session,
                 current_project_path,
                 current_watcher_states,
+                previous_states,
                 semaphore,
             )
             for project_session in project_sessions
@@ -411,7 +442,11 @@ async def enable_for_chat(chat_id: int) -> AllProjectsEnableResult:
                 message = message + "\n" + "\n".join(degraded_messages)
             return AllProjectsEnableResult(enabled=False, message=message)
 
-        baseline_states = await _build_baseline_states(project_sessions)
+        previous_states = dict(_states)
+        baseline_states = await _build_baseline_states(
+            project_sessions,
+            previous_states,
+        )
         baseline_keys = set(baseline_states)
         project_sessions = [
             session
