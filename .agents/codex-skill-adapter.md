@@ -26,5 +26,4 @@ copies. Claude source remains source of truth; generated mirrors are not hand-ma
 
 - Adapter rules only map runtime tools and placeholders.
 - Adapter rules do not change business logic, pipeline order, quality gates, artifacts, or tests.
-- Project business/domain additions stay in `.claude/skill-extensions/`.
 - Codex-specific operational rules live here or in root `AGENTS.md`, not inside generated mirrors.
