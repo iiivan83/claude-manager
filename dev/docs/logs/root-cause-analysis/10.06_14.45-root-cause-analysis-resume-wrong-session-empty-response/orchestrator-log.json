@@ -1,0 +1,99 @@
+{
+  "pipeline": "root-cause-analysis",
+  "problem_summary": "Два симптома инцидента stop+resume: (1) сообщение-возобновление ушло в сессию куратора вместо остановленной сессии форматов постов; (2) пользователь сначала получил «пустой ответ»",
+  "start_time": "2026-06-10T14:45:35+05:00",
+  "status": "completed",
+  "last_completed_stage": "phase_9_session_report",
+  "steps": [
+    {
+      "step_number": 1,
+      "stage": "phase_0_project_recon",
+      "status": "completed",
+      "start_time": "2026-06-10T14:45:35+05:00",
+      "end_time": "2026-06-10T14:46:45+05:00",
+      "duration_seconds": 120,
+      "comment": "Карта проекта из CLAUDE.md; architecture.md нет; скиллы проекта в _archive; найдены прошлые RCA: retry-loop-session-multiplication, session-overflow-retry-spam, message-routed-to-old-session"
+    },
+    {
+      "step_number": 2,
+      "stage": "phase_1_problem_context",
+      "status": "completed",
+      "start_time": "2026-06-10T14:46:45+05:00",
+      "end_time": "2026-06-10T15:22:18+05:00",
+      "comment": "Инцидент найден: 10-06 11:13-11:37, проект bloger, сессии #1 куратор (3f4ca4d4) и #2 форматы (235f7765); жалоба пользователя найдена в сессии 68f3bfd9 проекта claude_manager"
+    },
+    {
+      "step_number": 3,
+      "stage": "phase_2_documentation_analysis",
+      "status": "completed",
+      "start_time": "2026-06-10T15:22:18+05:00",
+      "end_time": "2026-06-10T15:22:18+05:00",
+      "comment": "claude-cli-stream-json-protocol.md уже описывает resume-placeholder 'No response requested.' и issue #8126; пробел: не описан кейс оборванного tool_use"
+    },
+    {
+      "step_number": 4,
+      "stage": "phase_3_skill_analysis",
+      "status": "completed",
+      "start_time": "2026-06-10T15:22:18+05:00",
+      "end_time": "2026-06-10T15:22:18+05:00",
+      "comment": "Скиллы проекта в _archive; гонку конкурентности ни один скилл не мог поймать; пробел процессного уровня — повторяющиеся инциденты retry-цикла (3 шт) без ретроспективы; development-process-retrospective не установлен"
+    },
+    {
+      "step_number": 5,
+      "stage": "phase_4_code_analysis",
+      "status": "completed",
+      "start_time": "2026-06-10T15:22:18+05:00",
+      "end_time": "2026-06-10T15:22:18+05:00",
+      "comment": "Прочитаны process_send/retry/stop/events/backend_send, claude_interaction, telegram_input_handlers, reply_route_handler, telegram_response_delivery, claude_code_backend; механика обоих симптомов восстановлена по логам и JSONL"
+    },
+    {
+      "step_number": 6,
+      "stage": "phase_5_cause_chain",
+      "status": "completed",
+      "start_time": "2026-06-10T15:22:18+05:00",
+      "end_time": "2026-06-10T15:22:18+05:00",
+      "comment": "Цепочки построены: (1) stale active binding + plain-сообщение после reply-only работы; (2) дуэль двух retry-циклов на общем слоте сессии + resume-placeholder"
+    },
+    {
+      "step_number": 7,
+      "stage": "phase_6_verification",
+      "status": "completed",
+      "start_time": "2026-06-10T15:22:18+05:00",
+      "end_time": "2026-06-10T15:22:18+05:00",
+      "comment": "Альтернативы (remap session_id, reply-мистап, CLI fork) отвергнуты по логам; watchdog в 11:16:29 доказывает plain-путь"
+    },
+    {
+      "step_number": 8,
+      "stage": "phase_6_5_solution_verification",
+      "status": "completed",
+      "start_time": "2026-06-10T15:22:18+05:00",
+      "end_time": "2026-06-10T15:22:18+05:00",
+      "comment": "Рекомендации проверены на соответствие архитектуре; rebind-on-reply помечен как продуктовое решение пользователя"
+    },
+    {
+      "step_number": 9,
+      "stage": "phase_7_report_creation",
+      "status": "completed",
+      "start_time": "2026-06-10T15:27:04+05:00",
+      "end_time": "2026-06-10T15:27:04+05:00",
+      "comment": "Отчёт: dev/docs/logs/root-cause-reports/10-06_15-22_resume-wrong-session-empty-response.md"
+    },
+    {
+      "step_number": 10,
+      "stage": "phase_8_documentalist",
+      "status": "completed",
+      "start_time": "2026-06-10T15:27:04+05:00",
+      "end_time": "2026-06-10T15:31:52+05:00",
+      "comment": "summary.json: status=completed; создан сессионный отчёт dev/docs/session-reports/10-06/15-22_resume-wrong-session-empty-response-rca.md; ADR/BRD/docs-index/CLAUDE.md-update-log пропущены по триггерам (изменений кода не было)"
+    },
+    {
+      "step_number": 11,
+      "stage": "phase_9_session_report",
+      "status": "completed",
+      "start_time": "2026-06-10T15:27:04+05:00",
+      "end_time": "2026-06-10T15:33:06+05:00",
+      "comment": "Сессионный отчёт: dev/docs/session-reports/10-06/15-27_root-cause-resume-wrong-session-empty-response.md; обновлён docs-index.md; обнаружен дубль с отчётом документалиста (15-22), отчёты связаны перекрёстными ссылками, решение об удалении оставлено пользователю"
+    }
+  ],
+  "end_time": "2026-06-10T15:33:06+05:00"
+}

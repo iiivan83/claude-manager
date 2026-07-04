@@ -102,6 +102,9 @@
 - **session-reports/15-05/** — handoff по ветке `codex-support-spec-implementation-cycle`: состояние уже влитой Codex-support работы, незакоммиченные summary `/sessions` и оптимизация `/all`, план стабилизации и отдельного фикса `/restart`
 - **session-reports/30-05/** — handoff по RCA медленного переключения проектов: причина 7-17 секунд, решение через 4-дневный Codex session index, ограничения по pending и план продолжения; handoff по дизайну reply-якорей для Telegram-ответов, watcher-сообщений, `/all`, `/stop`, переключения проектов и сессий
 - **session-reports/31-05/** — handoff по текущему состоянию подготовки reply-якорей: перенос доставки Telegram-ответов из `bot.py` в `telegram_response_delivery.py`, целевая проверка `172 passed`, size gate для больших файлов и следующие шаги реализации; handoff по ускорению `/all` и `/sessions` через metadata-first/event-driven session index вместо повторного scan-а всей истории; уточнение v1 через простую таблицу `recent_sessions` с последними 30 сессиями на проект; завершённая спецификация `recent_sessions` v1 с финальной проверкой spec-creator
+- **session-reports/08-06/** — handoff по Codex и Telegram-доставке файлов: подтверждено, что отправка уже работает через маркеры `[SEND_FILE:...]` и `[SHOW_FILE:...]`, а следующий шаг — научить `codex_backend.py` добавлять bot-mode инструкцию для Codex
+- **session-reports/09-06/** — handoff по диагностике: ответы Claude теряются в режиме тишины, потому что читатель JSONL держит завершённый ход активным (внешние сессии Claude Code заканчиваются `assistant`/`end_turn` без записи `result`); корень подтверждён эмпирически, фикс ещё не сделан, план TDD-исправления обоих читателей `claude_code_session_file_reader.py`
+- **session-reports/10-06/** — разбиение `process_manager` на профильные модули с compatibility facade; handoff по RCA инцидента 10-06 в bloger: обычное сообщение ушло в устаревшую активную привязку (reply-роутинг привязку не меняет), «пустой ответ» — дуэль двух retry-циклов на общем слоте сессии без владельца хода; кодовых изменений нет, чек-лист в RCA-отчёте
 
 ## Логи
 
@@ -111,7 +114,7 @@
 
 - **Исправленные** (`logs/root-cause-reports/realized/`) — 12 отчётов, включая: session-reader path encoding, feature-pipeline delegation failures, connection-reset-error, EDEADLK project switch, cross-project message leak, retry cascade cwd mismatch, first-message-silent-stale-session-id
 - **Решённые** (`logs/root-cause-reports/resolved/`) — 3 отчёта: new-session-no-response, watcher is_final heuristic, tg deep-link confirmation dialog
-- **Открытые** (`logs/root-cause-reports/`) — текущие исследования: retry-loop session proliferation, concurrent session callback leak, night session proliferation misdiagnosis, /stop orphan subprocesses, brd-generator slim fix insufficient
+- **Открытые** (`logs/root-cause-reports/`) — текущие исследования: retry-loop session proliferation, concurrent session callback leak, night session proliferation misdiagnosis, /stop orphan subprocesses, brd-generator slim fix insufficient, resume wrong session + empty response retry duel (10-06)
 - **Отдельные** (`root-cause-reports/`) — исследования не привязанные к пайплайну: telegram album delivery, SEND_FILE inline bug, restart self-kill, bash tool SIGKILL, readline timeout
 - [logs/pending-delegations.md](logs/pending-delegations.md) — трекер делегированных рекомендаций из root-cause отчётов
 

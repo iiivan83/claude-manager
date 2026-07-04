@@ -1,0 +1,66 @@
+{
+  "agent": "session-change-documenter",
+  "status": "completed",
+  "result_file": "dev/docs/logs/root-cause-analysis/10.06_14.45-root-cause-analysis-resume-wrong-session-empty-response/agent-outputs/08-session-change-documenter.result.md",
+  "decisions": [
+    {
+      "trigger": "session-report",
+      "result": "created",
+      "file": "dev/docs/session-reports/10-06/15-22_resume-wrong-session-empty-response-rca.md",
+      "reason": "RCA-пайплайн создал RCA-отчёт и orchestrator-log, провёл 8-этапное исследование с хронологией по трём источникам, зафиксировал верифицированные решения и одобренные рекомендации — выполнены три условия триггера 'Сессионный отчёт' (изменены файлы, приняты решения, проведено исследование)"
+    },
+    {
+      "trigger": "adr",
+      "result": "skipped",
+      "reason": "Архитектурные решения не принимались и не применялись — RCA сформулировал [ARCHITECTURE]-рекомендации (принцип владения ходом, правило двух понятий 'текущей сессии'), но чек-лист целиком в статусе 'не выполнено'; rebind-on-reply явно помечен как продуктовое решение за пользователем; owner-механизм стоп-флага введён предыдущей сессией, не этим пайплайном"
+    },
+    {
+      "trigger": "claude-md-update-log",
+      "result": "skipped",
+      "reason": "CLAUDE.md пайплайном не изменялся (отсутствует в git diff); RCA рекомендует добавить два принципа в раздел 'Важные детали для разработки', но вставка не выполнялась"
+    },
+    {
+      "trigger": "brd",
+      "result": "skipped",
+      "reason": "Пользовательские сценарии не менялись — поведение бота (привязка, reply-роутинг, ошибки повторов) только зафиксировано как механика инцидента; рекомендация rebind/ack — непринятое продуктовое решение, обновление BRD до реального изменения поведения создало бы рассинхрон с кодом"
+    },
+    {
+      "trigger": "docs-index",
+      "result": "skipped",
+      "reason": "Структура папок пайплайном не менялась: создана только подпапка конкретного запуска внутри существующей dev/docs/logs/root-cause-analysis/ — по правилу 'Когда НЕ обновлять' это добавление файлов в существующую папку. Папки _archive/ в .claude/skills/ и .agents/skills/ созданы другой сессией (архивация скиллов) и документируются ею"
+    },
+    {
+      "trigger": "architecture-md",
+      "result": "skipped",
+      "reason": "Файл architecture.md в проекте отсутствует; верификация решений в RCA-отчёте прямо определила целевым файлом CLAUDE.md. Принципы рекомендованы, но не установлены — создавать architecture.md ради непримененных рекомендаций нельзя"
+    }
+  ],
+  "files_created": [
+    "dev/docs/session-reports/10-06/15-22_resume-wrong-session-empty-response-rca.md"
+  ],
+  "files_updated": [],
+  "files_unchanged_by_design": [
+    "CLAUDE.md",
+    "dev/docs/docs-index.md",
+    "dev/docs/brd/brd-user-journeys.md",
+    "dev/docs/adr/",
+    "dev/docs/claude-md-updates/",
+    "architecture.md"
+  ],
+  "code_changes": "none",
+  "next_step_input": {
+    "summary": "RCA-пайплайн закрыт документально: корни обоих симптомов и одобренные рекомендации зафиксированы в RCA-отчёте, сессионный отчёт создан. Для применения рекомендаций нужен отдельный fix-запуск (apply-root-cause-fixes сейчас в _archive) или ручная работа; одна рекомендация требует продуктового решения пользователя.",
+    "open_recommendations": [
+      "[CODE] Owner-проверка перед остановкой old_process в src/claude_manager/process_retry.py:60-62 — ретрай не должен убивать чужой процесс из общего слота сессии",
+      "[CODE] Фильтр точного совпадения 'No response requested.' в progress-пути (src/claude_manager/process_events.py или claude_code_backend.read_progress_text_from_event), зеркально NO_RESPONSE_MARKERS в poller",
+      "[CODE] Свести 4 дубля маркера 'No response requested.' (claude_interaction, process_types, claude_code_session_file_reader, coding_agent_session_file_poller) в одну константу + grep -r по проекту и правка всех потребителей",
+      "[CODE] Логирование каждой отправки сообщения пользователю (telegram_sender или telegram_response_delivery): chat_id, заголовок, is_final, первые 80 символов — рекомендация даётся третий раз (08-06, 09-06, 10-06)",
+      "[CODE, решение за пользователем] Rebind активной привязки при reply-роутинге ИЛИ мгновенный ack '→ #N имя-сессии' для обычных сообщений — закрыть корень симптома 1",
+      "[DOC] Добавить в CLAUDE.md принцип 'один владелец хода на сессию' (раздел 'Важные детали для разработки', после 'Принципа stale session_id')",
+      "[DOC] Добавить в CLAUDE.md правило двух понятий 'текущей сессии': reply-роутинг не меняет активную привязку; новая фича адресации обязана явно решать вопрос привязки",
+      "[DOC] Дополнить dev/docs/claude-cli-stream-json-protocol.md: placeholder при оборванном tool_use, пара на каждый retry-resume, эмпирическая проверка попадания пары в stdout",
+      "[SKILL] Установить/восстановить development-process-retrospective из .claude/skills/_archive/ — правило '3+ RCA-отчёта об одном модуле → ретроспектива процесса'"
+    ],
+    "session_report_path": "dev/docs/session-reports/10-06/15-22_resume-wrong-session-empty-response-rca.md"
+  }
+}
