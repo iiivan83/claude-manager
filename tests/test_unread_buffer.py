@@ -6,7 +6,11 @@ import inspect
 import pytest
 
 from claude_manager import unread_buffer
-from claude_manager.coding_agent_backend import BackendName, SessionUnreadState
+from claude_manager.coding_agent_backend import (
+    CURSOR_ONLY_PARSED_MESSAGE_COUNT,
+    BackendName,
+    SessionUnreadState,
+)
 from claude_manager.unread_buffer import (
     PendingMessage,
     SessionUnreadSnapshot,
@@ -95,6 +99,36 @@ class TestBackendAwareSnapshots:
     def test_restore_missing_pair_returns_none(self) -> None:
         """Отсутствующая пара возвращает None."""
         assert restore_snapshot("missing", BackendName.CLAUDE) is None
+
+    def test_save_snapshot_preserves_cursor_only_parsed_message_count(self) -> None:
+        """Cursor-only sentinel должен переживать сохранение в unread_buffer (P1-1)."""
+        save_snapshot(
+            SESSION_ID,
+            BackendName.CLAUDE,
+            raw_record_count=7,
+            last_delivered_idx=-1,
+            parsed_message_count=CURSOR_ONLY_PARSED_MESSAGE_COUNT,
+        )
+
+        restored = restore_snapshot(SESSION_ID, BackendName.CLAUDE)
+
+        assert restored is not None
+        assert restored.parsed_message_count == CURSOR_ONLY_PARSED_MESSAGE_COUNT
+
+    def test_save_snapshot_preserves_valid_parsed_message_count(self) -> None:
+        """Валидное parsed-число сохраняется как есть."""
+        save_snapshot(
+            SESSION_ID,
+            BackendName.CLAUDE,
+            raw_record_count=7,
+            last_delivered_idx=4,
+            parsed_message_count=5,
+        )
+
+        restored = restore_snapshot(SESSION_ID, BackendName.CLAUDE)
+
+        assert restored is not None
+        assert restored.parsed_message_count == 5
 
 
 class TestExpiration:

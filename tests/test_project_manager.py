@@ -15,6 +15,7 @@ from claude_manager import (
     unread_buffer,
 )
 from claude_manager.coding_agent_backend import (
+    CURSOR_ONLY_PARSED_MESSAGE_COUNT,
     BackendName,
     SessionFileInfo,
     SessionFileSnapshot,
@@ -385,12 +386,14 @@ class TestSwitchProject:
             BackendName.CLAUDE,
             raw_record_count=5,
             last_delivered_idx=4,
+            parsed_message_count=CURSOR_ONLY_PARSED_MESSAGE_COUNT,
         )
         save_mock.assert_any_call(
             "session-2",
             BackendName.CODEX,
             raw_record_count=3,
             last_delivered_idx=2,
+            parsed_message_count=CURSOR_ONLY_PARSED_MESSAGE_COUNT,
         )
         assert result.pending_messages_count == 0
         assert result.pending_messages == []

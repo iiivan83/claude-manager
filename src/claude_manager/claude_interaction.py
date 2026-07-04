@@ -205,6 +205,7 @@ def _save_last_delivered_message_index_for_later_project_view(
         backend,
         raw_record_count=last_seen_position.raw_record_count,
         last_delivered_idx=last_seen_position.last_delivered_idx,
+        parsed_message_count=last_seen_position.parsed_message_count,
     )
 
 

@@ -258,6 +258,7 @@ def _capture_backend_unread_snapshots(backend: BackendName) -> None:
             snapshot_kwargs = {
                 "raw_record_count": unread_state.raw_record_count,
                 "last_delivered_idx": unread_state.last_delivered_idx,
+                "parsed_message_count": unread_state.parsed_message_count,
             }
             if unread_state.last_modified_at is not None:
                 snapshot_kwargs["last_modified_at"] = unread_state.last_modified_at

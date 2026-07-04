@@ -250,11 +250,19 @@ class TestFullSwitchCycle:
             assert unread_buffer.restore_snapshot(
                 "sess-1",
                 BackendName.CLAUDE,
-            ) == SessionUnreadState(raw_record_count=5, last_delivered_idx=4)
+            ) == SessionUnreadState(
+                raw_record_count=5,
+                last_delivered_idx=4,
+                parsed_message_count=0,
+            )
             assert unread_buffer.restore_snapshot(
                 "codex-sess-1",
                 BackendName.CODEX,
-            ) == SessionUnreadState(raw_record_count=7, last_delivered_idx=6)
+            ) == SessionUnreadState(
+                raw_record_count=7,
+                last_delivered_idx=6,
+                parsed_message_count=0,
+            )
 
     @pytest.mark.asyncio()
     async def test_processes_continue_running_during_switch(

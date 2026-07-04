@@ -31,6 +31,7 @@ from claude_manager import (
     session_manager,
 )
 from claude_manager.coding_agent_backend import (
+    CURSOR_ONLY_PARSED_MESSAGE_COUNT,
     BackendName,
     CodingAgentBackend,
     SessionFileInfo,
@@ -57,7 +58,6 @@ logger = logging.getLogger(__name__)
 # Сообщения с таким текстом приходят, когда CLI сознательно отказался отвечать
 # (например, после служебной команды) — их не нужно доставлять в Telegram.
 NO_RESPONSE_MARKERS = frozenset({"No response requested."})
-CURSOR_ONLY_PARSED_MESSAGE_COUNT = -1
 
 
 def _is_empty_response(text: str) -> bool:
@@ -678,6 +678,7 @@ class SessionWatcher:
                 raw_record_count=state.raw_count,
                 last_delivered_idx=state.last_delivered_idx,
                 last_modified_at=state.last_modified_at,
+                parsed_message_count=state.parsed_message_count,
             )
             for session_id, state in self._states.items()
         }

@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from claude_manager import config
-from claude_manager.coding_agent_backend import BackendName, SessionUnreadState
+from claude_manager.coding_agent_backend import (
+    CURSOR_ONLY_PARSED_MESSAGE_COUNT,
+    BackendName,
+    SessionUnreadState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ def save_snapshot(
     raw_record_count: int | None = None,
     last_delivered_idx: int | None = None,
     last_modified_at: float | None = None,
+    parsed_message_count: int = CURSOR_ONLY_PARSED_MESSAGE_COUNT,
 ) -> None:
     """Сохраняет cursor-состояние для пары session_id/backend."""
     if isinstance(backend, dict):
@@ -66,6 +71,7 @@ def save_snapshot(
         raw_record_count=raw_record_count,
         last_delivered_idx=last_delivered_idx,
         last_modified_at=last_modified_at,
+        parsed_message_count=parsed_message_count,
     )
     _snapshots[(session_id, backend)] = SessionUnreadSnapshot(
         state=state,

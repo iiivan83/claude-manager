@@ -49,6 +49,11 @@ class SessionFileSnapshot:
     is_turn_active: bool
 
 
+# Sentinel: parsed-история не читалась (лёгкое cursor-чтение файла) —
+# last_delivered_idx нельзя трактовать как индекс распарсенного сообщения.
+CURSOR_ONLY_PARSED_MESSAGE_COUNT = -1
+
+
 @dataclass(frozen=True)
 class SessionUnreadState:
     """Backend-neutral unread-delivery cursor for one session file."""
@@ -56,6 +61,7 @@ class SessionUnreadState:
     raw_record_count: int
     last_delivered_idx: int
     last_modified_at: float | None = None
+    parsed_message_count: int = CURSOR_ONLY_PARSED_MESSAGE_COUNT
 
 
 class TerminalStatus(str, Enum):
