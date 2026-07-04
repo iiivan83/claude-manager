@@ -26,6 +26,7 @@ from claude_manager import (
     unread_buffer,
 )
 from claude_manager.coding_agent_backend import (
+    CURSOR_ONLY_PARSED_MESSAGE_COUNT,
     BackendName,
     CodingAgentBackend,
     SessionFileInfo,
@@ -317,11 +318,25 @@ def _baseline_state_from_snapshot(
     """Build an all-mode baseline cursor from one session-file snapshot."""
     last_delivered_idx = len(snapshot.messages) - 1
     raw_record_count = snapshot.raw_record_count
+    # Baseline читается лёгким cursor-чтением, которое не парсит историю: пустой
+    # messages означает «parsed-историю не читали», а не «в файле 0 сообщений».
+    # Пометить это sentinel'ом, иначе pending-путь примет 0 за реальный
+    # parsed-индекс и срежет всю историю сессии в чат при возврате в проект (P1-1).
+    parsed_message_count = (
+        len(snapshot.messages)
+        if snapshot.messages
+        else CURSOR_ONLY_PARSED_MESSAGE_COUNT
+    )
     baseline_modified_at = project_session.file_info.last_modified_at
 
     if watcher_state is not None:
         last_delivered_idx = getattr(watcher_state, "last_delivered_idx")
         raw_record_count = getattr(watcher_state, "raw_record_count")
+        parsed_message_count = getattr(
+            watcher_state,
+            "parsed_message_count",
+            CURSOR_ONLY_PARSED_MESSAGE_COUNT,
+        )
     elif previous_all_mode_state is not None:
         # All mode already delivered up to this cursor during an earlier session.
         # Resume from its own progress so re-entering /all does not re-show those
@@ -329,6 +344,7 @@ def _baseline_state_from_snapshot(
         # pending path that consumes it on return.
         last_delivered_idx = previous_all_mode_state.last_delivered_idx
         raw_record_count = previous_all_mode_state.raw_record_count
+        parsed_message_count = previous_all_mode_state.parsed_message_count
         baseline_modified_at = previous_all_mode_state.last_modified_at
     else:
         unread_state = unread_buffer.restore_snapshot(
@@ -341,11 +357,12 @@ def _baseline_state_from_snapshot(
             # the backlog the user had not yet seen in that other project.
             last_delivered_idx = unread_state.last_delivered_idx
             raw_record_count = unread_state.raw_record_count
+            parsed_message_count = unread_state.parsed_message_count
             baseline_modified_at = unread_state.last_modified_at or 0.0
 
     return _AllMonitorState(
         raw_record_count=raw_record_count,
-        parsed_message_count=len(snapshot.messages),
+        parsed_message_count=parsed_message_count,
         last_delivered_idx=last_delivered_idx,
         is_turn_active=snapshot.is_turn_active,
         last_modified_at=baseline_modified_at,
@@ -541,6 +558,10 @@ def _ensure_unread_snapshot(
         backend,
         raw_record_count=previous.raw_record_count,
         last_delivered_idx=previous.last_delivered_idx,
+        # Перенести parsed-число состояния /all: если оно cursor-only sentinel,
+        # pending-путь проекта пойдёт по безопасной raw-ветке, а не срежет всю
+        # историю по недостоверному last_delivered_idx (P1-1).
+        parsed_message_count=previous.parsed_message_count,
     )
 
 

@@ -7,6 +7,7 @@ import pytest
 
 from claude_manager import all_projects_monitor, config, project_manager, unread_buffer
 from claude_manager.coding_agent_backend import (
+    CURSOR_ONLY_PARSED_MESSAGE_COUNT,
     BackendName,
     SessionFileInfo,
     SessionFileSnapshot,
@@ -634,6 +635,74 @@ async def test_unread_snapshot_saved_even_when_held_final_blocks_delivery() -> N
     unread_buffer._snapshots.clear()
 
 
+def test_baseline_from_cursor_only_read_uses_parsed_count_sentinel() -> None:
+    """Baseline из cursor-чтения не выдаёт пустой messages за parsed-историю (P1-1)."""
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    project_session = all_projects_monitor._ProjectSession(
+        project_number=1,
+        project_name="alpha",
+        project_path="/fake/alpha",
+        session_number=1,
+        file_info=_file("sess-baseline", "/sessions/baseline.jsonl", mtime=10.0),
+        backend=backend,
+    )
+    cursor_snapshot = _snapshot([], raw_count=42)
+
+    state = all_projects_monitor._baseline_state_from_snapshot(
+        project_session, cursor_snapshot, None, None,
+    )
+
+    assert state.parsed_message_count == CURSOR_ONLY_PARSED_MESSAGE_COUNT
+    assert state.raw_record_count == 42
+    assert state.last_delivered_idx == -1
+
+
+def test_baseline_inherits_parsed_count_from_watcher_state() -> None:
+    """Baseline, унаследованный от watcher'а, сохраняет его parsed-число."""
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    project_session = all_projects_monitor._ProjectSession(
+        project_number=1,
+        project_name="alpha",
+        project_path="/fake/alpha",
+        session_number=1,
+        file_info=_file("sess-watcher", "/sessions/watcher.jsonl", mtime=10.0),
+        backend=backend,
+    )
+    watcher_state = SessionUnreadState(
+        raw_record_count=5,
+        last_delivered_idx=4,
+        parsed_message_count=5,
+    )
+    cursor_snapshot = _snapshot([], raw_count=7)
+
+    state = all_projects_monitor._baseline_state_from_snapshot(
+        project_session, cursor_snapshot, watcher_state, None,
+    )
+
+    assert state.parsed_message_count == 5
+    assert state.last_delivered_idx == 4
+
+
+@pytest.mark.asyncio()
+async def test_ensure_unread_snapshot_passes_parsed_message_count() -> None:
+    """Unread-снапшот из /all несёт parsed-число состояния, а не default (P1-1)."""
+    unread_buffer._snapshots.clear()
+    previous = all_projects_monitor._AllMonitorState(
+        raw_record_count=6,
+        parsed_message_count=3,
+        last_delivered_idx=2,
+    )
+
+    all_projects_monitor._ensure_unread_snapshot(
+        "sess-parsed", BackendName.CLAUDE, previous,
+    )
+
+    stored = unread_buffer.restore_snapshot("sess-parsed", BackendName.CLAUDE)
+    assert stored is not None
+    assert stored.parsed_message_count == 3
+    unread_buffer._snapshots.clear()
+
+
 @pytest.mark.asyncio()
 async def test_poll_delivers_all_project_message_and_keeps_unread_snapshot() -> None:
     """All monitor delivers a new assistant message and leaves it unread for project switch."""
@@ -690,6 +759,9 @@ async def test_poll_delivers_all_project_message_and_keeps_unread_snapshot() -> 
     assert unread_state == SessionUnreadState(
         raw_record_count=1,
         last_delivered_idx=0,
+        # Baseline построен из cursor-снапшота с одним сообщением ("task"),
+        # поэтому /all переносит parsed-число 1, а не sentinel.
+        parsed_message_count=1,
     )
 
 
