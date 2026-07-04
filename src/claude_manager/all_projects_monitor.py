@@ -544,6 +544,20 @@ def _ensure_unread_snapshot(
     )
 
 
+def _raw_cursor_excluding_held_message(
+    previous: _AllMonitorState,
+    snapshot: SessionFileSnapshot,
+) -> int:
+    """Возвращает raw-курсор, не съедающий придержанный финал активного хода."""
+    held_message = snapshot.messages[-1]
+    if held_message.raw_record_index is None:
+        return snapshot.raw_record_count
+    if held_message.raw_record_index <= previous.raw_record_count:
+        # Последнее сообщение уже было за курсором раньше — придерживать нечего.
+        return snapshot.raw_record_count
+    return min(snapshot.raw_record_count, held_message.raw_record_index - 1)
+
+
 def _next_state_from_snapshot(
     previous: _AllMonitorState,
     snapshot: SessionFileSnapshot,
@@ -555,11 +569,15 @@ def _next_state_from_snapshot(
             previous.last_delivered_idx,
             len(snapshot.messages) - 2,
         )
+        # Финал придержан _candidate_indices — raw-курсор обязан остановиться
+        # перед ним, иначе на следующем поллинге финал уже не кандидат (P1-2).
+        raw_record_count = _raw_cursor_excluding_held_message(previous, snapshot)
     else:
         last_delivered_idx = len(snapshot.messages) - 1
+        raw_record_count = snapshot.raw_record_count
 
     return _AllMonitorState(
-        raw_record_count=snapshot.raw_record_count,
+        raw_record_count=raw_record_count,
         parsed_message_count=len(snapshot.messages),
         last_delivered_idx=last_delivered_idx,
         is_turn_active=snapshot.is_turn_active,
@@ -575,6 +593,15 @@ async def _deliver_project_session_delta(
     callback: AllProjectsMessageCallback,
 ) -> None:
     """Deliver new assistant messages from one project session."""
+    file_info = project_session.file_info
+    backend_name = project_session.backend.name
+    # Снапшот фиксируется до deliverable-фильтра: даже если все кандидаты
+    # придержаны активным ходом (candidate_indices пуст), pending-путь проекта
+    # должен получить до-/all курсор — иначе придержанный финал потеряется и
+    # там (P1-2). _ensure_unread_snapshot сам не перезаписывает более ранний
+    # снапшот, поэтому вызвать его раньше безопасно.
+    _ensure_unread_snapshot(file_info.session_id, backend_name, previous)
+
     deliverable = [
         (index, snapshot.messages[index])
         for index in _candidate_indices(previous, snapshot)
@@ -582,10 +609,6 @@ async def _deliver_project_session_delta(
     ]
     if not deliverable:
         return
-
-    file_info = project_session.file_info
-    backend_name = project_session.backend.name
-    _ensure_unread_snapshot(file_info.session_id, backend_name, previous)
 
     for position, (_index, message) in enumerate(deliverable):
         is_final = not snapshot.is_turn_active and position == len(deliverable) - 1

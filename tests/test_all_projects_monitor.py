@@ -522,6 +522,118 @@ def test_candidate_indices_do_not_fall_back_when_raw_cursor_has_no_new_messages(
     assert all_projects_monitor._candidate_indices(previous, snapshot) == []
 
 
+def test_next_state_keeps_raw_cursor_before_held_final_message() -> None:
+    """Активный ход: raw-курсор не съедает придержанный финал (P1-2)."""
+    previous = all_projects_monitor._AllMonitorState(
+        raw_record_count=3,
+        last_delivered_idx=0,
+    )
+    snapshot = _snapshot(
+        [
+            _raw_message("assistant", "старый ответ", raw_record_index=2),
+            _raw_message("assistant", "придержанный финал", raw_record_index=5),
+        ],
+        raw_count=6,
+        is_turn_active=True,
+    )
+
+    next_state = all_projects_monitor._next_state_from_snapshot(
+        previous, snapshot, 50.0,
+    )
+
+    # Курсор останавливается ПЕРЕД придержанным сообщением (raw_record_index=5),
+    # чтобы на следующем поллинге оно снова стало кандидатом: 5 > 4.
+    assert next_state.raw_record_count == 4
+
+
+def test_held_final_message_is_candidate_again_after_turn_completes() -> None:
+    """Финал, придержанный при активном ходе, доставляется после завершения хода."""
+    previous = all_projects_monitor._AllMonitorState(
+        raw_record_count=3,
+        last_delivered_idx=0,
+    )
+    active_snapshot = _snapshot(
+        [
+            _raw_message("assistant", "старый ответ", raw_record_index=2),
+            _raw_message("assistant", "придержанный финал", raw_record_index=5),
+        ],
+        raw_count=6,
+        is_turn_active=True,
+    )
+    after_active_turn = all_projects_monitor._next_state_from_snapshot(
+        previous, active_snapshot, 50.0,
+    )
+    completed_snapshot = _snapshot(
+        [
+            _raw_message("assistant", "старый ответ", raw_record_index=2),
+            _raw_message("assistant", "придержанный финал", raw_record_index=5),
+        ],
+        raw_count=7,
+        is_turn_active=False,
+    )
+
+    candidate_indices = all_projects_monitor._candidate_indices(
+        after_active_turn, completed_snapshot,
+    )
+
+    assert candidate_indices == [1]
+
+
+def test_next_state_advances_raw_cursor_fully_when_turn_completed() -> None:
+    """Завершённый ход продвигает raw-курсор до полного счётчика файла."""
+    previous = all_projects_monitor._AllMonitorState(
+        raw_record_count=3,
+        last_delivered_idx=0,
+    )
+    snapshot = _snapshot(
+        [_raw_message("assistant", "финал", raw_record_index=5)],
+        raw_count=6,
+        is_turn_active=False,
+    )
+
+    next_state = all_projects_monitor._next_state_from_snapshot(
+        previous, snapshot, 50.0,
+    )
+
+    assert next_state.raw_record_count == 6
+
+
+@pytest.mark.asyncio()
+async def test_unread_snapshot_saved_even_when_held_final_blocks_delivery() -> None:
+    """Если все кандидаты придержаны, pending-снапшот всё равно фиксируется (P1-2)."""
+    unread_buffer._snapshots.clear()
+    backend = FakeBackend(BackendName.CLAUDE, {})
+    project_session = all_projects_monitor._ProjectSession(
+        project_number=1,
+        project_name="alpha",
+        project_path="/fake/alpha",
+        session_number=1,
+        file_info=_file("sess-held", "/sessions/held.jsonl", mtime=30.0),
+        backend=backend,
+    )
+    previous = all_projects_monitor._AllMonitorState(
+        raw_record_count=3,
+        last_delivered_idx=0,
+    )
+    snapshot = _snapshot(
+        [_raw_message("assistant", "придержанный финал", raw_record_index=5)],
+        raw_count=6,
+        is_turn_active=True,
+    )
+    callback = AsyncMock()
+
+    await all_projects_monitor._deliver_project_session_delta(
+        [CHAT_ID], project_session, snapshot, previous, callback,
+    )
+
+    callback.assert_not_called()
+    stored = unread_buffer.restore_snapshot("sess-held", BackendName.CLAUDE)
+    assert stored is not None
+    assert stored.raw_record_count == 3
+    assert stored.last_delivered_idx == 0
+    unread_buffer._snapshots.clear()
+
+
 @pytest.mark.asyncio()
 async def test_poll_delivers_all_project_message_and_keeps_unread_snapshot() -> None:
     """All monitor delivers a new assistant message and leaves it unread for project switch."""
