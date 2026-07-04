@@ -666,6 +666,85 @@ async def test_send_message_with_progress(mock_start):
     assert result.text == "Готово"
 
 
+# --- Юнит-тесты: обезвреживание ведущего слэша перед CLI ---
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "expected_text"),
+    [
+        ("/-new-things привет", " /-new-things привет"),
+        ("/8 скопированный заголовок", " /8 скопированный заголовок"),
+        ("/home/ivan/readme.md посмотри", " /home/ivan/readme.md посмотри"),
+        ("/", " /"),
+    ],
+)
+def test_prevent_cli_slash_command_misparse_prefixes_space(raw_text, expected_text):
+    """Текст со слэша получает ведущий пробел, чтобы CLI не счёл его командой."""
+    assert (
+        process_send_module._prevent_cli_slash_command_misparse(raw_text)
+        == expected_text
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    ["привет", "посмотри /home/ivan/readme.md", "", "  /отступ уже есть"],
+)
+def test_prevent_cli_slash_command_misparse_keeps_non_leading_slash(raw_text):
+    """Текст без ведущего слэша остаётся без изменений."""
+    assert (
+        process_send_module._prevent_cli_slash_command_misparse(raw_text) == raw_text
+    )
+
+
+@patch("claude_manager.process_lifecycle.start_process")
+async def test_send_message_neutralizes_leading_slash_before_cli(mock_start):
+    """send_message передаёт в CLI текст со слэша с ведущим пробелом."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "abc-123"},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "ок",
+            "session_id": "abc-123",
+        },
+    ]
+    mock_process = _make_claude_process(events=events)
+    mock_process.send_message = AsyncMock()
+    mock_start.return_value = mock_process
+
+    session_id = await create_process(session_id=None)
+
+    await send_message(session_id, "/-new-things привет")
+
+    mock_process.send_message.assert_awaited_once_with(" /-new-things привет")
+
+
+@patch("claude_manager.process_lifecycle.start_process")
+async def test_send_message_keeps_plain_text_unchanged(mock_start):
+    """send_message не трогает обычный текст без ведущего слэша."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "abc-123"},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "ок",
+            "session_id": "abc-123",
+        },
+    ]
+    mock_process = _make_claude_process(events=events)
+    mock_process.send_message = AsyncMock()
+    mock_start.return_value = mock_process
+
+    session_id = await create_process(session_id=None)
+
+    await send_message(session_id, "привет")
+
+    mock_process.send_message.assert_awaited_once_with("привет")
+
+
 # --- Юнит-тесты: stop_process ---
 
 

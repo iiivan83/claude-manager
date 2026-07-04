@@ -38,6 +38,22 @@ logger = logging.getLogger("claude_manager.process_manager")
 
 _BACKEND_NOT_PROVIDED = object()
 
+# Ведущий '/' в тексте пользователя Claude/Codex CLI трактует как slash-команду
+# и отвечает "Unknown command" ещё до вызова модели. Так происходит, когда
+# пользователь вставляет ранее скопированное сообщение, начинающееся со слэша
+# (заголовок вида "/8 ..." или путь "/home/..."). Ведущий пробел отключает это
+# распознавание, а видимый текст остаётся без изменений. Поведение подтверждено
+# эмпирически на реальном Claude CLI: ровно "/-new-things ..." → "Unknown command",
+# а " /-new-things ..." уходит в модель как обычный текст.
+_SLASH_COMMAND_NEUTRALIZING_PREFIX = " "
+
+
+def _prevent_cli_slash_command_misparse(text: str) -> str:
+    """Не даёт CLI принять пользовательский текст со слэшем за slash-команду."""
+    if text.startswith("/"):
+        return _SLASH_COMMAND_NEUTRALIZING_PREFIX + text
+    return text
+
 
 def _validate_process_ready(session_id: str) -> ClaudeProcess:
     """Проверяет, что процесс существует и не занят. Возвращает процесс."""
@@ -74,6 +90,10 @@ async def send_message(
     cwd: str | None = None,
 ) -> SendResult:
     """Отправляет сообщение в CLI-процесс и ожидает ответ."""
+    # Один узел для всех путей (обычный текст, reply-route, оба бэкенда, ретраи):
+    # обезвреживаем ведущий слэш до диспетчеризации, чтобы CLI не принял
+    # вставленное сообщение за неизвестную slash-команду.
+    text = _prevent_cli_slash_command_misparse(text)
     if backend is _BACKEND_NOT_PROVIDED:
         return await _send_message_legacy_claude(
             session_id,
