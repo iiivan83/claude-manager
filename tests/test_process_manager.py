@@ -514,6 +514,35 @@ class TestBackendAwareProcessState:
         assert is_busy("_new_x", BackendName.CLAUDE) is True
         assert has_process("_new_x", BackendName.CLAUDE) is True
 
+    async def test_busy_gate_rejects_stale_id_after_remap(self) -> None:
+        """Отправка со stale temp-id видит занятость real-сессии и отклоняется (P2-17)."""
+        real_id = "real-uuid-3"
+        pm_module._busy_flags[(real_id, BackendName.CLAUDE)] = True
+        pm_module._session_id_aliases[("_new_stale", BackendName.CLAUDE)] = (
+            real_id,
+            BackendName.CLAUDE,
+        )
+
+        with patch(
+            "claude_manager.process_lifecycle.start_subprocess_for_backend",
+            new_callable=AsyncMock,
+            create=True,
+        ) as mock_start:
+            # Если гейт промахнётся мимо алиаса, дойдём до старта и увидим этот
+            # мок — но правильное поведение: отказ «занят» ДО старта.
+            mock_start.side_effect = BackendSubprocessStartError("would spawn if gate missed")
+
+            with pytest.raises(ProcessManagerError, match="занят"):
+                await send_message(
+                    "_new_stale",
+                    "второй ход",
+                    backend=BackendName.CLAUDE,
+                    cwd="/tmp",
+                )
+
+        # Гейт отклонил ход ДО try/finally — занятость real-сессии не затёрта.
+        assert pm_module._busy_flags[(real_id, BackendName.CLAUDE)] is True
+
     async def test_same_session_id_different_backend_isolated(self) -> None:
         """Одинаковый session_id в Claude и Codex — это два разных процесса."""
         shared_session_id = "shared-session-id"

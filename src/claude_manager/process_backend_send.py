@@ -21,6 +21,8 @@ from claude_manager.process_state import (
     _busy_lock,
     _make_backend_process_key,
     _remove_session_id_aliases_unlocked,
+    _resolve_process_key_alias_unlocked,
+    _split_process_key,
     _stop_events,
 )
 from claude_manager.process_types import (
@@ -80,8 +82,20 @@ async def _send_message_backend_aware(
     process_key = _make_backend_process_key(session_id, effective_backend)
     owner_stop_event = asyncio.Event()
     async with _busy_lock:
-        if _busy_flags.get(process_key, False):
-            raise ProcessManagerError(f"Процесс {process_key} уже занят")
+        # Резолвим алиас перед проверкой занятости: после temp→real ремапа
+        # busy-флаг лежит под real-id, а вызов мог прийти с устаревшим temp-id.
+        # Без резолюции гейт увидит busy=False и стартует второй параллельный
+        # ход (P2-17). Канонический ключ строится тем же _make_backend_process_key,
+        # что и все SET-ключи; флаг/стоп-событие владельца по-прежнему ставятся
+        # под сырой process_key — это идентичность владельца для finally-очистки.
+        resolved_session_id, _resolved_backend = _split_process_key(
+            _resolve_process_key_alias_unlocked(session_id, effective_backend)
+        )
+        busy_check_key = _make_backend_process_key(
+            resolved_session_id, effective_backend,
+        )
+        if _busy_flags.get(busy_check_key, False):
+            raise ProcessManagerError(f"Процесс {busy_check_key} уже занят")
         _busy_flags[process_key] = True
         _stop_events[process_key] = owner_stop_event
 
