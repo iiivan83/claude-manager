@@ -45,6 +45,16 @@ class ProcessManagerError(Exception):
     """Общая ошибка process_manager (не удалось запустить процесс)."""
 
 
+class CodingAgentStartError(ProcessManagerError):
+    """Не удалось ЗАПУСТИТЬ CLI-процесс агента (Claude/Codex) — в отличие от «занят».
+
+    Подкласс ProcessManagerError: существующие широкие `except ProcessManagerError`
+    продолжают ловить сбой старта (обратная совместимость), но обработчик выше по
+    стеку может отличить «CLI не стартовал» от «процесс уже обрабатывает прошлый
+    запрос» и показать пользователю честное сообщение вместо ложного «занят».
+    """
+
+
 class ProcessNotFoundError(Exception):
     """Для указанного session_id нет запущенного процесса."""
 

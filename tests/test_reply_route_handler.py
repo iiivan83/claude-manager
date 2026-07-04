@@ -557,6 +557,45 @@ async def test_busy_error_from_send_message_becomes_busy_reply(
 
 
 @pytest.mark.asyncio()
+async def test_start_failure_from_send_message_becomes_start_error_reply(
+    monkeypatch: pytest.MonkeyPatch,
+    _bot: MagicMock,
+) -> None:
+    """Сбой старта CLI при роутинге даёт «не удалось запустить», а не «занята» (P2-15)."""
+    reply_route_registry.register_route(TEST_CHAT_ID, BOT_MESSAGE_ID, _target())
+    monkeypatch.setattr(all_projects_monitor, "is_enabled_for_chat", lambda _chat_id: True)
+    monkeypatch.setattr(process_manager, "is_busy", lambda *_args: False)
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_project_is_available",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_session_is_available",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        process_manager,
+        "send_message",
+        AsyncMock(
+            side_effect=process_manager.CodingAgentStartError("Не удалось запустить CLI")
+        ),
+    )
+
+    handled = await reply_route_handler.try_handle_text_reply(
+        _update(),
+        SimpleNamespace(bot=_bot),
+    )
+    await _drain_background_tasks()
+
+    assert handled is True
+    assert _bot.send_message.await_args.args[1] == (
+        "Не передал в /3s12: не удалось запустить агент"
+    )
+
+
+@pytest.mark.asyncio()
 async def test_all_mode_reply_does_not_switch_project_or_session(
     monkeypatch: pytest.MonkeyPatch,
     _bot: MagicMock,

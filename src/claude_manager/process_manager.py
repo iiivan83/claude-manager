@@ -67,6 +67,7 @@ from claude_manager.process_types import (
     RETRY_INTERVAL_SECONDS,
     STOP_CHECK_INTERVAL_SECONDS,
     TEMP_SESSION_PREFIX,
+    CodingAgentStartError,
     ProcessManagerError,
     ProcessNotFoundError,
     ProcessStoppedError,

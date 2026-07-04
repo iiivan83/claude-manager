@@ -29,7 +29,7 @@ from claude_manager.process_state import (
 from claude_manager.process_stop import _apply_backend_stop_strategy
 from claude_manager.process_types import (
     TEMP_SESSION_PREFIX,
-    ProcessManagerError,
+    CodingAgentStartError,
     ProcessStoppedError,
 )
 
@@ -63,7 +63,7 @@ async def _start_subprocess_for_backend_turn(
             "Не удалось запустить backend CLI: backend=%s session_id=%s",
             backend_obj.name.value, session_id, exc_info=True,
         )
-        raise ProcessManagerError(
+        raise CodingAgentStartError(
             f"Не удалось запустить CLI: {error}"
         ) from error
 
@@ -94,7 +94,7 @@ async def _restart_process(
         try:
             claude_process: ManagedProcess = await start_process(cli_session_id, cwd=cwd)
         except ClaudeStartError as error:
-            raise ProcessManagerError(
+            raise CodingAgentStartError(
                 f"Не удалось запустить Claude: {error}"
             ) from error
     else:
@@ -160,7 +160,7 @@ async def create_process(session_id: str | None = None, cwd: str | None = None) 
     try:
         claude_process = await start_process(cli_session_id, cwd=cwd)
     except ClaudeStartError as error:
-        raise ProcessManagerError(
+        raise CodingAgentStartError(
             f"Не удалось запустить Claude: {error}"
         ) from error
 

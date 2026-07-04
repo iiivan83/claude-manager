@@ -19,16 +19,20 @@ from claude_manager.claude_runner import (
 from claude_manager.process_manager import (
     MAX_RETRIES,
     PROGRESS_THROTTLE_SECONDS,
+    CodingAgentStartError,
     ProcessManagerError,
     ProcessNotFoundError,
     ProcessStoppedError,
     SendResult,
     StopResult,
+    _execute_single_retry,
     _extract_progress_text,
     _extract_result_text,
     _generate_temp_session_id,
     _is_error_result,
     _process_events,
+    _resolve_process_key_alias_unlocked,
+    _send_message_backend_aware,
     _should_send_progress,
     create_process,
     has_process,
@@ -403,7 +407,7 @@ class TestBackendAwareProcessState:
         ) as mock_start:
             mock_start.side_effect = BackendSubprocessStartError("CLI missing")
 
-            with pytest.raises(ProcessManagerError, match="Не удалось запустить CLI"):
+            with pytest.raises(CodingAgentStartError, match="Не удалось запустить CLI"):
                 await send_message(
                     session_id,
                     "Привет",
@@ -413,6 +417,38 @@ class TestBackendAwareProcessState:
 
         assert (session_id, BackendName.CODEX) not in pm_module._busy_flags
         assert (session_id, BackendName.CODEX) not in pm_module._stop_events
+
+    async def test_backend_start_failure_raises_coding_agent_start_error(self) -> None:
+        """OSError при старте тоже становится CodingAgentStartError, а не busy (P2-15)."""
+        with patch(
+            "claude_manager.process_lifecycle.start_subprocess_for_backend",
+            new_callable=AsyncMock,
+            create=True,
+        ) as mock_start:
+            mock_start.side_effect = OSError("binary gone")
+
+            with pytest.raises(CodingAgentStartError):
+                await send_message(
+                    "_new_start_fail",
+                    "привет",
+                    backend=BackendName.CODEX,
+                    cwd="/tmp/codex-project",
+                )
+
+    async def test_busy_rejection_is_not_coding_agent_start_error(self) -> None:
+        """Занятость остаётся обычным ProcessManagerError, не подтипом старта (P2-15)."""
+        session_id = "sess-busy"
+        pm_module._busy_flags[(session_id, BackendName.CODEX)] = True
+
+        with pytest.raises(ProcessManagerError) as exc_info:
+            await send_message(
+                session_id,
+                "привет",
+                backend=BackendName.CODEX,
+                cwd="/tmp/codex-project",
+            )
+
+        assert not isinstance(exc_info.value, CodingAgentStartError)
 
     async def test_same_session_id_different_backend_isolated(self) -> None:
         """Одинаковый session_id в Claude и Codex — это два разных процесса."""

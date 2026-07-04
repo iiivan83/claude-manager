@@ -268,20 +268,17 @@ async def _send_routed_text_in_background(
                 backend=target.backend,
                 cwd=target.project_path,
             )
+        except process_manager.CodingAgentStartError as error:
+            # Подтип ловится ПЕРЕД базовым ProcessManagerError: сбой старта CLI
+            # отличается от занятости честным типом, а не подстрокой в тексте.
+            logger.warning("Reply-route send failed to start CLI: %s", error)
+            await _send_route_error(context, chat_id, link, "не удалось запустить агент")
+            return
         except process_manager.ProcessManagerError as error:
-            logger.warning("Reply-route send failed before acceptance: %s", error)
-            error_text = str(error).lower()
-            is_busy_error = (
-                process_manager.is_busy(target.session_id, target.backend)
-                or "busy" in error_text
-                or "занят" in error_text
+            logger.warning("Reply-route send rejected as busy: %s", error)
+            await _send_route_error(
+                context, chat_id, link, "сессия занята. Подождите или /stop",
             )
-            reason = (
-                "сессия занята. Подождите или /stop"
-                if is_busy_error
-                else "не удалось запустить агент"
-            )
-            await _send_route_error(context, chat_id, link, reason)
             return
         except Exception:
             logger.error("Reply-route send failed", exc_info=True)

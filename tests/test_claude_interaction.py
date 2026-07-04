@@ -39,6 +39,7 @@ from claude_manager.claude_interaction import (
 import claude_manager.claude_interaction as ci_module
 import claude_manager.config as config_module
 from claude_manager.process_manager import (
+    CodingAgentStartError,
     ProcessManagerError,
     ProcessNotFoundError,
     ProcessStoppedError,
@@ -1292,6 +1293,34 @@ class TestSendToClaudeAndRespondBehavior:
             await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
 
             assert mock_send.call_args.kwargs["backend"] == BackendName.CLAUDE
+
+    @pytest.mark.asyncio()
+    @patch.object(session_manager, "get_bound_session")
+    async def test_coding_agent_start_error_sends_start_failure_message(
+        self,
+        mock_get_bound: MagicMock,
+        _setup_application: MagicMock,
+    ) -> None:
+        """CodingAgentStartError (сбой старта CLI) — честный текст, а не busy (P2-15)."""
+        mock_get_bound.return_value = TEST_SESSION_ID
+
+        with patch.object(
+            process_manager, "has_process", return_value=True,
+        ), patch.object(
+            process_manager, "send_message", new_callable=AsyncMock,
+            side_effect=CodingAgentStartError("Не удалось запустить CLI: binary gone"),
+        ), patch.object(
+            session_watcher, "pause_session",
+        ), patch.object(
+            session_watcher, "resume_session", new_callable=AsyncMock,
+        ):
+            await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
+
+            sent = _setup_application.bot.send_message
+            sent.assert_called()
+            sent_text = sent.call_args[1].get("text", sent.call_args[0][1])
+            assert "запустить" in sent_text.lower()
+            assert "обрабатывает" not in sent_text
 
 
 # --- Тесты замыканий _on_progress, _on_retry, _on_session_id_changed ---

@@ -645,14 +645,24 @@ async def send_to_claude_and_respond(
                     session_id,
                     previous_reply_anchor,
                 )
-        logger.warning(
-            "Процесс занят (chat_id=%d): %s", chat_id, error,
-        )
-        await _get_send_telegram_message()(
-            chat_id,
-            f"{_get_backend_display_name(backend)} ещё обрабатывает предыдущее сообщение. Подождите или /stop",
-            parse_mode=None,
-        )
+        # Anchor-восстановление выше одинаково для busy и сбоя старта: ход не
+        # состоялся, поэтому дальше различаем только сообщение пользователю.
+        if isinstance(error, process_manager.CodingAgentStartError):
+            logger.error(
+                "Не удалось запустить CLI-агента (chat_id=%d): %s", chat_id, error,
+                exc_info=True,
+            )
+            user_message = (
+                f"Не удалось запустить {_get_backend_display_name(backend)}. "
+                "Проверьте, что CLI установлен, и попробуйте ещё раз"
+            )
+        else:
+            logger.warning("Процесс занят (chat_id=%d): %s", chat_id, error)
+            user_message = (
+                f"{_get_backend_display_name(backend)} ещё обрабатывает "
+                "предыдущее сообщение. Подождите или /stop"
+            )
+        await _get_send_telegram_message()(chat_id, user_message, parse_mode=None)
     except Exception:
         logger.error(
             "Ошибка при взаимодействии с Claude (chat_id=%d)", chat_id,
