@@ -1898,3 +1898,36 @@ class TestTurnLifecycleOwnership:
         cancel_agent_silence_watchdog(session_id, backend)
         await asyncio.sleep(0)
         watcher._states.pop(session_id, None)
+
+    @pytest.mark.asyncio()
+    @patch.object(session_watcher, "resume_session", new_callable=AsyncMock)
+    @patch.object(session_manager, "get_active_session")
+    async def test_handler_owns_final_cleared_when_turn_stopped(
+        self,
+        mock_get_active: MagicMock,
+        _mock_resume: AsyncMock,
+    ) -> None:
+        """После /stop без финала владение финалом снимается — внешний финал не потеряется (P2-19)."""
+        session_id = "sess-stopped-no-final"
+        backend = BackendName.CLAUDE
+        mock_get_active.return_value = ActiveSession(session_id, backend)
+
+        with patch(
+            "claude_manager.claude_interaction.AGENT_SILENCE_TIMEOUT_SECONDS", 100
+        ), patch.object(
+            process_manager,
+            "send_message",
+            side_effect=process_manager.ProcessStoppedError("stopped"),
+        ):
+            await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
+
+        watcher = session_watcher._get_watcher(backend)
+        # pause_session на старте хода поставил владение финалом; после /stop без
+        # финала finally обязан его снять, иначе watcher придержит будущий внешний
+        # финал этой сессии навсегда (paused_at уже None — safety не сработает).
+        assert watcher._states[session_id].handler_owns_final_delivery is False
+
+        # Cleanup
+        cancel_agent_silence_watchdog(session_id, backend)
+        await asyncio.sleep(0)
+        watcher._states.pop(session_id, None)

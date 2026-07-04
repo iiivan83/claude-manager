@@ -572,6 +572,10 @@ async def send_to_claude_and_respond(
 
     previous_reply_anchor: int | None = None
     request_anchor_set = False
+    # Обработчик доставил финал сам? Если ход прервёт /stop или ошибка — останется
+    # False, и finally снимет владение финалом, иначе watcher придержит будущий
+    # внешний финал этой сессии навсегда (P2-19).
+    final_answer_delivered_to_user = False
     try:
         if reply_to_message_id is not None:
             previous_reply_anchor = reply_anchor_registry.get_anchor(
@@ -611,6 +615,9 @@ async def send_to_claude_and_respond(
                         result.session_id,
                     ),
                 )
+                # Обработчик сам доставил финал — finally не должен принудительно
+                # снимать владение (его штатно снимет resume_session по курсору).
+                final_answer_delivered_to_user = True
             else:
                 session_id = result.session_id
                 _save_last_delivered_message_index_for_later_project_view(
@@ -687,6 +694,12 @@ async def send_to_claude_and_respond(
         # второй ход без watchdog-защиты и с дублями прогресса (P2-20).
         if session_watcher.is_pause_owner(session_id, backend, turn_pause_token):
             cancel_agent_silence_watchdog(session_id, backend)
+            if not final_answer_delivered_to_user:
+                # Ход прерван (/stop) или упал — финала обработчик не доставит.
+                # Снимаем владение, иначе watcher навсегда придержит будущий
+                # внешний финал этой сессии: resume_session при активном ходе флаг
+                # не снимет, а paused_at обнулён — safety-автоклир не сработает (P2-19).
+                session_watcher.clear_handler_owns_final_delivery(session_id, backend)
             if config.WORKING_DIR == original_project_path:
                 await session_watcher.resume_session(
                     session_id, backend, owner_token=turn_pause_token
