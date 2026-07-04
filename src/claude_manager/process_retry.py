@@ -57,19 +57,22 @@ async def _execute_single_retry(
         if backend_obj is not None
         else _prefer_existing_process_key_unlocked(session_id, backend_name)
     )
-    old_process = _processes.get(process_key)
-    if old_process is not None and old_process.is_running():
-        await _apply_backend_stop_strategy(old_process, backend_name)
-    claude_process = await _restart_process(
-        session_id,
-        cwd,
-        backend_obj=backend_obj,
-        backend_name=backend_name,
-        prompt_text=text,
-        image_paths=image_paths or [],
-    )
-
     try:
+        # Рестарт внутри try: транзиентный сбой спавна (CodingAgentStartError и
+        # т.п.) на одной попытке уводит в except → return None → _retry_loop
+        # делает continue, а не рвёт весь цикл из MAX_RETRIES попыток (P2-16).
+        # ProcessStoppedError из рестарта пробрасывается ниже отдельным except.
+        old_process = _processes.get(process_key)
+        if old_process is not None and old_process.is_running():
+            await _apply_backend_stop_strategy(old_process, backend_name)
+        claude_process = await _restart_process(
+            session_id,
+            cwd,
+            backend_obj=backend_obj,
+            backend_name=backend_name,
+            prompt_text=text,
+            image_paths=image_paths or [],
+        )
         if isinstance(claude_process, ClaudeProcess):
             await claude_process.send_message(text)
         return await _process_events(

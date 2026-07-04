@@ -450,6 +450,41 @@ class TestBackendAwareProcessState:
 
         assert not isinstance(exc_info.value, CodingAgentStartError)
 
+    async def test_execute_single_retry_returns_none_on_transient_start_failure(self) -> None:
+        """Транзиентный сбой старта в ретрае → None (продолжаем цикл), не пробрасываем (P2-16)."""
+        with patch(
+            "claude_manager.process_retry._restart_process",
+            new=AsyncMock(side_effect=CodingAgentStartError("spawn flaked")),
+        ):
+            result = await _execute_single_retry(
+                "sess-retry",
+                "текст",
+                attempt=1,
+                cwd="/tmp",
+                progress_callback=None,
+                backend_obj=object(),
+                backend_name=BackendName.CODEX,
+            )
+
+        assert result is None
+
+    async def test_execute_single_retry_propagates_stop(self) -> None:
+        """Сбой рестарта из-за /stop обязан пробрасываться, а не гаситься в None (P2-16)."""
+        with patch(
+            "claude_manager.process_retry._restart_process",
+            new=AsyncMock(side_effect=ProcessStoppedError("stopped")),
+        ):
+            with pytest.raises(ProcessStoppedError):
+                await _execute_single_retry(
+                    "sess-retry",
+                    "текст",
+                    attempt=1,
+                    cwd="/tmp",
+                    progress_callback=None,
+                    backend_obj=object(),
+                    backend_name=BackendName.CODEX,
+                )
+
     async def test_same_session_id_different_backend_isolated(self) -> None:
         """Одинаковый session_id в Claude и Codex — это два разных процесса."""
         shared_session_id = "shared-session-id"
