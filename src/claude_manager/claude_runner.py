@@ -26,7 +26,7 @@ TERMINATE_TIMEOUT_SECONDS = 5
 # Максимальное время ожидания одной строки из stdout Claude CLI (секунды).
 # Если CLI не выдаёт ни одной строки за это время — считаем, что он завис.
 # 30 минут — покрывает тяжёлые задачи (рефакторинг крупных файлов, длинные
-# Bash-команды, extended thinking с --effort max). Во время работы инструментов
+# Bash-команды, extended thinking с --effort xhigh). Во время работы инструментов
 # и фазы thinking stdout молчит — это штатное поведение, а не зависание.
 READ_LINE_TIMEOUT_SECONDS = 1800
 
@@ -74,7 +74,7 @@ def _build_command_args(session_id: str | None) -> list[str]:
         "--input-format", STREAM_JSON_INPUT_FORMAT,
         "--dangerously-skip-permissions",
         "--model", CLAUDE_OPUS_MODEL_ID,
-        "--effort", "max",
+        "--effort", "xhigh",
     ]
 
     if session_id is not None:

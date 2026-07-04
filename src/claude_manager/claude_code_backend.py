@@ -131,7 +131,7 @@ class ClaudeCodeBackend(CodingAgentBackend):
             "--model",
             CLAUDE_OPUS_MODEL_ID,
             "--effort",
-            "max",
+            "xhigh",
             "--disallowedTools",
             DISALLOWED_TOOLS_IN_BOT_MODE,
             "--append-system-prompt",
