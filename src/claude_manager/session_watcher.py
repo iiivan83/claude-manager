@@ -47,6 +47,7 @@ __all__ = [
     "config",
     "daily_session_registry",
     "get_seen_counts_snapshot",
+    "is_pause_owner",
     "is_session_paused",
     "pause_all",
     "pause_session",
@@ -117,17 +118,30 @@ def resume_all() -> None:
 def pause_session(
     session_id: str,
     backend: BackendName | str = BackendName.CLAUDE,
+    owner_token: object | None = None,
 ) -> None:
     """Pause monitoring for one backend-owned session."""
-    _get_watcher(backend).pause_session(session_id)
+    _get_watcher(backend).pause_session(session_id, owner_token=owner_token)
 
 
 async def resume_session(
     session_id: str,
     backend: BackendName | str = BackendName.CLAUDE,
+    owner_token: object | None = None,
 ) -> None:
     """Resume monitoring for one backend-owned session."""
-    await _get_watcher(backend).resume_session(session_id)
+    await _get_watcher(backend).resume_session(session_id, owner_token=owner_token)
+
+
+def is_pause_owner(
+    session_id: str,
+    backend: BackendName | str = BackendName.CLAUDE,
+    owner_token: object | None = None,
+) -> bool:
+    """True, если переданный токен всё ещё владеет паузой сессии."""
+    if owner_token is None:
+        return True
+    return _get_watcher(backend).is_pause_owner(session_id, owner_token)
 
 
 def clear_handler_owns_final_delivery(

@@ -25,6 +25,12 @@ class SessionWatcherState:
     # agent-silence watchdog снял паузу для показа прогресса — иначе финал придёт
     # дважды: от обработчика и от watcher.
     handler_owns_final_delivery: bool = False
+    # Токен хода, владеющего паузой этой сессии. Каждый вызов
+    # send_to_claude_and_respond ставит свой object(); второй ход перезаписывает
+    # его своим. finally первого хода снимает паузу/watchdog только если токен ещё
+    # его — иначе finally первого хода снёс бы паузу второго хода (P2-20). None —
+    # паузой никто не владеет.
+    pause_owner_token: object | None = None
 
 
 @dataclass

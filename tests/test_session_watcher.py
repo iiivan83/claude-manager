@@ -836,3 +836,73 @@ class TestHandlerOwnedFinalNotDuplicated:
             False,
             True,
         )
+
+
+class TestPauseOwnerToken:
+    """Ownership-token gating of pause teardown (P2-19, P2-20)."""
+
+    def test_is_pause_owner_true_for_owning_token_false_for_other(self) -> None:
+        """Предикат владения различает свой токен, чужой токен и отсутствие состояния."""
+        backend = FakeBackend(BackendName.CODEX)
+        watcher = session_watcher.SessionWatcher(backend)
+        first_turn_token = object()
+        second_turn_token = object()
+
+        # Нет состояния сессии — сносить безопасно (владельца нет).
+        assert watcher.is_pause_owner("no-such-session", first_turn_token) is True
+
+        watcher.pause_session("sess-owner", owner_token=first_turn_token)
+        assert watcher.is_pause_owner("sess-owner", first_turn_token) is True
+        assert watcher.is_pause_owner("sess-owner", second_turn_token) is False
+
+        # Второй ход перехватил паузу — первый больше не владелец.
+        watcher.pause_session("sess-owner", owner_token=second_turn_token)
+        assert watcher.is_pause_owner("sess-owner", first_turn_token) is False
+        assert watcher.is_pause_owner("sess-owner", second_turn_token) is True
+
+    async def test_resume_session_with_stale_token_is_noop(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """resume_session с чужим токеном не снимает паузу активного второго хода (P2-20)."""
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        session_id = "sess-stale-resume"
+        file_path = f"/tmp/{session_id}.jsonl"
+        backend = FakeBackend(BackendName.CODEX)
+        backend.files = [_file(session_id, file_path)]
+        backend.snapshots[file_path] = _snapshot(
+            "progress", raw_count=1, is_turn_active=True,
+        )
+        watcher = session_watcher.SessionWatcher(backend)
+        first_turn_token = object()
+        second_turn_token = object()
+
+        watcher.pause_session(session_id, owner_token=first_turn_token)
+        # Второй ход перехватил паузу.
+        watcher.pause_session(session_id, owner_token=second_turn_token)
+
+        # finally первого хода пытается снять паузу своим устаревшим токеном.
+        await watcher.resume_session(session_id, owner_token=first_turn_token)
+
+        # Пауза второго хода уцелела.
+        assert watcher._states[session_id].paused_at is not None
+        assert watcher._states[session_id].pause_owner_token is second_turn_token
+
+    async def test_resume_session_with_owning_token_resumes(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """resume_session со своим токеном снимает паузу как раньше."""
+        monkeypatch.setattr(session_watcher.config, "WORKING_DIR", PROJECT_DIR)
+        session_id = "sess-own-resume"
+        file_path = f"/tmp/{session_id}.jsonl"
+        backend = FakeBackend(BackendName.CODEX)
+        backend.files = [_file(session_id, file_path)]
+        backend.snapshots[file_path] = _snapshot(
+            "progress", raw_count=1, is_turn_active=False,
+        )
+        watcher = session_watcher.SessionWatcher(backend)
+        turn_token = object()
+
+        watcher.pause_session(session_id, owner_token=turn_token)
+        await watcher.resume_session(session_id, owner_token=turn_token)
+
+        assert watcher._states[session_id].paused_at is None

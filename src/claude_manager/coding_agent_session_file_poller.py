@@ -588,13 +588,18 @@ class SessionWatcher:
             for session_id, state in [result]
         }
 
-    def pause_session(self, session_id: str) -> None:
+    def pause_session(
+        self, session_id: str, owner_token: object | None = None
+    ) -> None:
         state = self._states.setdefault(session_id, SessionWatcherState())
         state.paused_at = time.monotonic()
         # Паузу ставит только обработчик запроса (старт запроса и каждое progress-
         # событие) — значит он же доставит финал. Помечаем владение, чтобы watcher
         # не доставил финал повторно, если watchdog временно снимет паузу.
         state.handler_owns_final_delivery = True
+        # Токен владения ходом: второй ход перезапишет его своим, и finally первого
+        # хода по нему поймёт, что паузу/watchdog трогать уже нельзя (P2-20).
+        state.pause_owner_token = owner_token
         logger.debug(
             "Watcher (%s): сессия %s на паузе",
             self.backend.name.value,
@@ -607,12 +612,30 @@ class SessionWatcher:
         if state is not None:
             state.handler_owns_final_delivery = False
 
-    async def resume_session(self, session_id: str) -> None:
+    def is_pause_owner(self, session_id: str, owner_token: object) -> bool:
+        """True, если паузой сессии владеет этот токен (или паузой не владеет никто)."""
+        state = self._states.get(session_id)
+        if state is None:
+            return True
+        return (
+            state.pause_owner_token is None
+            or state.pause_owner_token is owner_token
+        )
+
+    async def resume_session(
+        self, session_id: str, owner_token: object | None = None
+    ) -> None:
         state = self._states.get(session_id)
         if state is None:
             return
+        if owner_token is not None and not self.is_pause_owner(
+            session_id, owner_token
+        ):
+            # Паузой уже владеет другой ход (P2-20): его паузу трогать нельзя.
+            return
 
         state.paused_at = None
+        state.pause_owner_token = None
         files = await self.backend.list_all_session_files_for_project(
             config.WORKING_DIR
         )
