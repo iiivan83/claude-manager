@@ -297,6 +297,7 @@ def cancel_agent_silence_watchdog(
 async def reset_watchdog_on_progress(
     session_id: str,
     backend: BackendName = BackendName.CLAUDE,
+    owner_token: object | None = None,
 ) -> None:
     """Обрабатывает новое progress-событие: возвращает watcher в паузу и перезапускает watchdog.
 
@@ -310,7 +311,9 @@ async def reset_watchdog_on_progress(
         # send_to_claude_and_respond (например, progress от другой сессии
         # при общем callback). Ничего не делаем.
         return
-    session_watcher.pause_session(session_id, backend)
+    # Переставляем паузу тем же токеном хода, чтобы progress текущего хода не
+    # выглядел как перехват паузы другим ходом (P2-20).
+    session_watcher.pause_session(session_id, backend, owner_token=owner_token)
     start_agent_silence_watchdog(session_id, backend)
 
 
@@ -481,14 +484,19 @@ async def send_to_claude_and_respond(
         )
         return
 
-    session_watcher.pause_session(session_id, backend)
+    # Токен владения этим ходом: finally по нему отличит «моя пауза» от паузы,
+    # которую перехватил второй ход той же сессии в окне после снятия busy (P2-20).
+    turn_pause_token = object()
+    session_watcher.pause_session(session_id, backend, owner_token=turn_pause_token)
     start_agent_silence_watchdog(session_id, backend)
 
     async def _on_progress(session_id: str, progress_text: str) -> None:
         """Промежуточное обновление — chat_id захвачен из замыкания."""
         if config.WORKING_DIR != original_project_path:
             return
-        await reset_watchdog_on_progress(session_id, backend)
+        await reset_watchdog_on_progress(
+            session_id, backend, owner_token=turn_pause_token
+        )
         day_number = await daily_session_registry.register_session(
             session_id,
             backend,
@@ -673,6 +681,13 @@ async def send_to_claude_and_respond(
             parse_mode=None,
         )
     finally:
-        cancel_agent_silence_watchdog(session_id, backend)
-        if config.WORKING_DIR == original_project_path:
-            await session_watcher.resume_session(session_id, backend)
+        # Сносим watchdog и снимаем паузу только если этим ходом всё ещё владеем.
+        # Если второй ход той же сессии перехватил паузу своим токеном, его
+        # watchdog и паузу трогать нельзя — иначе finally первого хода оставит
+        # второй ход без watchdog-защиты и с дублями прогресса (P2-20).
+        if session_watcher.is_pause_owner(session_id, backend, turn_pause_token):
+            cancel_agent_silence_watchdog(session_id, backend)
+            if config.WORKING_DIR == original_project_path:
+                await session_watcher.resume_session(
+                    session_id, backend, owner_token=turn_pause_token
+                )

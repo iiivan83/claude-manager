@@ -1,7 +1,7 @@
 """Тесты модуля claude_interaction — взаимодействие с Claude CLI."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -498,7 +498,9 @@ class TestResetWatchdogOnProgress:
             start_agent_silence_watchdog(TEST_SESSION_ID)
             old_task = watchdog_tasks[TEST_SESSION_ID]
             await reset_watchdog_on_progress(TEST_SESSION_ID)
-        mock_pause.assert_called_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
+        mock_pause.assert_called_once_with(
+            TEST_SESSION_ID, BackendName.CLAUDE, owner_token=None
+        )
         new_task = watchdog_tasks[TEST_SESSION_ID]
         assert old_task is not new_task
         # Даём event loop обработать отмену старого таска
@@ -609,7 +611,9 @@ class TestSendToClaudeAndRespondBehavior:
 
             mock_send_response.assert_awaited_once()
             # resume_session вызван в finally
-            mock_resume.assert_awaited_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
+            mock_resume.assert_awaited_once_with(
+                TEST_SESSION_ID, BackendName.CLAUDE, owner_token=ANY
+            )
 
     @pytest.mark.asyncio()
     @patch.object(session_manager, "get_bound_session")
@@ -803,8 +807,12 @@ class TestSendToClaudeAndRespondBehavior:
             )
             await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
 
-            mock_pause.assert_called_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
-            mock_resume.assert_awaited_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
+            mock_pause.assert_called_once_with(
+                TEST_SESSION_ID, BackendName.CLAUDE, owner_token=ANY
+            )
+            mock_resume.assert_awaited_once_with(
+                TEST_SESSION_ID, BackendName.CLAUDE, owner_token=ANY
+            )
 
     @pytest.mark.asyncio()
     @patch.object(session_manager, "get_bound_session")
@@ -1039,7 +1047,9 @@ class TestSendToClaudeAndRespondBehavior:
 
             mock_send_response.assert_awaited_once()
             # resume_session вызван в finally
-            mock_resume.assert_awaited_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
+            mock_resume.assert_awaited_once_with(
+                TEST_SESSION_ID, BackendName.CLAUDE, owner_token=ANY
+            )
 
     @pytest.mark.asyncio()
     @patch.object(session_manager, "get_bound_session")
@@ -1233,8 +1243,12 @@ class TestSendToClaudeAndRespondBehavior:
             )
             await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
 
-            mock_pause.assert_called_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
-            mock_resume.assert_awaited_once_with(TEST_SESSION_ID, BackendName.CLAUDE)
+            mock_pause.assert_called_once_with(
+                TEST_SESSION_ID, BackendName.CLAUDE, owner_token=ANY
+            )
+            mock_resume.assert_awaited_once_with(
+                TEST_SESSION_ID, BackendName.CLAUDE, owner_token=ANY
+            )
 
     @pytest.mark.asyncio()
     @patch.object(session_manager, "get_bound_session")
@@ -1647,6 +1661,7 @@ class TestSessionIdCallback:
             mock_resume.assert_awaited_once_with(
                 new_session_id,
                 BackendName.CLAUDE,
+                owner_token=ANY,
             )
 
     @pytest.mark.asyncio()
@@ -1838,3 +1853,48 @@ class TestClaudeInteractionConstants:
     def test_monitoring_mode_message_mentions_session(self) -> None:
         """Сообщение режима мониторинга упоминает сессию."""
         assert "сессии" in MONITORING_MODE_MESSAGE.lower() or "сессию" in MONITORING_MODE_MESSAGE.lower()
+
+
+class TestTurnLifecycleOwnership:
+    """Ownership-gated teardown в finally send_to_claude_and_respond (P2-20, P2-19)."""
+
+    @pytest.mark.asyncio()
+    @patch.object(session_manager, "get_active_session")
+    async def test_stale_turn_finally_does_not_cancel_active_turn_watchdog(
+        self,
+        mock_get_active: MagicMock,
+    ) -> None:
+        """finally прерванного первого хода не сносит паузу/watchdog второго хода (P2-20)."""
+        session_id = "sess-two-turns"
+        backend = BackendName.CLAUDE
+        mock_get_active.return_value = ActiveSession(session_id, backend)
+        second_turn_token = object()
+
+        async def second_turn_takes_over_then_stop(*_args, **_kwargs):
+            # Пока первый ход внутри send_message, приходит второй ход той же сессии:
+            # он перехватывает паузу своим токеном и ставит свой watchdog.
+            session_watcher.pause_session(
+                session_id, backend, owner_token=second_turn_token
+            )
+            start_agent_silence_watchdog(session_id, backend)
+            raise process_manager.ProcessStoppedError("stopped")
+
+        with patch(
+            "claude_manager.claude_interaction.AGENT_SILENCE_TIMEOUT_SECONDS", 100
+        ), patch.object(
+            process_manager,
+            "send_message",
+            side_effect=second_turn_takes_over_then_stop,
+        ):
+            await send_to_claude_and_respond(TEST_CHAT_ID, "Тест")
+
+        watcher = session_watcher._get_watcher(backend)
+        # Пауза и watchdog второго хода уцелели: finally первого хода их не трогал.
+        assert watcher._states[session_id].pause_owner_token is second_turn_token
+        assert watcher._states[session_id].paused_at is not None
+        assert (session_id, backend) in watchdog_tasks
+
+        # Cleanup
+        cancel_agent_silence_watchdog(session_id, backend)
+        await asyncio.sleep(0)
+        watcher._states.pop(session_id, None)
