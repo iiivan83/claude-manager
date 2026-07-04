@@ -51,6 +51,24 @@ def _split_process_key(key: ProcessKey) -> tuple[str, BackendName]:
     return key, BackendName.CLAUDE
 
 
+def _find_registered_alias_key(process_key: ProcessKey) -> ProcessKey | None:
+    """Находит ключ в _session_id_aliases с учётом string/tuple-форм CLAUDE."""
+    if process_key in _session_id_aliases:
+        return process_key
+    session_id, backend = _split_process_key(process_key)
+    if backend != BackendName.CLAUDE:
+        return None
+    # CLAUDE-состояние живёт под голой строкой ИЛИ под tuple (sid, CLAUDE) —
+    # это одна сессия. Алиас backend-aware ремапа записан под tuple, а вызов
+    # мог прийти с голой строкой (и наоборот): пробуем альтернативную форму.
+    alternate_key: ProcessKey = (
+        (session_id, BackendName.CLAUDE) if isinstance(process_key, str) else session_id
+    )
+    if alternate_key in _session_id_aliases:
+        return alternate_key
+    return None
+
+
 def _resolve_process_key_alias_unlocked(
     session_id: str,
     backend: BackendName = BackendName.CLAUDE,
@@ -59,13 +77,14 @@ def _resolve_process_key_alias_unlocked(
     resolved_key = _make_process_key(session_id, backend)
     seen: set[ProcessKey] = set()
 
-    while resolved_key in _session_id_aliases:
-        if resolved_key in seen:
-            logger.error("Обнаружен цикл алиасов process key: %s", resolved_key)
-            return resolved_key
+    while resolved_key not in seen:
         seen.add(resolved_key)
-        resolved_key = _session_id_aliases[resolved_key]
+        alias_source_key = _find_registered_alias_key(resolved_key)
+        if alias_source_key is None:
+            return resolved_key
+        resolved_key = _session_id_aliases[alias_source_key]
 
+    logger.error("Обнаружен цикл алиасов process key: %s", resolved_key)
     return resolved_key
 
 

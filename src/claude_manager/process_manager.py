@@ -9,6 +9,7 @@ from claude_manager.process_state import (
     ProcessKey,
     _busy_flags,
     _busy_lock,
+    _find_registered_alias_key,
     _make_backend_process_key,
     _make_process_key,
     _prefer_existing_process_key_unlocked,

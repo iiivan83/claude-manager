@@ -485,6 +485,35 @@ class TestBackendAwareProcessState:
                     backend_name=BackendName.CODEX,
                 )
 
+    async def test_stale_claude_temp_id_resolves_after_remap(self) -> None:
+        """После CLAUDE temp→real ремапа устаревший temp-id резолвится в real (P2-14)."""
+        real_id = "real-uuid"
+        pm_module._session_id_aliases[("_new_claude", BackendName.CLAUDE)] = (
+            real_id,
+            BackendName.CLAUDE,
+        )
+
+        resolved = _resolve_process_key_alias_unlocked(
+            "_new_claude", BackendName.CLAUDE,
+        )
+
+        assert resolved == (real_id, BackendName.CLAUDE)
+
+    async def test_is_busy_and_has_process_follow_claude_tuple_alias(self) -> None:
+        """/stop, is_busy, has_process находят процесс по устаревшему CLAUDE temp-id (P2-14)."""
+        real_id = "real-uuid-2"
+        running_process = MagicMock()
+        running_process.is_running.return_value = True
+        pm_module._processes[(real_id, BackendName.CLAUDE)] = running_process
+        pm_module._busy_flags[(real_id, BackendName.CLAUDE)] = True
+        pm_module._session_id_aliases[("_new_x", BackendName.CLAUDE)] = (
+            real_id,
+            BackendName.CLAUDE,
+        )
+
+        assert is_busy("_new_x", BackendName.CLAUDE) is True
+        assert has_process("_new_x", BackendName.CLAUDE) is True
+
     async def test_same_session_id_different_backend_isolated(self) -> None:
         """Одинаковый session_id в Claude и Codex — это два разных процесса."""
         shared_session_id = "shared-session-id"
