@@ -12,6 +12,7 @@ from claude_manager import (
     process_manager,
     reply_route_handler,
     reply_route_registry,
+    session_manager,
 )
 from claude_manager.coding_agent_backend import BackendName
 from claude_manager.process_manager import SendResult
@@ -133,7 +134,7 @@ async def test_text_reply_inside_same_project_uses_local_link(
     monkeypatch: pytest.MonkeyPatch,
     _bot: MagicMock,
 ) -> None:
-    """Same-project reply confirms with /N and does not change active session."""
+    """Same-project reply confirms with /N and switches active session to target."""
     reply_route_registry.register_route(
         TEST_CHAT_ID,
         BOT_MESSAGE_ID,
@@ -143,6 +144,9 @@ async def test_text_reply_inside_same_project_uses_local_link(
     config_module.WORKING_DIR = CURRENT_PROJECT
     monkeypatch.setattr(all_projects_monitor, "is_enabled_for_chat", lambda _chat_id: False)
     monkeypatch.setattr(process_manager, "is_busy", lambda *_args: False)
+    monkeypatch.setattr(
+        session_manager, "set_active_session", AsyncMock(return_value=12)
+    )
     monkeypatch.setattr(
         process_manager,
         "send_message",
@@ -228,6 +232,163 @@ async def test_text_reply_inside_other_project_uses_full_link(
 
     assert handled is True
     assert _bot.send_message.await_args.args[1] == "Передал в /3s12"
+
+
+@pytest.mark.asyncio()
+async def test_same_project_reply_switches_active_binding_to_target(
+    monkeypatch: pytest.MonkeyPatch,
+    _bot: MagicMock,
+) -> None:
+    """A same-project reply moves the chat's active session to the reply target."""
+    reply_route_registry.register_route(
+        TEST_CHAT_ID,
+        BOT_MESSAGE_ID,
+        _target(project_path=CURRENT_PROJECT, session_number=12),
+    )
+    original_working_dir = config_module.WORKING_DIR
+    config_module.WORKING_DIR = CURRENT_PROJECT
+    set_active_session = AsyncMock(return_value=12)
+    monkeypatch.setattr(all_projects_monitor, "is_enabled_for_chat", lambda _chat_id: False)
+    monkeypatch.setattr(process_manager, "is_busy", lambda *_args: False)
+    monkeypatch.setattr(session_manager, "set_active_session", set_active_session)
+    monkeypatch.setattr(
+        process_manager,
+        "send_message",
+        AsyncMock(
+            return_value=SendResult(
+                text="accepted",
+                session_id="session-route",
+                is_error=False,
+                retries_used=0,
+                backend=BackendName.CODEX,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_project_is_available",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_session_is_available",
+        AsyncMock(return_value=True),
+    )
+
+    try:
+        handled = await reply_route_handler.try_handle_text_reply(
+            _update(),
+            SimpleNamespace(bot=_bot),
+        )
+        await _drain_background_tasks()
+    finally:
+        config_module.WORKING_DIR = original_working_dir
+
+    assert handled is True
+    set_active_session.assert_awaited_once_with(
+        TEST_CHAT_ID,
+        "session-route",
+        BackendName.CODEX,
+    )
+
+
+@pytest.mark.asyncio()
+async def test_cross_project_reply_does_not_switch_active_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    _bot: MagicMock,
+) -> None:
+    """A cross-project reply must not rebind: the plain path would use the wrong cwd."""
+    reply_route_registry.register_route(
+        TEST_CHAT_ID,
+        BOT_MESSAGE_ID,
+        _target(project_path=OTHER_PROJECT, project_number=3, session_number=12),
+    )
+    original_working_dir = config_module.WORKING_DIR
+    config_module.WORKING_DIR = CURRENT_PROJECT
+    set_active_session = AsyncMock()
+    monkeypatch.setattr(all_projects_monitor, "is_enabled_for_chat", lambda _chat_id: False)
+    monkeypatch.setattr(process_manager, "is_busy", lambda *_args: False)
+    monkeypatch.setattr(session_manager, "set_active_session", set_active_session)
+    monkeypatch.setattr(
+        process_manager,
+        "send_message",
+        AsyncMock(
+            return_value=SendResult(
+                text="accepted",
+                session_id="session-route",
+                is_error=False,
+                retries_used=0,
+                backend=BackendName.CODEX,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_project_is_available",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_session_is_available",
+        AsyncMock(return_value=True),
+    )
+
+    try:
+        handled = await reply_route_handler.try_handle_text_reply(
+            _update(),
+            SimpleNamespace(bot=_bot),
+        )
+        await _drain_background_tasks()
+    finally:
+        config_module.WORKING_DIR = original_working_dir
+
+    assert handled is True
+    set_active_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio()
+async def test_all_mode_reply_does_not_switch_active_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    _bot: MagicMock,
+) -> None:
+    """A reply in /all mode must not create a binding behind the monitor's back."""
+    reply_route_registry.register_route(TEST_CHAT_ID, BOT_MESSAGE_ID, _target())
+    set_active_session = AsyncMock()
+    monkeypatch.setattr(all_projects_monitor, "is_enabled_for_chat", lambda _chat_id: True)
+    monkeypatch.setattr(process_manager, "is_busy", lambda *_args: False)
+    monkeypatch.setattr(session_manager, "set_active_session", set_active_session)
+    monkeypatch.setattr(
+        process_manager,
+        "send_message",
+        AsyncMock(
+            return_value=SendResult(
+                text="accepted",
+                session_id="session-route",
+                is_error=False,
+                retries_used=0,
+                backend=BackendName.CODEX,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_project_is_available",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        reply_route_handler,
+        "_target_session_is_available",
+        AsyncMock(return_value=True),
+    )
+
+    handled = await reply_route_handler.try_handle_text_reply(
+        _update(),
+        SimpleNamespace(bot=_bot),
+    )
+    await _drain_background_tasks()
+
+    assert handled is True
+    set_active_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio()

@@ -15,6 +15,7 @@ from claude_manager import (
     process_manager,
     project_manager,
     reply_route_registry,
+    session_manager,
     telegram_sender,
 )
 from claude_manager.coding_agent_backend import BackendName, PermanentErrorKind
@@ -53,6 +54,48 @@ def _target_is_busy(target: reply_route_registry.ReplyRouteTarget) -> bool:
         _route_send_key(target) in _inflight_route_sends
         or process_manager.is_busy(target.session_id, target.backend)
     )
+
+
+def _reply_should_switch_active_binding(
+    chat_id: int,
+    target: reply_route_registry.ReplyRouteTarget,
+) -> bool:
+    """Return whether a routed reply should move the chat's active session binding.
+
+    Only a same-project reply from project mode may rebind. The plain-message path
+    launches the CLI with config.WORKING_DIR as cwd, so binding to a session in
+    another project would run it in the wrong directory; and in /all mode the chat
+    has no active binding by design — creating one would desync the monitor.
+    """
+    if all_projects_monitor.is_enabled_for_chat(chat_id):
+        return False
+    return _normalize_path(target.project_path) == _normalize_path(config.WORKING_DIR)
+
+
+async def _switch_active_binding_to_reply_target(
+    chat_id: int,
+    target: reply_route_registry.ReplyRouteTarget,
+) -> None:
+    """Move the chat's active session to the reply target so plain messages follow it.
+
+    Best-effort: a persistence failure must not break reply routing — the message is
+    still delivered to the target session, only the convenience rebind is skipped.
+    """
+    if not _reply_should_switch_active_binding(chat_id, target):
+        return
+    try:
+        await session_manager.set_active_session(
+            chat_id,
+            target.session_id,
+            target.backend,
+        )
+    except Exception:
+        logger.warning(
+            "Не удалось переключить активную привязку на сессию reply-route: %s %s",
+            target.backend.value,
+            target.session_id,
+            exc_info=True,
+        )
 
 
 def _track_background_task(task: asyncio.Task[None]) -> None:
@@ -292,6 +335,10 @@ async def try_handle_text_reply(
     if not await _target_session_is_available(target):
         await _send_route_error(context, chat_id, link, "сессия недоступна")
         return True
+
+    # Reply accepted: the user is now working in this session, so plain messages
+    # that follow must route here too — move the active binding to the target.
+    await _switch_active_binding_to_reply_target(chat_id, target)
 
     try:
         await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
