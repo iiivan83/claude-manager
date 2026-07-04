@@ -18,6 +18,9 @@
 - **tests/test_session_watcher.py** — класс `TestPauseOwnerToken`: юнит `is_pause_owner`, gate `resume_session` (свой/чужой токен).
 - **tests/test_claude_interaction.py** — класс `TestTurnLifecycleOwnership`: регресс P2-20 (finally прерванного первого хода не сносит паузу/watchdog второго) и P2-19 (после /stop владение финалом снимается); обновлены ассерты существующих тестов под новый kwarg `owner_token` (`ANY`/`None`).
 - **dev/docs/specs/05.07_01.49-stage-3-turn-lifecycle-ownership-plan.md** — детальный TDD-план этапа (закоммичен docs-коммитом до кода).
+- **dev/docs/adr/05.07_02.26-session-change-documenter-turn-lifecycle-pause-ownership.md** — ADR с решением (токен владения ходом) и отвергнутой альтернативой (идентичность watchdog-таска). Создан документалистом сессии.
+- **dev/docs/adr/project_architecture.md** — добавлен подраздел «Владение ходом: finally проверяет владение паузой и watchdog» + пометка, что соседний раздел про счётчик `chat_active_requests` описывает более ранний дизайн (дрейф P3-57). Документалист сессии.
+- **CLAUDE.md** (проектный) — добавлен «Принцип владения ходом (pause_owner_token)» в семейство turn-lifecycle-принципов; лог в `dev/docs/claude-md-updates/05.07_02.29-session-change-documenter.md`. Документалист сессии.
 
 ## Решения
 
