@@ -25,6 +25,17 @@ CONTENT_BLOCK_TEXT = "text"
 EMPTY_RESPONSE_MARKER = "No response requested."
 EMPTY_RESPONSE_MARKERS = frozenset({EMPTY_RESPONSE_MARKER})
 BUSY_EVENT_TYPES = frozenset({"assistant", "progress", "queue-operation"})
+
+# stop_reason значения, при которых Claude продолжит ТОТ ЖЕ turn после этой
+# assistant-записи: остановился, чтобы вызвать инструмент (tool_use), или
+# поставил длинный turn на паузу (pause_turn). Отсутствующий stop_reason (None)
+# значит, что сообщение ещё стримится — turn тоже не закрыт. Любой явный
+# терминальный reason (end_turn, stop_sequence, max_tokens, refusal) закрывает turn.
+TURN_CONTINUING_STOP_REASONS = frozenset({"tool_use", "pause_turn"})
+
+# Потоковые типы записей, которые как последний значимый record означают, что
+# Claude ещё в середине turn'а (печатает progress или есть отложенная операция).
+MID_TURN_STREAM_EVENT_TYPES = frozenset({"progress", "queue-operation"})
 RAW_RECORD_INDEX_KEY = "_raw_record_index"
 
 MAX_RECENT_SESSIONS = 15
@@ -370,29 +381,48 @@ async def read_session_file_cursor(file_path: str) -> SessionFileSnapshot:
     return await asyncio.to_thread(_read_session_file_cursor_blocking, file_path)
 
 
+def _assistant_record_keeps_turn_active(record: dict[str, object]) -> bool:
+    """Return whether an assistant record leaves the Claude turn unfinished.
+
+    Внешние сессии Claude Code НЕ пишут record `result`, поэтому stop_reason
+    последней assistant-записи — единственный сигнал на диске, закрыт ли turn:
+    tool_use/pause_turn продолжают turn, ещё стримящаяся запись (stop_reason
+    отсутствует) тоже не завершена, а любой явный терминальный reason закрывает.
+    """
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return True
+    stop_reason = message.get("stop_reason")
+    if stop_reason is None:
+        return True
+    return stop_reason in TURN_CONTINUING_STOP_REASONS
+
+
 def _compute_is_turn_active_from_parsed_records(
     parsed_records: list[dict[str, object]],
 ) -> bool:
     """Return True if Claude is still working on the most recent turn.
 
-    Сканируем записи с конца и ищем первый значимый тип:
-    - `result` встретился раньше любого assistant/progress/queue-operation →
-      turn закрыт (Claude CLI пишет `result` только при завершении turn'а).
-    - assistant/progress/queue-operation встретился раньше result-event'а →
-      turn активен (после tool_result последний record в файле — `user`,
-      но реальный конец turn'а ещё не наступил, потому что `result`
-      не записан).
+    Сканируем записи с конца к началу до первого значимого record:
+    - `result` → turn закрыт (Claude CLI пишет `result` при завершении turn'а,
+      но внешние сессии Claude Code его НЕ пишут — для них работает ветка ниже).
+    - `assistant` → решает stop_reason: tool_use/pause_turn/ещё-стримится →
+      turn активен; явный терминальный reason (end_turn и т.п.) → turn закрыт.
+    - `progress`/`queue-operation` → turn активен (Claude печатает или есть
+      отложенная операция).
 
-    Это правильнее, чем смотреть только на тип последнего record:
-    после tool_result последний record — `user`, но Claude ещё думает
-    над следующим шагом, и watcher не должен помечать промежуточный
-    assistant text как is_final.
+    Это правильнее, чем смотреть только на тип последнего record: после
+    tool_result последний record — `user`, но turn ещё не закрыт; а после
+    финального assistant идут служебные записи (`last-prompt`, `ai-title`,
+    `mode`), которые не должны снова открывать turn.
     """
     for record in reversed(parsed_records):
         record_type = record.get("type")
-        if record_type == "result":
+        if record_type == EVENT_TYPE_RESULT:
             return False
-        if record_type in BUSY_EVENT_TYPES:
+        if record_type == EVENT_TYPE_ASSISTANT:
+            return _assistant_record_keeps_turn_active(record)
+        if record_type in MID_TURN_STREAM_EVENT_TYPES:
             return True
     return False
 
@@ -455,11 +485,11 @@ def _read_cursor_count_last_record_and_turn_active(
 ) -> tuple[int, dict[str, object] | None, bool]:
     """Return raw count, last valid record and is_turn_active in one file pass.
 
-    Для is_turn_active нужно reverse-сканировать парсенные records до первого
-    result-event'а или assistant/progress/queue-operation. Если последний record
-    в файле — это `user`-tool_result (Claude между шагами с инструментами),
-    последний record сам по себе не даёт ответа: нужно посмотреть вверх по
-    записям.
+    Для is_turn_active reverse-сканируем парсенные records до первого значимого:
+    `result` (turn закрыт), `assistant` (решает stop_reason — см.
+    `_assistant_record_keeps_turn_active`) или `progress`/`queue-operation`
+    (turn активен). Та же логика, что в `_compute_is_turn_active_from_parsed_records`,
+    но без полного парсинга истории сообщений.
     """
     non_empty_lines: list[str] = []
     with open(file_path, encoding="utf-8") as file_handle:
@@ -490,10 +520,13 @@ def _read_cursor_count_last_record_and_turn_active(
             last_record = parsed_value
         if not is_turn_active_decided:
             record_type = parsed_value.get("type")
-            if record_type == "result":
+            if record_type == EVENT_TYPE_RESULT:
                 is_turn_active = False
                 is_turn_active_decided = True
-            elif record_type in BUSY_EVENT_TYPES:
+            elif record_type == EVENT_TYPE_ASSISTANT:
+                is_turn_active = _assistant_record_keeps_turn_active(parsed_value)
+                is_turn_active_decided = True
+            elif record_type in MID_TURN_STREAM_EVENT_TYPES:
                 is_turn_active = True
                 is_turn_active_decided = True
         if last_record is not None and is_turn_active_decided:

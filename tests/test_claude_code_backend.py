@@ -594,6 +594,178 @@ async def test_read_session_file_cursor_turn_active_after_tool_result(
     assert snapshot.is_turn_active is True
 
 
+# stop_reason значения, которыми внешняя сессия Claude Code завершает ответ.
+# Внешние сессии НЕ пишут record `result`, поэтому терминальный stop_reason —
+# единственный сигнал «turn закрыт» при чтении .jsonl с диска.
+TURN_TERMINAL_STOP_REASONS = ["end_turn", "stop_sequence", "max_tokens"]
+
+# Служебные записи, которые Claude Code дописывает ПОСЛЕ финального assistant.
+SERVICE_RECORD_TYPES_AFTER_FINAL = [
+    "last-prompt",
+    "ai-title",
+    "mode",
+    "file-history-snapshot",
+]
+
+
+@pytest.mark.parametrize("terminal_stop_reason", TURN_TERMINAL_STOP_REASONS)
+async def test_read_session_file_snapshot_terminal_stop_reason_closes_turn(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+    terminal_stop_reason: str,
+) -> None:
+    """Assistant с терминальным stop_reason без result закрывает turn.
+
+    Регрессионная защита для бага «завершённый ход читается как активный»:
+    внешние сессии Claude Code завершают ответ записью `assistant` со
+    stop_reason=end_turn/stop_sequence/max_tokens и БЕЗ записи `result`.
+    Обратный проход упирался в этот assistant и держал turn активным навсегда,
+    из-за чего финал не доставлялся в режиме тишины.
+    """
+    session_file = tmp_path / f"closed_{terminal_stop_reason}.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {"type": "user", "message": {"content": "do it"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "Done."}],
+                    "stop_reason": terminal_stop_reason,
+                },
+            },
+        ],
+    )
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert snapshot.is_turn_active is False
+
+
+async def test_read_session_file_snapshot_service_records_after_end_turn_close_turn(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """Служебные записи после end_turn не должны снова делать turn активным."""
+    session_file = tmp_path / "service_tail.jsonl"
+    records: list[dict[str, object]] = [
+        {"type": "user", "message": {"content": "do it"}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Final answer."}],
+                "stop_reason": "end_turn",
+            },
+        },
+    ]
+    records += [
+        {"type": service_type} for service_type in SERVICE_RECORD_TYPES_AFTER_FINAL
+    ]
+    write_jsonl_file(session_file, records)
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert snapshot.is_turn_active is False
+
+
+async def test_read_session_file_snapshot_tool_use_stop_reason_keeps_turn_active(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """Assistant со stop_reason=tool_use в ожидании tool_result оставляет turn активным."""
+    session_file = tmp_path / "active_tool_use.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {"type": "user", "message": {"content": "do it"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Checking"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_09",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
+                    ],
+                    "stop_reason": "tool_use",
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_09",
+                            "content": "ok",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert snapshot.is_turn_active is True
+
+
+@pytest.mark.parametrize("terminal_stop_reason", TURN_TERMINAL_STOP_REASONS)
+async def test_read_session_file_cursor_terminal_stop_reason_closes_turn(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+    terminal_stop_reason: str,
+) -> None:
+    """Cursor reader закрывает turn на терминальном assistant stop_reason."""
+    session_file = tmp_path / f"cursor_closed_{terminal_stop_reason}.jsonl"
+    write_jsonl_file(
+        session_file,
+        [
+            {"type": "user", "message": {"content": "do it"}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "Done."}],
+                    "stop_reason": terminal_stop_reason,
+                },
+            },
+        ],
+    )
+
+    snapshot = await backend.read_session_file_cursor(str(session_file))
+
+    assert snapshot.is_turn_active is False
+
+
+async def test_read_session_file_cursor_service_records_after_end_turn_close_turn(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """Cursor reader игнорирует служебные записи после end_turn при оценке turn'а."""
+    session_file = tmp_path / "cursor_service_tail.jsonl"
+    records: list[dict[str, object]] = [
+        {"type": "user", "message": {"content": "do it"}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Final."}],
+                "stop_reason": "end_turn",
+            },
+        },
+    ]
+    records += [
+        {"type": service_type} for service_type in SERVICE_RECORD_TYPES_AFTER_FINAL
+    ]
+    write_jsonl_file(session_file, records)
+
+    snapshot = await backend.read_session_file_cursor(str(session_file))
+
+    assert snapshot.is_turn_active is False
+
+
 async def test_session_file_exists_for_project(
     backend: ClaudeCodeBackend,
     tmp_path: Path,
