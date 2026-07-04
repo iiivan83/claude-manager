@@ -14,6 +14,9 @@ from claude_manager.coding_agent_backend import (
     SessionFileSnapshot,
     SessionMessage,
 )
+from claude_manager.jsonl_incomplete_trailing_line_dropper import (
+    drop_incomplete_trailing_jsonl_line,
+)
 from claude_manager.session_request_preview import clean_session_request_preview
 
 logger = logging.getLogger(__name__)
@@ -441,6 +444,9 @@ def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
         logger.warning("Could not read Claude session file %s: %s", file_path, error)
         return empty_session_file_snapshot()
 
+    # Недописанная CLI на лету последняя строка не должна попадать в raw-счётчик:
+    # иначе дописанная позже запись получит уже «прочитанный» индекс (P2-26).
+    raw_lines = drop_incomplete_trailing_jsonl_line(raw_lines)
     raw_record_count = sum(1 for raw_line in raw_lines if raw_line.strip())
     parsed_records = parse_jsonl_string_lines(raw_lines, file_path)
     messages = messages_from_jsonl_records(parsed_records)
@@ -491,13 +497,16 @@ def _read_cursor_count_last_record_and_turn_active(
     (turn активен). Та же логика, что в `_compute_is_turn_active_from_parsed_records`,
     но без полного парсинга истории сообщений.
     """
+    # Сбрасываем недописанную последнюю строку до подсчёта, чтобы raw-курсор
+    # не «съел» индекс записи, которую CLI ещё дописывает на диск (P2-26).
     non_empty_lines: list[str] = []
     with open(file_path, encoding="utf-8") as file_handle:
-        for raw_line in file_handle:
-            stripped_line = raw_line.strip()
-            if not stripped_line:
-                continue
-            non_empty_lines.append(stripped_line)
+        raw_lines = drop_incomplete_trailing_jsonl_line(file_handle.readlines())
+    for raw_line in raw_lines:
+        stripped_line = raw_line.strip()
+        if not stripped_line:
+            continue
+        non_empty_lines.append(stripped_line)
 
     raw_record_count = len(non_empty_lines)
     if raw_record_count == 0:

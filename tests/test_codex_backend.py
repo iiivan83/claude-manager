@@ -721,3 +721,23 @@ def test_get_stop_strategy_returns_sigint_sigterm_sigkill(
     assert stop_strategy.steps[0].wait_seconds_before_next == STOP_SIGINT_TIMEOUT_SECONDS
     assert stop_strategy.steps[1].wait_seconds_before_next == STOP_SIGTERM_TIMEOUT_SECONDS
     assert stop_strategy.steps[2].wait_seconds_before_next == 0.0
+
+
+async def test_torn_trailing_line_is_not_counted_in_codex_raw_record_count(
+    backend: CodexBackend,
+    tmp_path: Path,
+) -> None:
+    """Недописанная последняя rollout-строка не входит в raw_record_count (P2-26)."""
+    session_file = tmp_path / "torn_tail_rollout.jsonl"
+    write_jsonl_file(
+        session_file,
+        [{"type": "event_msg", "payload": {"type": "task_complete"}}],
+    )
+    with session_file.open("a", encoding="utf-8") as file_handle:
+        file_handle.write('{"type": "event_msg", "payload": {"ty')
+
+    cursor = await backend.read_session_file_cursor(str(session_file))
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert cursor.raw_record_count == 1
+    assert snapshot.raw_record_count == 1

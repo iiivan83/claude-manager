@@ -13,6 +13,9 @@ from claude_manager.coding_agent_backend import (
     SessionFileSnapshot,
     SessionMessage,
 )
+from claude_manager.jsonl_incomplete_trailing_line_dropper import (
+    drop_incomplete_trailing_jsonl_line,
+)
 from claude_manager.session_request_preview import clean_session_request_preview
 
 logger = logging.getLogger(__name__)
@@ -251,6 +254,9 @@ def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
         logger.warning("Could not read Codex session file %s: %s", file_path, error)
         return empty_session_file_snapshot()
 
+    # Недописанная CLI на лету последняя rollout-строка не должна попадать в
+    # raw-счётчик: иначе дописанная позже запись получит «прочитанный» индекс (P2-26).
+    raw_lines = drop_incomplete_trailing_jsonl_line(raw_lines)
     raw_record_count = sum(1 for raw_line in raw_lines if raw_line.strip())
     parsed_records = _parse_jsonl_string_lines(raw_lines, file_path)
     messages = messages_from_jsonl_records(parsed_records)
@@ -293,15 +299,19 @@ def _read_cursor_record_count_and_last_record(
     file_path: str,
 ) -> tuple[int, dict[str, object] | None]:
     """Count non-empty records and parse only the last non-empty Codex record."""
+    # Сбрасываем недописанную последнюю строку до подсчёта, чтобы raw-курсор
+    # не «съел» индекс записи, которую CLI ещё дописывает на диск (P2-26).
+    with open(file_path, encoding="utf-8") as file_handle:
+        raw_lines = drop_incomplete_trailing_jsonl_line(file_handle.readlines())
+
     raw_record_count = 0
     last_raw_record = ""
-    with open(file_path, encoding="utf-8") as file_handle:
-        for raw_line in file_handle:
-            stripped_line = raw_line.strip()
-            if not stripped_line:
-                continue
-            raw_record_count += 1
-            last_raw_record = stripped_line
+    for raw_line in raw_lines:
+        stripped_line = raw_line.strip()
+        if not stripped_line:
+            continue
+        raw_record_count += 1
+        last_raw_record = stripped_line
 
     if not last_raw_record:
         return 0, None

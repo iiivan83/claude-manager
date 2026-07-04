@@ -806,3 +806,52 @@ def test_get_backend_returns_claude_singleton() -> None:
 
     assert isinstance(first_backend, ClaudeCodeBackend)
     assert first_backend is second_backend
+
+
+async def test_torn_trailing_line_is_not_counted_in_raw_record_count(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """Недописанная последняя строка не входит в raw_record_count (P2-26)."""
+    session_file = tmp_path / "torn_tail.jsonl"
+    write_jsonl_file(
+        session_file,
+        [{"type": "user", "message": {"content": "вопрос"}}],
+    )
+    with session_file.open("a", encoding="utf-8") as file_handle:
+        file_handle.write('{"type": "assistant", "message": {"content": [{"ty')
+
+    cursor = await backend.read_session_file_cursor(str(session_file))
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert cursor.raw_record_count == 1
+    assert snapshot.raw_record_count == 1
+
+
+async def test_record_completed_after_torn_baseline_is_delivered_by_raw_index(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+) -> None:
+    """Запись, дописанная после baseline, получает raw-индекс ЗА курсором (P2-26)."""
+    session_file = tmp_path / "torn_then_completed.jsonl"
+    write_jsonl_file(
+        session_file,
+        [{"type": "user", "message": {"content": "вопрос"}}],
+    )
+    with session_file.open("a", encoding="utf-8") as file_handle:
+        file_handle.write('{"type": "assistant", "message": {"content": [{"ty')
+
+    baseline_cursor = await backend.read_session_file_cursor(str(session_file))
+
+    with session_file.open("a", encoding="utf-8") as file_handle:
+        file_handle.write('pe": "text", "text": "ответ"}]}}\n')
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+    newly_visible = [
+        message
+        for message in snapshot.messages
+        if message.raw_record_index is not None
+        and message.raw_record_index > baseline_cursor.raw_record_count
+    ]
+
+    assert [message.text for message in newly_visible] == ["ответ"]
