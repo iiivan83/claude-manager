@@ -156,12 +156,15 @@ async def test_pending_grown_cursor_reads_snapshot_and_delivers(
         {file_path: _snapshot(raw_count=3)},
         {file_path: _snapshot("old", "new", raw_count=3)},
     )
+    # Валидное parsed-состояние (индекс 0 уже доставлен) — не cursor-only
+    # сентинель, поэтому применяется срез-семантика по last_delivered_idx.
     unread_buffer.save_snapshot(
         "session",
         BackendName.CODEX,
         raw_record_count=1,
         last_delivered_idx=0,
         last_modified_at=10.0,
+        parsed_message_count=1,
     )
     monkeypatch.setattr(coding_agent_backend, "get_all_backends", lambda: [backend])
 
@@ -188,12 +191,15 @@ async def test_pending_changed_files_are_checked_concurrently_and_errors_are_kep
         files.append(_file(session_id, file_path, 20.0))
         cursors[file_path] = _snapshot(raw_count=2)
         snapshots[file_path] = _snapshot("old", f"new {index}", raw_count=2)
+        # Валидное parsed-состояние (индекс 0 уже доставлен) — не cursor-only
+        # сентинель, поэтому применяется срез-семантика по last_delivered_idx.
         unread_buffer.save_snapshot(
             session_id,
             BackendName.CODEX,
             raw_record_count=1,
             last_delivered_idx=0,
             last_modified_at=10.0,
+            parsed_message_count=1,
         )
     failing_path = files[0].file_path
     snapshots[failing_path] = RuntimeError("broken file")

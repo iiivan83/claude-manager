@@ -425,11 +425,14 @@ class TestSwitchProject:
             snapshots={file_path: snapshot},
         )
         fake_codex_backend = FakeProjectBackend(BackendName.CODEX)
+        # Валидное parsed-состояние (индекс 0 уже доставлен) — не cursor-only
+        # сентинель, поэтому применяется срез-семантика по last_delivered_idx.
         unread_buffer.save_snapshot(
             session_id,
             BackendName.CLAUDE,
             raw_record_count=4,
             last_delivered_idx=0,
+            parsed_message_count=1,
         )
 
         patches = _patch_config_paths(projects_root, working_dir, last_project_file)
@@ -514,11 +517,14 @@ class TestSwitchProject:
             session_files=[session_file],
             snapshots={file_path: snapshot},
         )
+        # Валидное parsed-состояние (индекс 0 уже доставлен) — не cursor-only
+        # сентинель, поэтому применяется срез-семантика по last_delivered_idx.
         unread_buffer.save_snapshot(
             session_id,
             BackendName.CLAUDE,
             raw_record_count=1,
             last_delivered_idx=0,
+            parsed_message_count=1,
         )
 
         patches = _patch_config_paths(projects_root, target, last_project_file)

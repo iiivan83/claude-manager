@@ -16,6 +16,7 @@ from claude_manager import (
     unread_buffer,
 )
 from claude_manager.coding_agent_backend import (
+    CURSOR_ONLY_PARSED_MESSAGE_COUNT,
     BackendName,
     CodingAgentBackend,
     SessionFileInfo,
@@ -188,6 +189,28 @@ def _build_pending_items_from_delta(
     ]
 
 
+def _messages_after_raw_cursor(
+    messages: list[SessionMessage],
+    raw_record_count: int,
+    session_id: str,
+) -> list[SessionMessage]:
+    """Выбирает сообщения после raw-курсора, когда parsed-индексу доверять нельзя."""
+    if not any(message.raw_record_index is not None for message in messages):
+        # Без raw-индексов отличить новое от старого нельзя: лучше ничего не
+        # доставить, чем вывалить всю историю сессии в чат (P1-1).
+        logger.warning(
+            "Cursor-only снапшот без raw-индексов: pending-доставка пропущена (%s)",
+            session_id,
+        )
+        return []
+    return [
+        message
+        for message in messages
+        if message.raw_record_index is not None
+        and message.raw_record_index > raw_record_count
+    ]
+
+
 async def _collect_pending_for_session_file(
     backend_adapter: CodingAgentBackend,
     file_info: SessionFileInfo,
@@ -216,7 +239,14 @@ async def _collect_pending_for_session_file(
     if not _has_new_messages(old_state, snapshot):
         return []
 
-    delta = snapshot.messages[old_state.last_delivered_idx + 1:]
+    if old_state.parsed_message_count == CURSOR_ONLY_PARSED_MESSAGE_COUNT:
+        delta = _messages_after_raw_cursor(
+            snapshot.messages,
+            old_state.raw_record_count,
+            file_info.session_id,
+        )
+    else:
+        delta = snapshot.messages[old_state.last_delivered_idx + 1:]
     return _build_pending_items_from_delta(
         file_info.session_id,
         backend,
