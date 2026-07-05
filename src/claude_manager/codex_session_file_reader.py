@@ -222,6 +222,17 @@ async def read_messages_from_session_file(file_path: str) -> list[SessionMessage
     except PermissionError:
         logger.error("No permission to read Codex session file: %s", file_path)
         return []
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит на след. опросе.
+        logger.debug(
+            "Codex session file %s not fully readable yet "
+            "(incomplete UTF-8, likely mid-write): %s",
+            file_path,
+            error,
+        )
+        return []
     except OSError as error:
         logger.warning("Could not read Codex session file %s: %s", file_path, error)
         return []
@@ -249,6 +260,17 @@ def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
         raw_lines = _read_file_lines_blocking(file_path)
     except PermissionError:
         logger.error("No permission to read Codex session file: %s", file_path)
+        return empty_session_file_snapshot()
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит на след. опросе.
+        logger.debug(
+            "Codex session file %s not fully readable yet "
+            "(incomplete UTF-8, likely mid-write): %s",
+            file_path,
+            error,
+        )
         return empty_session_file_snapshot()
     except OSError as error:
         logger.warning("Could not read Codex session file %s: %s", file_path, error)
@@ -282,6 +304,17 @@ def _read_session_file_cursor_blocking(file_path: str) -> SessionFileSnapshot:
         )
     except PermissionError:
         logger.error("No permission to read Codex session file: %s", file_path)
+        return empty_session_file_snapshot()
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит на след. опросе.
+        logger.debug(
+            "Codex session file %s not fully readable yet "
+            "(incomplete UTF-8, likely mid-write): %s",
+            file_path,
+            error,
+        )
         return empty_session_file_snapshot()
     except OSError as error:
         logger.warning("Could not read Codex session file %s: %s", file_path, error)

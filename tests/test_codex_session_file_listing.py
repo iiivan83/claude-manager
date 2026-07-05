@@ -33,6 +33,27 @@ def _write_rollout_file(
     )
 
 
+def _write_truncated_rollout_file(
+    file_path: Path,
+    session_id: str,
+    project_dir: str,
+) -> None:
+    """Пишет rollout с валидным session_meta, затем строку, оборванную на 2-байтном UTF-8.
+
+    Воспроизводит файл, который CLI ещё дописывает: хвост оборван посреди 2-байтной
+    UTF-8 последовательности (\\xd0 из 'П'), поэтому open(encoding='utf-8').readlines()
+    бросает UnicodeDecodeError (это ValueError, НЕ OSError).
+    """
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("wb") as file_handle:
+        meta_record = {
+            "type": "session_meta",
+            "payload": {"id": session_id, "cwd": project_dir},
+        }
+        file_handle.write((json.dumps(meta_record) + "\n").encode("utf-8"))
+        file_handle.write(b'{"type":"session_meta","payload":{"cwd":"\xd0')
+
+
 @pytest.mark.asyncio()
 async def test_session_file_exists_uses_uuid_date_before_full_scan(
     tmp_path: Path,
@@ -112,3 +133,36 @@ async def test_list_session_files_excludes_codex_subagents(tmp_path: Path) -> No
         )
 
     assert [info.session_id for info in infos] == ["user-session"]
+
+
+@pytest.mark.asyncio()
+async def test_codex_project_listing_skips_rollout_with_truncated_multibyte(
+    tmp_path: Path,
+) -> None:
+    """Листинг проекта пропускает битый на лету rollout, отдаёт валидный (P2-24).
+
+    До фикса `_read_project_meta_pair` для битого файла бросал UnicodeDecodeError, а
+    `_gather_optional_results_with_concurrency_limit` (gather без return_exceptions)
+    ронял ВЕСЬ листинг — валидный файл терялся. После фикса битый проглатывается в
+    None, gather исключения не видит.
+    """
+    sessions_root = tmp_path / ".codex" / "sessions"
+    project_dir = "/home/ivan/claude-sandbox/demo"
+    valid_session_id = "019e7317-83ed-7721-a7e1-4b62e9922582"
+    good_file = sessions_root / "good.jsonl"
+    bad_file = sessions_root / "bad.jsonl"
+    _write_rollout_file(good_file, valid_session_id, project_dir)
+    _write_truncated_rollout_file(bad_file, "truncated-session", project_dir)
+    sessions_root.mkdir(parents=True, exist_ok=True)
+
+    with patch(
+        "claude_manager.codex_session_file_listing._list_rollout_files_blocking",
+        return_value=[str(good_file), str(bad_file)],
+    ):
+        infos = await list_session_file_infos_for_project(
+            str(sessions_root),
+            project_dir,
+        )
+
+    session_ids = {info.session_id for info in infos}
+    assert valid_session_id in session_ids

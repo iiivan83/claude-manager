@@ -57,6 +57,36 @@ def _write_rollout_file(
     return file_path
 
 
+def _write_truncated_rollout_file(
+    sessions_root: Path,
+    session_date: date,
+    session_id: str,
+    project_dir: str,
+) -> Path:
+    """Пишет rollout с валидным session_meta, затем строку, оборванную на 2-байтном UTF-8.
+
+    Воспроизводит файл, который CLI ещё дописывает: хвост оборван посреди 2-байтной
+    UTF-8 последовательности (\\xd0 из 'П'), поэтому open(encoding='utf-8').readlines()
+    бросает UnicodeDecodeError (это ValueError, НЕ OSError).
+    """
+    file_path = (
+        sessions_root
+        / f"{session_date:%Y}"
+        / f"{session_date:%m}"
+        / f"{session_date:%d}"
+        / f"rollout-{session_date:%Y-%m-%d}T01-02-04-{session_id}.jsonl"
+    )
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("wb") as file_handle:
+        meta_record = {
+            "type": "session_meta",
+            "payload": {"id": session_id, "cwd": project_dir},
+        }
+        file_handle.write((json.dumps(meta_record) + "\n").encode("utf-8"))
+        file_handle.write(b'{"type":"session_meta","payload":{"cwd":"\xd0')
+    return file_path
+
+
 async def test_index_groups_rollouts_by_project(tmp_path: Path) -> None:
     sessions_root = tmp_path / ".codex" / "sessions"
     project_a = "/projects/a"
@@ -101,6 +131,31 @@ async def test_index_excludes_codex_subagent_rollouts(tmp_path: Path) -> None:
     )
 
     assert [info.session_id for info in infos] == ["user-session"]
+
+
+async def test_codex_index_build_skips_rollout_with_truncated_multibyte(
+    tmp_path: Path,
+) -> None:
+    """Построение индекса пропускает битый на лету rollout, индексирует валидный (P2-24).
+
+    До фикса `_read_indexed_rollout` для битого файла бросал UnicodeDecodeError, а
+    `_gather_optional_factories_with_concurrency_limit` (gather без return_exceptions)
+    ронял ВЕСЬ индекс. После фикса битый проглатывается в None, gather не видит исключения.
+    """
+    sessions_root = tmp_path / ".codex" / "sessions"
+    project_dir = "/projects/a"
+    _write_rollout_file(sessions_root, TODAY, "valid-session", project_dir)
+    _write_truncated_rollout_file(sessions_root, TODAY, "truncated-session", project_dir)
+
+    infos = await codex_session_index.list_project_session_file_infos(
+        str(sessions_root),
+        project_dir,
+        lookback_days=4,
+        today=TODAY,
+    )
+
+    session_ids = {info.session_id for info in infos}
+    assert "valid-session" in session_ids
 
 
 async def test_index_keeps_only_sliding_lookback_window(tmp_path: Path) -> None:

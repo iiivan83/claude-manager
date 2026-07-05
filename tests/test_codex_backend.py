@@ -44,6 +44,23 @@ def write_jsonl_file(file_path: Path, records: list[dict[str, object]]) -> None:
             file_handle.write(json.dumps(session_record, ensure_ascii=False) + "\n")
 
 
+def write_jsonl_with_truncated_trailing_multibyte_char(
+    file_path: Path, complete_records: list[dict[str, object]]
+) -> None:
+    """Пишет валидные JSONL-записи, затем строку, оборванную посреди 2-байтного UTF-8.
+
+    Воспроизводит rollout, который CLI ещё дописывает: последняя строка кончается на
+    первом байте 2-байтной последовательности (\\xd0 из 'П') без завершающего перевода
+    строки, поэтому open(encoding='utf-8').readlines() бросает UnicodeDecodeError
+    (это ValueError, НЕ OSError).
+    """
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("wb") as file_handle:
+        for record in complete_records:
+            file_handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        file_handle.write(b'{"type":"session_meta","payload":{"cwd":"\xd0')
+
+
 def make_rollout_file(
     sessions_root: Path,
     session_id: str,
@@ -690,6 +707,53 @@ async def test_read_session_file_snapshot_returns_empty_when_missing(
         last_record=None,
         is_turn_active=False,
     )
+
+
+async def test_codex_read_snapshot_survives_truncated_multibyte_at_eof(
+    backend: CodexBackend, tmp_path: Path,
+) -> None:
+    """Дописываемый на лету rollout не роняет читатель снапшота Codex (P2-24)."""
+    session_file = tmp_path / "rollout.jsonl"
+    write_jsonl_with_truncated_trailing_multibyte_char(
+        session_file,
+        [{"type": "session_meta", "payload": {"id": "s", "cwd": "/x"}}],
+    )
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    assert snapshot.raw_record_count == 0
+    assert snapshot.messages == []
+
+
+async def test_codex_read_cursor_survives_truncated_multibyte_at_eof(
+    backend: CodexBackend, tmp_path: Path,
+) -> None:
+    """Дописываемый на лету rollout не роняет читатель курсора Codex (P2-24)."""
+    session_file = tmp_path / "rollout.jsonl"
+    write_jsonl_with_truncated_trailing_multibyte_char(
+        session_file,
+        [{"type": "session_meta", "payload": {"id": "s", "cwd": "/x"}}],
+    )
+
+    cursor = await backend.read_session_file_cursor(str(session_file))
+
+    assert cursor.raw_record_count == 0
+    assert cursor.is_turn_active is False
+
+
+async def test_codex_read_messages_survives_truncated_multibyte_at_eof(
+    backend: CodexBackend, tmp_path: Path,
+) -> None:
+    """Дописываемый на лету rollout не роняет чтение сообщений Codex (P2-24)."""
+    session_file = tmp_path / "rollout.jsonl"
+    write_jsonl_with_truncated_trailing_multibyte_char(
+        session_file,
+        [{"type": "session_meta", "payload": {"id": "s", "cwd": "/x"}}],
+    )
+
+    messages = await backend.read_messages_from_session_file(str(session_file))
+
+    assert messages == []
 
 
 def test_compose_args_raises_when_binary_not_found(

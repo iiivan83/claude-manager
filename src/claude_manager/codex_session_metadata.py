@@ -57,6 +57,17 @@ async def is_subagent_session_file(file_path: str) -> bool:
     except PermissionError:
         logger.error("No permission to read Codex session file: %s", file_path)
         return False
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит на след. опросе.
+        logger.debug(
+            "Codex session file %s not fully readable yet "
+            "(incomplete UTF-8, likely mid-write): %s",
+            file_path,
+            error,
+        )
+        return False
     except OSError as error:
         logger.warning("Could not read Codex session file %s: %s", file_path, error)
         return False
