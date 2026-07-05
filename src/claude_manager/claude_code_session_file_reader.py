@@ -238,6 +238,17 @@ async def _read_session_file_metadata(file_path: str) -> SessionFileInfo | None:
     except PermissionError:
         logger.error("No permission to read Claude session file: %s", file_path)
         return None
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит на след. опросе.
+        logger.debug(
+            "Claude session file %s not fully readable yet "
+            "(incomplete UTF-8, likely mid-write): %s",
+            file_path,
+            error,
+        )
+        return None
     except OSError as error:
         logger.warning("Could not read Claude session file %s: %s", file_path, error)
         return None
@@ -440,6 +451,17 @@ def _read_session_file_snapshot_blocking(file_path: str) -> SessionFileSnapshot:
     except PermissionError:
         logger.error("No permission to read Claude session file: %s", file_path)
         return empty_session_file_snapshot()
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит на след. опросе.
+        logger.debug(
+            "Claude session file %s not fully readable yet "
+            "(incomplete UTF-8, likely mid-write): %s",
+            file_path,
+            error,
+        )
+        return empty_session_file_snapshot()
     except OSError as error:
         logger.warning("Could not read Claude session file %s: %s", file_path, error)
         return empty_session_file_snapshot()
@@ -473,6 +495,17 @@ def _read_session_file_cursor_blocking(file_path: str) -> SessionFileSnapshot:
         )
     except PermissionError:
         logger.error("No permission to read Claude session file: %s", file_path)
+        return empty_session_file_snapshot()
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит на след. опросе.
+        logger.debug(
+            "Claude session file %s not fully readable yet "
+            "(incomplete UTF-8, likely mid-write): %s",
+            file_path,
+            error,
+        )
         return empty_session_file_snapshot()
     except OSError as error:
         logger.warning("Could not read Claude session file %s: %s", file_path, error)

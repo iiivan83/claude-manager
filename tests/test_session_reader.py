@@ -33,6 +33,22 @@ def _write_jsonl_file(path: Path, lines: list[dict]) -> None:
             file_handle.write(json.dumps(line_dict) + "\n")
 
 
+def write_jsonl_with_truncated_trailing_multibyte_char(
+    file_path: Path, complete_records: list[dict]
+) -> None:
+    """Пишет валидные JSONL-записи, затем строку, оборванную посреди 2-байтного UTF-8.
+
+    Воспроизводит файл сессии, который CLI ещё дописывает: последняя строка кончается на
+    первом байте 2-байтной последовательности (\\xd0 из 'П') без завершающего перевода
+    строки, поэтому open(encoding='utf-8').readlines() бросает UnicodeDecodeError
+    (это ValueError, НЕ OSError).
+    """
+    with file_path.open("wb") as file_handle:
+        for record in complete_records:
+            file_handle.write((json.dumps(record) + "\n").encode("utf-8"))
+        file_handle.write(b'{"type":"user","message":{"role":"user","content":"\xd0')
+
+
 def _make_session_line(
     session_id: str = "test-session-id",
     timestamp: str = "2026-03-29T17:23:21.594Z",
@@ -409,6 +425,26 @@ class TestGetRecentSessions:
         assert len(result) == 2
 
     @pytest.mark.asyncio
+    async def test_get_recent_sessions_skips_file_with_truncated_multibyte(
+        self, sessions_dir: Path
+    ) -> None:
+        """Дописываемый на лету файл пропускается, валидная сессия возвращается (P2-23)."""
+        valid_path = sessions_dir / "valid.jsonl"
+        _write_jsonl_file(valid_path, [
+            _make_session_line(session_id="valid"),
+            _make_user_message("Валидное сообщение"),
+        ])
+        write_jsonl_with_truncated_trailing_multibyte_char(
+            sessions_dir / "truncated.jsonl",
+            [_make_session_line(session_id="truncated")],
+        )
+
+        result = await get_recent_sessions("/fake/project")
+
+        # Битый на лету файл пропущен, исключения нет, валидная сессия дошла.
+        assert [session.session_id for session in result] == ["valid"]
+
+    @pytest.mark.asyncio
     async def test_nonexistent_directory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -499,6 +535,20 @@ class TestGetSessionMessages:
         result = await get_session_messages("partial", "/fake/project")
 
         assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_session_messages_survives_truncated_multibyte_at_eof(
+        self, sessions_dir: Path
+    ) -> None:
+        """get_session_messages возвращает [] на дописываемом файле, а не падает (P2-23)."""
+        write_jsonl_with_truncated_trailing_multibyte_char(
+            sessions_dir / "sess.jsonl",
+            [{"sessionId": "sess", "timestamp": "2026-07-05T00:00:00Z", "type": "system"}],
+        )
+
+        result = await get_session_messages("sess", "/fake/project")
+
+        assert result == []
 
 
 # --- Юнит-тесты _read_session_file ---

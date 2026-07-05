@@ -41,6 +41,25 @@ def write_jsonl_file(file_path: Path, records: list[dict[str, object]]) -> None:
             file_handle.write(json.dumps(session_record, ensure_ascii=False) + "\n")
 
 
+def write_jsonl_with_truncated_trailing_multibyte_char(
+    file_path: Path, complete_records: list[dict[str, object]]
+) -> None:
+    """Пишет валидные JSONL-записи, затем строку, оборванную посреди 2-байтного UTF-8.
+
+    Воспроизводит файл сессии, который CLI ещё дописывает: последняя строка кончается на
+    первом байте 2-байтной последовательности (\\xd0 из 'П' = \\xd0\\x9f) без завершающего
+    перевода строки, поэтому open(encoding='utf-8').readlines() бросает UnicodeDecodeError
+    (это ValueError, НЕ OSError).
+    """
+    with file_path.open("wb") as file_handle:
+        for record in complete_records:
+            line = json.dumps(record, ensure_ascii=False) + "\n"
+            file_handle.write(line.encode("utf-8"))
+        # \xd0 — первый байт 2-байтной UTF-8 последовательности для 'П'; без второго байта
+        # и без '\n' декодер падает на конце файла.
+        file_handle.write(b'{"type":"user","message":{"role":"user","content":"\xd0')
+
+
 def test_name_and_display_name(backend: ClaudeCodeBackend) -> None:
     """The Claude adapter exposes the stable backend identity."""
     assert backend.name == BackendName.CLAUDE
@@ -855,3 +874,59 @@ async def test_record_completed_after_torn_baseline_is_delivered_by_raw_index(
     ]
 
     assert [message.text for message in newly_visible] == ["ответ"]
+
+
+async def test_read_snapshot_survives_truncated_multibyte_at_eof(
+    backend: ClaudeCodeBackend, tmp_path: Path
+) -> None:
+    """Дописываемый на лету файл сессии не роняет читатель снапшота (P2-23)."""
+    session_file = tmp_path / "sess.jsonl"
+    write_jsonl_with_truncated_trailing_multibyte_char(
+        session_file,
+        [{"type": "user", "message": {"role": "user", "content": "привет"}}],
+    )
+
+    snapshot = await backend.read_session_file_snapshot(str(session_file))
+
+    # Возвращается пустой снапшот вместо исключения; watcher повторит на след. опросе.
+    assert snapshot.raw_record_count == 0
+    assert snapshot.messages == []
+
+
+async def test_read_cursor_survives_truncated_multibyte_at_eof(
+    backend: ClaudeCodeBackend, tmp_path: Path
+) -> None:
+    """Дописываемый на лету файл сессии не роняет читатель курсора (P2-23)."""
+    session_file = tmp_path / "sess.jsonl"
+    write_jsonl_with_truncated_trailing_multibyte_char(
+        session_file,
+        [{"type": "user", "message": {"role": "user", "content": "привет"}}],
+    )
+
+    cursor = await backend.read_session_file_cursor(str(session_file))
+
+    assert cursor.raw_record_count == 0
+    assert cursor.is_turn_active is False
+
+
+async def test_session_metadata_read_survives_truncated_multibyte_at_eof(
+    backend: ClaudeCodeBackend,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Список сессий пропускает дописываемый файл вместо падения (P2-23)."""
+    monkeypatch.setattr(os.path, "expanduser", lambda _path: str(tmp_path))
+    project_dir = "/tmp/project_a"
+    sessions_dir = (
+        tmp_path / ".claude" / "projects" / _encode_project_path(project_dir)
+    )
+    sessions_dir.mkdir(parents=True)
+    write_jsonl_with_truncated_trailing_multibyte_char(
+        sessions_dir / "sess.jsonl",
+        [{"sessionId": "sess", "timestamp": "2026-07-05T00:00:00Z", "type": "system"}],
+    )
+
+    infos = await backend.list_session_files_for_project(project_dir)
+
+    # Единственный файл битый на лету — список пуст, но исключения нет.
+    assert infos == []

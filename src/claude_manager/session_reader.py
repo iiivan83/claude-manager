@@ -208,6 +208,17 @@ async def _read_session_file(file_path: str) -> SessionInfo | None:
     except PermissionError:
         logger.error("Нет доступа к файлу сессии: %s", file_path)
         return None
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит опрос.
+        logger.debug(
+            "Файл сессии %s ещё не дочитан целиком "
+            "(неполный UTF-8, вероятно дописывается): %s",
+            file_path,
+            error,
+        )
+        return None
     except OSError as error:
         logger.error("Ошибка чтения файла сессии %s: %s", file_path, error)
         return None
@@ -320,6 +331,17 @@ async def get_session_messages(session_id: str, project_dir: str) -> list[dict]:
         raw_lines = await asyncio.to_thread(_read_file_lines, file_path)
     except PermissionError:
         logger.error("Нет доступа к файлу сессии: %s", file_path)
+        return []
+    except UnicodeDecodeError as error:
+        # Файл дописывается CLI на лету: хвост оборван посреди многобайтного UTF-8.
+        # UnicodeDecodeError — подкласс ValueError, не OSError, поэтому нужна отдельная
+        # ветка. Возвращаем тот же fallback, что и OSError; watcher повторит опрос.
+        logger.debug(
+            "Файл сессии %s ещё не дочитан целиком "
+            "(неполный UTF-8, вероятно дописывается): %s",
+            file_path,
+            error,
+        )
         return []
     except OSError as error:
         logger.error("Ошибка чтения файла сессии %s: %s", file_path, error)
