@@ -144,3 +144,28 @@ def test_register_route_keeps_only_last_200_routes(tmp_path: Path) -> None:
         project_name="alpha",
     )
     assert reply_route_registry.get_route(TEST_CHAT_ID, 201) is not None
+
+
+def test_load_routes_recovers_from_truncated_multibyte_file(tmp_path: Path) -> None:
+    """Битый на многобайте reply_routes.json → чистое состояние, запись НЕ блокируется (P3-50)."""
+    routes_path = tmp_path / "reply_routes.json"
+    # Файл, оборванный посреди 2-байтного UTF-8 символа (\xd0 без второго байта).
+    routes_path.write_bytes(b'{"routes":[{"project_name":"\xd0')
+
+    reply_route_registry.load_routes(routes_path)
+
+    # Загрузка не упала, состояние чистое, персистентность НЕ отключена:
+    assert reply_route_registry.get_route(1, 1) is None
+    assert reply_route_registry._routes_loaded_from_disk is True
+
+    # Регистрация нового маршрута перезаписывает битый файл (запись разрешена).
+    target = reply_route_registry.ReplyRouteTarget(
+        project_path="/tmp/x",
+        session_id="s",
+        backend=BackendName.CODEX,
+        session_number=1,
+    )
+    reply_route_registry.register_route(1, 1, target)
+    reply_route_registry.clear_all()
+    reply_route_registry.load_routes(routes_path)
+    assert reply_route_registry.get_route(1, 1) is not None

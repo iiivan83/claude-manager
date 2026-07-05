@@ -195,7 +195,12 @@ def load_routes(path: Path | None = None) -> None:
         _routes_loaded_from_disk = True
         logger.info("Файл reply-route registry не найден, начинаю с чистого состояния")
         return
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Порча контента (битый JSON или файл, оборванный CLI посреди многобайтного
+        # UTF-8 на лету) лечится одинаково: чистое состояние + запись разрешена
+        # (_routes_loaded_from_disk = True), чтобы битый файл перезаписался при следующей
+        # регистрации маршрута. В отличие от OSError (транзиентный сбой I/O) держать
+        # запись заблокированной здесь бессмысленно.
         _routes = {}
         _routes_loaded_from_disk = True
         logger.warning("Файл reply-route registry повреждён, начинаю с чистого состояния")
