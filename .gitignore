@@ -33,6 +33,13 @@ daily_sessions.json
 .agents/.codex-skill-mirror-backups/
 .worktrees/
 
+# Симлинки на общие скрипты вне репозитория (у клонировавших были бы битыми)
+.agents/skills/_shared-pipeline-scripts
+.agents/skills/_shared-validators
+
+# Машинный журнал пайплайна — меняется сам при прогонах, в git не нужен
+pipeline-state.json
+
 # dev/temp/ — черновики и временные файлы не коммитятся, остальное в dev/ трекается
 dev/temp/*
 !dev/temp/.gitkeep
